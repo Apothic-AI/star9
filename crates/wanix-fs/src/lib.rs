@@ -1,6 +1,6 @@
 //! Rust-native filesystem contracts and first-party backends.
 //!
-//! This crate ports the Go `fs` and core `fskit` surfaces into a single trait
+//! This crate provides Wanix filesystem and core fskit-style surfaces as a trait
 //! family. Filesystems share helper operations for read/write, create, remove,
 //! copy, metadata, symlinks, and open flags so backends do not need to duplicate
 //! fallback behavior.

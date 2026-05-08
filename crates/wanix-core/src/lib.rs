@@ -1,7 +1,7 @@
 //! Shared Wanix value types.
 //!
 //! This crate intentionally contains no filesystem implementation. It mirrors
-//! the small, widely used contracts from the Go tree: path validity, file modes,
+//! the small, widely used Wanix contracts: path validity, file modes,
 //! metadata, operation context, open flags, and structured errors.
 
 use std::fmt;

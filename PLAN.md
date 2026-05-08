@@ -2,15 +2,16 @@
 
 ## Current Focus
 
-Port `../wanix` to Rust in a single sprint, producing a Rust-native Wanix runtime rather than a wrapper around the Go implementation.
+Build a Rust-native Wanix runtime in a single sprint, without wrapping or depending on the legacy implementation.
 
 ## Planning Constraints
 
 - Do not attach scheduling/time estimate assumptions to planning docs.
-- Treat `../wanix` as the behavioral oracle until Rust conformance tests supersede it.
-- Prefer generalized Rust designs over one-off translations of individual Go files.
+- Treat Rust specs, fixtures, and conformance tests as the authoritative behavior source.
+- Do not invoke legacy code from runtime, build, test, browser smoke, or conformance paths.
+- Prefer generalized Rust designs over one-off translations of individual legacy files.
 - Do not add compatibility shims for unpublished intermediate APIs unless they are needed for conformance testing or migration of real examples.
-- Validate assumptions with tests, source inspection, fixtures, or differential runs against `../wanix`.
+- Validate assumptions with Rust tests, fixtures, browser smoke checks, and source inspection.
 
 ## Target Outcome
 
@@ -22,8 +23,8 @@ The sprint is complete when `wanix-rs` can build and run a Rust-native implement
 - Task/resource model with per-task namespaces and file descriptors.
 - Browser/WASM runtime entry point equivalent to the current `wasm` package.
 - Public API surface equivalent to the current JS handle/RPC file operations.
-- Worker execution paths for WASI and Go JS/WASM workloads, with existing examples ported or replaced by Rust-backed equivalents.
-- Conformance tests covering the behaviors currently exercised by Go tests and representative browser examples.
+- Worker execution paths for WASI and Go-compatible JS/WASM workloads, with existing examples ported or replaced by Rust-backed equivalents.
+- Conformance tests covering the Rust-owned behavior specs and representative browser examples.
 
 ## Port Shape
 
@@ -46,12 +47,12 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 
 1. Source map and contracts
    - Inventory exported APIs, filesystem extension traits, resource/device roots, worker message schemas, and example entry points.
-   - Convert the important Go tests and browser examples into a conformance checklist.
-   - Mark generated or vendored code that should not be ported directly.
+   - Convert required runtime behavior into Rust-owned conformance fixtures and checklists.
+   - Mark generated, vendored, or legacy-only code that should not be ported directly.
 
 2. Workspace foundation
    - Create the Rust workspace, crate boundaries, build commands, lint/test commands, and basic documentation.
-   - Add fixtures and a test harness capable of comparing Rust behavior to `../wanix` where useful.
+   - Add fixtures and a test harness capable of validating Rust behavior without invoking legacy code.
 
 3. Core filesystem model
    - Port file modes, file info, directory entries, errors, path validation, open flags, and context/origin flags.
@@ -61,7 +62,7 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 4. Basic backends and `fskit`
    - Port node/file abstractions, map filesystem, union filesystem, function/control/field files, stream files, and directory iterators.
    - Port `memfs` and `localfs` as the first complete read/write backends.
-   - Use Go tests as behavior references for permissions, symlinks, directory synthesis, file sizes, and open flags.
+   - Use Rust conformance fixtures for permissions, symlinks, directory synthesis, file sizes, and open flags.
 
 5. Namespace and bind semantics
    - Port `vfs::NS`, binding order, direct binding resolution, subpath binding resolution, synthesized parent directories, and writable binding selection.
@@ -87,10 +88,10 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
    - Recreate `wanix-system` behavior with Rust-backed WASM exports and minimal JS glue.
    - Port worker startup, task worker messaging, port opening, 9P import/export, namespace setup from `<wanix-bind>`, and browser filesystem bindings.
 
-10. WASI and Go JS execution
-    - Port or replace the current worker shims for WASI and Go JS workloads.
+10. WASI and Go-compatible JS execution
+    - Port or replace the current worker shims for WASI and Go-compatible JS/WASM workloads.
     - Keep execution adapters isolated behind task drivers.
-    - Validate with existing WASI and Go JS tests/examples.
+    - Validate with Rust-backed WASI and Go-compatible JS/WASM tests/examples.
 
 11. CLI, build, and examples
     - Build the native CLI and web distribution artifacts from the Rust workspace.
@@ -115,6 +116,6 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 
 - `cargo test --workspace` passes.
 - Rust conformance tests cover the core filesystem, namespace, task, and API semantics.
-- Browser smoke tests prove that `wanix-system` can initialize, bind filesystems, open a handle, run file API operations, and start representative WASI/Go JS tasks.
+- Browser smoke tests prove that `wanix-system` can initialize, bind filesystems, open a handle, run file API operations, and start representative WASI/Go-compatible JS tasks.
 - Existing examples have Rust-backed equivalents or explicit replacement tests.
-- The public Rust API is documented enough to guide continued development without reading the old Go implementation first.
+- The public Rust API is documented enough to guide continued development from this repository alone.

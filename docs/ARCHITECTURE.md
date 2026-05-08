@@ -1,20 +1,20 @@
 # Architecture
 
-`wanix-rs` is the primary Rust implementation of the Wanix runtime. The Go repository in `../wanix` remains the behavioral oracle for any semantics not yet covered by Rust conformance tests.
+`wanix-rs` is the primary Rust implementation of the Wanix runtime. Runtime behavior is defined entirely by this repository's Rust specs, fixtures, and conformance tests.
 
 ## Core Values
 
 `wanix-core` owns stable value types that are shared by every other crate:
 
 - `Error` and `ErrorKind` preserve operation/path-aware failures.
-- `FileMode`, `Metadata`, and `DirEntry` model Go `io/fs`-style metadata with Wanix type bits.
+- `FileMode`, `Metadata`, and `DirEntry` model Wanix filesystem metadata and type bits.
 - `FsContext` carries follow-symlink, read-only, origin path, filepath, and operation flags.
 - `OpenFlags` preserves the public API shape used by the JS handle.
 - Path helpers validate and normalize relative Wanix paths.
 
 ## Filesystems
 
-`wanix-fs` defines `FileSystem` and `FileHandle`. Backends implement the trait directly while shared helpers provide package-level behavior equivalent to the Go `fs` helpers:
+`wanix-fs` defines `FileSystem` and `FileHandle`. Backends implement the trait directly while shared helpers provide package-level behavior for common Wanix filesystem operations:
 
 - `open`, `stat`, `lstat`, `read_dir`, `read_file`, `write_file`, `append_file`.
 - `mkdir_all`, `remove_all`, `copy_all`, `copy_fs`, `exists`, `is_dir`, `is_empty`.
@@ -52,7 +52,7 @@ The crate also ports the key `fskit` building blocks:
 
 ## Protocol
 
-`wanix-protocol` defines typed requests and responses for the public API exposed by the Go `api.Responder` and `api/handle.js`:
+`wanix-protocol` defines typed requests and responses for the public Wanix file API:
 
 `Open`, `OpenFile`, `Create`, `Close`, `Sync`, `Read`, `Write`, `WriteAt`, `ReadDir`, `Mkdir`, `MkdirAll`, `Bind`, `Unbind`, `Stat`, `Truncate`, `WaitFor`, `Rename`, `Copy`, `Remove`, `RemoveAll`, `ReadFile`, `WriteFile`, `AppendFile`, `Fstat`, `Lstat`, `Chmod`, `Chown`, `Fchmod`, `Fchown`, `Ftruncate`, `Readlink`, `Symlink`, and `Chtimes`.
 
@@ -70,4 +70,4 @@ The crate also ports the key `fskit` building blocks:
 
 ## Generated And Vendored Code
 
-The Go repository contains generated worker bundles and vendored/patched support code. These are not ported line-for-line. Rust equivalents live behind task drivers, device allocators, typed protocols, and browser facade APIs.
+Generated worker bundles and vendored/patched legacy support code are not ported line-for-line. Rust equivalents live behind task drivers, device allocators, typed protocols, and browser facade APIs.

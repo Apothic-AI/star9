@@ -1,8 +1,7 @@
 //! Typed Wanix file API surface.
 //!
-//! The Go implementation exposes these operations over CBOR RPC. This crate
-//! keeps the protocol boundary typed so native callers, browser glue, and tests
-//! exercise the same method set without depending on Go internals.
+//! This crate keeps the protocol boundary typed so native callers, browser glue,
+//! and tests exercise the same method set without depending on legacy internals.
 
 use std::time::{Duration, SystemTime};
 

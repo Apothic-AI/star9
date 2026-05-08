@@ -1,6 +1,6 @@
 # Conformance
 
-The Rust tests are organized around the behavioral gates from `PLAN.md`. The Go implementation in `../wanix` remains the oracle for uncovered edge cases.
+The Rust tests are organized around the behavioral gates from `PLAN.md`. This repository's specs, fixtures, and conformance tests are the authoritative behavior source.
 
 ## Covered
 
@@ -22,7 +22,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. The Go 
 - Protocol EOF mapping to `null`-style optional bytes.
 - Runtime root bindings for core and device surfaces.
 - Device allocator resource creation.
-- WASI and Go JS execution adapter task starts.
+- WASI and Go-compatible JS execution adapter task starts.
 - Native `WanixSystem` smoke operations.
 - Browser wasm smoke operations through `tests/browser-smoke.html`.
 
@@ -42,4 +42,4 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - Terminal screen protocol details.
 - VM/network device behavior.
 - Full WASI syscall execution.
-- Full Go JS/WASM worker execution.
+- Full Go-compatible JS/WASM worker execution.
