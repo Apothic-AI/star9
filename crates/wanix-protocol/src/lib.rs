@@ -10,6 +10,32 @@ use wanix_core::{Error, ErrorKind, FileMode, OpenFlags, Result};
 use wanix_fs::{self as fs, FileSystem};
 use wanix_task::Task;
 
+pub fn encode_request(request: &ApiRequest) -> Result<Vec<u8>> {
+    encode_cbor(request)
+}
+
+pub fn decode_request(data: &[u8]) -> Result<ApiRequest> {
+    decode_cbor(data)
+}
+
+pub fn encode_response(response: &ApiResponse) -> Result<Vec<u8>> {
+    encode_cbor(response)
+}
+
+pub fn decode_response(data: &[u8]) -> Result<ApiResponse> {
+    decode_cbor(data)
+}
+
+fn encode_cbor(value: &impl Serialize) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    ciborium::into_writer(value, &mut out).map_err(|err| Error::Message(err.to_string()))?;
+    Ok(out)
+}
+
+fn decode_cbor<T: for<'de> Deserialize<'de>>(data: &[u8]) -> Result<T> {
+    ciborium::from_reader(data).map_err(|err| Error::Message(err.to_string()))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct StatInfo {
     pub size: u64,
@@ -70,6 +96,46 @@ pub enum ApiRequest {
     Readlink(String),
     Symlink(String, String),
     Chtimes(String, f64, f64),
+}
+
+impl ApiRequest {
+    pub fn method_name(&self) -> &'static str {
+        match self {
+            Self::Open(_) => "Open",
+            Self::OpenFile(_, _, _) => "OpenFile",
+            Self::Create(_) => "Create",
+            Self::Close(_) => "Close",
+            Self::Sync(_) => "Sync",
+            Self::Read(_, _) => "Read",
+            Self::Write(_, _) => "Write",
+            Self::WriteAt(_, _, _) => "WriteAt",
+            Self::ReadDir(_) => "ReadDir",
+            Self::Mkdir(_) => "Mkdir",
+            Self::MkdirAll(_) => "MkdirAll",
+            Self::Bind(_, _) => "Bind",
+            Self::Unbind(_, _) => "Unbind",
+            Self::Stat(_) => "Stat",
+            Self::Truncate(_, _) => "Truncate",
+            Self::WaitFor(_, _) => "WaitFor",
+            Self::Rename(_, _) => "Rename",
+            Self::Copy(_, _) => "Copy",
+            Self::Remove(_) => "Remove",
+            Self::RemoveAll(_) => "RemoveAll",
+            Self::ReadFile(_) => "ReadFile",
+            Self::WriteFile(_, _) => "WriteFile",
+            Self::AppendFile(_, _) => "AppendFile",
+            Self::Fstat(_) => "Fstat",
+            Self::Lstat(_) => "Lstat",
+            Self::Chmod(_, _) => "Chmod",
+            Self::Chown(_, _, _) => "Chown",
+            Self::Fchmod(_, _) => "Fchmod",
+            Self::Fchown(_, _, _) => "Fchown",
+            Self::Ftruncate(_, _) => "Ftruncate",
+            Self::Readlink(_) => "Readlink",
+            Self::Symlink(_, _) => "Symlink",
+            Self::Chtimes(_, _, _) => "Chtimes",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -394,5 +460,68 @@ mod tests {
         let fd = api.open("a").unwrap();
         assert_eq!(api.read(fd, 8).unwrap(), Some(b"x".to_vec()));
         assert_eq!(api.read(fd, 8).unwrap(), None);
+    }
+
+    #[test]
+    fn cbor_round_trips_requests_and_responses() {
+        let request = ApiRequest::WriteAt(7, b"abc".to_vec(), 42);
+        let encoded = encode_request(&request).unwrap();
+        assert_eq!(decode_request(&encoded).unwrap(), request);
+
+        let response = ApiResponse::Stat(StatInfo {
+            size: 3,
+            mode: 0o100644,
+            is_dir: false,
+            modified_ms: 10,
+        });
+        let encoded = encode_response(&response).unwrap();
+        assert_eq!(decode_response(&encoded).unwrap(), response);
+    }
+
+    #[test]
+    fn operation_fixture_covers_all_request_variants() {
+        let fixture: Vec<String> =
+            serde_json::from_str(include_str!("../../../tests/fixtures/api-operations.json"))
+                .unwrap();
+        let requests = vec![
+            ApiRequest::Open("p".into()),
+            ApiRequest::OpenFile("p".into(), 0, 0),
+            ApiRequest::Create("p".into()),
+            ApiRequest::Close(1),
+            ApiRequest::Sync(1),
+            ApiRequest::Read(1, 8),
+            ApiRequest::Write(1, b"x".to_vec()),
+            ApiRequest::WriteAt(1, b"x".to_vec(), 0),
+            ApiRequest::ReadDir("p".into()),
+            ApiRequest::Mkdir("p".into()),
+            ApiRequest::MkdirAll("p".into()),
+            ApiRequest::Bind("a".into(), "b".into()),
+            ApiRequest::Unbind("a".into(), "b".into()),
+            ApiRequest::Stat("p".into()),
+            ApiRequest::Truncate("p".into(), 1),
+            ApiRequest::WaitFor("p".into(), 1),
+            ApiRequest::Rename("a".into(), "b".into()),
+            ApiRequest::Copy("a".into(), "b".into()),
+            ApiRequest::Remove("p".into()),
+            ApiRequest::RemoveAll("p".into()),
+            ApiRequest::ReadFile("p".into()),
+            ApiRequest::WriteFile("p".into(), b"x".to_vec()),
+            ApiRequest::AppendFile("p".into(), b"x".to_vec()),
+            ApiRequest::Fstat(1),
+            ApiRequest::Lstat("p".into()),
+            ApiRequest::Chmod("p".into(), 0o644),
+            ApiRequest::Chown("p".into(), 1, 2),
+            ApiRequest::Fchmod(1, 0o644),
+            ApiRequest::Fchown(1, 1, 2),
+            ApiRequest::Ftruncate(1, 1),
+            ApiRequest::Readlink("p".into()),
+            ApiRequest::Symlink("a".into(), "b".into()),
+            ApiRequest::Chtimes("p".into(), 1.0, 2.0),
+        ];
+        let methods: Vec<_> = requests
+            .iter()
+            .map(|request| request.method_name().to_string())
+            .collect();
+        assert_eq!(methods, fixture);
     }
 }

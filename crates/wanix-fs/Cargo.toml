@@ -7,8 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+http = "1"
 serde.workspace = true
 serde_bytes.workspace = true
+tar = "0.4"
 wanix-core = { path = "../wanix-core" }
 
 [dev-dependencies]

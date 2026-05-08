@@ -19,6 +19,13 @@
 - Verified the generated wasm web package with Playwright at `tests/browser-smoke.html`; the page reached `document.body.dataset.status = "ok"` after binding ramfs, running file API operations, and starting WASI/Go-compatible JS adapter tasks.
 - Observed `wasm-pack test --headless --chrome crates/wanix-web` compile the wasm test target, but the ChromeDriver runner exited before executing the harness. Replaced that harness path with the direct `wasm-pack build` plus Playwright browser smoke.
 - Clarified project policy in docs: `../wanix` is the reference implementation for porting, but runtime, build, test, browser smoke, and conformance paths must not wrap, execute, link, shell out to, or test against Go code.
+- Replaced the `TarFs = MemFs` placeholder with a real read-only tar-backed filesystem and tar archive writer using the Rust `tar` crate.
+- Added tar conformance tests for directory listings, file reads, symlink lstat/readlink/follow behavior, archive round-tripping, and read-only mutation failures.
+- Added a transport-driven `HttpFs` implementation covering HTTP GET/HEAD reads, directory listing parsing, PUT writes, mkdir, symlink, MOVE rename, DELETE remove, metadata parsing, and protocol header formatting.
+- Added HTTP filesystem tests with a recording transport so protocol behavior is validated without network or Go dependencies.
+- Added CBOR encode/decode helpers for typed API requests/responses using `ciborium`.
+- Added protocol fixture coverage to ensure all public Wanix file API operations have typed request variants.
+- Verified `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`; workspace tests now cover 28 passing cases.
 
 ## 2026-05-07
 

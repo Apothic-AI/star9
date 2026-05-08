@@ -7,10 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
+
+use http::Method;
 
 pub use wanix_core::{
     base_name, clean_path, parent_path, valid_path, DirEntry, Error, ErrorKind, FileMode,
@@ -1688,7 +1690,839 @@ impl FileHandle for SignalHandle {
 }
 
 pub type CacheFs = MemFs;
-pub type TarFs = MemFs;
+
+#[derive(Clone)]
+pub struct HttpFs {
+    inner: Arc<HttpFsInner>,
+}
+
+struct HttpFsInner {
+    base_url: String,
+    transport: Arc<dyn HttpTransport>,
+    ignores: RwLock<Vec<String>>,
+}
+
+pub trait HttpTransport: Send + Sync {
+    fn request(&self, request: HttpRequest) -> Result<HttpResponse>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpRequest {
+    pub method: Method,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    pub fn new(status: u16) -> Self {
+        Self {
+            status,
+            headers: BTreeMap::new(),
+            body: Vec::new(),
+        }
+    }
+
+    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_body(mut self, body: impl Into<Vec<u8>>) -> Self {
+        self.body = body.into();
+        self
+    }
+}
+
+impl HttpFs {
+    pub fn new(base_url: impl Into<String>, transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            inner: Arc::new(HttpFsInner {
+                base_url: base_url.into().trim_end_matches('/').to_string(),
+                transport,
+                ignores: RwLock::new(Vec::new()),
+            }),
+        }
+    }
+
+    pub fn ignore(&self, names: impl IntoIterator<Item = impl Into<String>>) {
+        self.inner
+            .ignores
+            .write()
+            .unwrap()
+            .extend(names.into_iter().map(Into::into));
+    }
+
+    fn should_ignore(&self, name: &str) -> bool {
+        self.inner
+            .ignores
+            .read()
+            .unwrap()
+            .iter()
+            .any(|ignore| name.ends_with(ignore))
+    }
+
+    fn normalize_http_path(name: &str) -> String {
+        let cleaned = clean_path(name);
+        if cleaned == "." {
+            "/".to_string()
+        } else {
+            format!("/{cleaned}")
+        }
+    }
+
+    fn build_url(&self, name: &str) -> String {
+        format!("{}{}", self.inner.base_url, Self::normalize_http_path(name))
+    }
+
+    fn request(
+        &self,
+        method: Method,
+        name: &str,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> Result<HttpResponse> {
+        let response = self.inner.transport.request(HttpRequest {
+            method,
+            url: self.build_url(name),
+            headers,
+            body,
+        })?;
+        match response.status {
+            200..=299 => Ok(response),
+            404 => Err(Error::path("httpfs", name, ErrorKind::NotFound)),
+            _ => Err(Error::Message(format!(
+                "httpfs {} returned HTTP {}",
+                name, response.status
+            ))),
+        }
+    }
+
+    fn get(&self, name: &str) -> Result<HttpResponse> {
+        if self.should_ignore(name) {
+            return Err(Error::path("open", name, ErrorKind::NotFound));
+        }
+        self.request(Method::GET, name, BTreeMap::new(), Vec::new())
+    }
+
+    fn head(&self, name: &str) -> Result<HttpResponse> {
+        if self.should_ignore(name) {
+            return Err(Error::path("stat", name, ErrorKind::NotFound));
+        }
+        self.request(Method::HEAD, name, BTreeMap::new(), Vec::new())
+    }
+
+    fn put_node(
+        &self,
+        name: &str,
+        content_type: &str,
+        mode: FileMode,
+        body: Vec<u8>,
+    ) -> Result<()> {
+        let mut headers = BTreeMap::new();
+        headers.insert("Content-Type".to_string(), content_type.to_string());
+        headers.insert("Content-Mode".to_string(), format_http_mode(mode));
+        headers.insert(
+            "Content-Modified".to_string(),
+            unix_secs(current_time()).to_string(),
+        );
+        headers.insert("Content-Ownership".to_string(), "0:0".to_string());
+        headers.insert("Content-Length".to_string(), body.len().to_string());
+        self.request(Method::PUT, name, headers, body).map(|_| ())
+    }
+
+    fn parse_node(&self, name: &str, response: HttpResponse) -> Result<HttpNode> {
+        let metadata = parse_http_metadata(name, &response.headers, response.body.len() as u64);
+        let entries = if metadata.is_dir() {
+            parse_http_directory(name, &response.body)
+        } else {
+            Vec::new()
+        };
+        Ok(HttpNode {
+            metadata,
+            body: response.body,
+            entries,
+        })
+    }
+}
+
+impl FileSystem for HttpFs {
+    fn open(&self, _ctx: &FsContext, name: &str) -> Result<BoxFile> {
+        if !valid_path(name) {
+            return Err(Error::path("open", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        let node = self.parse_node(&name, self.get(&name)?)?;
+        if node.metadata.is_dir() {
+            return Ok(directory_file(node.metadata, node.entries));
+        }
+        Ok(Box::new(HttpFile {
+            metadata: node.metadata,
+            data: Cursor::new(node.body),
+            closed: false,
+        }))
+    }
+
+    fn stat(&self, _ctx: &FsContext, name: &str) -> Result<Metadata> {
+        if !valid_path(name) {
+            return Err(Error::path("stat", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        let response = self.head(&name)?;
+        Ok(parse_http_metadata(
+            &name,
+            &response.headers,
+            response.body.len() as u64,
+        ))
+    }
+
+    fn open_file(&self, name: &str, flags: OpenFlags, perm: FileMode) -> Result<BoxFile> {
+        if !flags.is_write() {
+            return self.open(&FsContext::new(), name);
+        }
+        let name = clean_path(name);
+        let mut data = if flags.contains(OpenFlags::TRUNC) || flags.contains(OpenFlags::CREATE) {
+            Vec::new()
+        } else {
+            read_file(self, &name).unwrap_or_default()
+        };
+        let offset = if flags.contains(OpenFlags::APPEND) {
+            data.len() as u64
+        } else {
+            0
+        };
+        Ok(Box::new(HttpWriteFile {
+            fs: self.clone(),
+            path: name.clone(),
+            metadata: Metadata::file(
+                name,
+                if perm.bits() == 0 { 0o644 } else { perm.perm() },
+                data.len() as u64,
+            ),
+            data: {
+                data.shrink_to_fit();
+                data
+            },
+            offset,
+            closed: false,
+        }))
+    }
+
+    fn create(&self, name: &str) -> Result<BoxFile> {
+        self.open_file(
+            name,
+            OpenFlags::WRONLY | OpenFlags::CREATE | OpenFlags::TRUNC,
+            FileMode::from_perm(0o644),
+        )
+    }
+
+    fn mkdir(&self, name: &str, perm: FileMode) -> Result<()> {
+        self.put_node(
+            name,
+            "application/x-directory",
+            FileMode::DIR | FileMode::from_perm(perm.perm()),
+            Vec::new(),
+        )
+    }
+
+    fn remove(&self, name: &str) -> Result<()> {
+        self.request(Method::DELETE, name, BTreeMap::new(), Vec::new())
+            .map(|_| ())
+    }
+
+    fn rename(&self, old: &str, new: &str) -> Result<()> {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "Destination".to_string(),
+            Self::normalize_http_path(new).to_string(),
+        );
+        self.request(
+            Method::from_bytes(b"MOVE").unwrap(),
+            old,
+            headers,
+            Vec::new(),
+        )
+        .map(|_| ())
+    }
+
+    fn symlink(&self, old: &str, new: &str) -> Result<()> {
+        self.put_node(
+            new,
+            "application/x-symlink",
+            FileMode::SYMLINK | FileMode::from_perm(0o777),
+            old.as_bytes().to_vec(),
+        )
+    }
+
+    fn readlink(&self, name: &str) -> Result<String> {
+        let response = self.get(name)?;
+        let content_type = header_value(&response.headers, "Content-Type").unwrap_or_default();
+        if content_type != "application/x-symlink" {
+            return Err(Error::path("readlink", name, ErrorKind::Invalid));
+        }
+        Ok(String::from_utf8_lossy(&response.body).into_owned())
+    }
+}
+
+struct HttpNode {
+    metadata: Metadata,
+    body: Vec<u8>,
+    entries: Vec<DirEntry>,
+}
+
+struct HttpFile {
+    metadata: Metadata,
+    data: Cursor<Vec<u8>>,
+    closed: bool,
+}
+
+impl FileHandle for HttpFile {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        Ok(self.data.read(buf)?)
+    }
+
+    fn read_at(&mut self, buf: &mut [u8], offset: u64) -> Result<usize> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        let pos = self.data.position();
+        self.data.seek(SeekFrom::Start(offset))?;
+        let result = self.data.read(buf).map_err(Error::from);
+        self.data.seek(SeekFrom::Start(pos))?;
+        result
+    }
+
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        Ok(self.data.seek(pos)?)
+    }
+
+    fn stat(&self) -> Result<Metadata> {
+        Ok(self.metadata.clone())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        self.closed = true;
+        Ok(())
+    }
+}
+
+struct HttpWriteFile {
+    fs: HttpFs,
+    path: String,
+    metadata: Metadata,
+    data: Vec<u8>,
+    offset: u64,
+    closed: bool,
+}
+
+impl FileHandle for HttpWriteFile {
+    fn read(&mut self, _buf: &mut [u8]) -> Result<usize> {
+        Err(ErrorKind::PermissionDenied.into())
+    }
+
+    fn write(&mut self, data: &[u8]) -> Result<usize> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        let start = self.offset as usize;
+        let end = start + data.len();
+        if start > self.data.len() {
+            self.data.resize(start, 0);
+        }
+        if end > self.data.len() {
+            self.data.resize(end, 0);
+        }
+        self.data[start..end].copy_from_slice(data);
+        self.offset = end as u64;
+        self.metadata.size = self.data.len() as u64;
+        Ok(data.len())
+    }
+
+    fn write_at(&mut self, data: &[u8], offset: u64) -> Result<usize> {
+        self.offset = offset;
+        self.write(data)
+    }
+
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(pos) => pos as i128,
+            SeekFrom::End(offset) => self.data.len() as i128 + offset as i128,
+            SeekFrom::Current(offset) => self.offset as i128 + offset as i128,
+        };
+        if next < 0 {
+            return Err(ErrorKind::Invalid.into());
+        }
+        self.offset = next as u64;
+        Ok(self.offset)
+    }
+
+    fn stat(&self) -> Result<Metadata> {
+        Ok(self.metadata.clone())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        self.fs.put_node(
+            &self.path,
+            "application/octet-stream",
+            self.metadata.mode,
+            self.data.clone(),
+        )?;
+        self.closed = true;
+        Ok(())
+    }
+}
+
+fn parse_http_directory(base: &str, body: &[u8]) -> Vec<DirEntry> {
+    String::from_utf8_lossy(body)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next()?;
+            let mode = parts.next().map(parse_http_mode).unwrap_or_else(|| {
+                if name.ends_with('/') {
+                    FileMode::DIR | FileMode::from_perm(0o755)
+                } else {
+                    FileMode::from_perm(0o644)
+                }
+            });
+            let name = name.trim_end_matches('/').to_string();
+            let metadata = Metadata {
+                name: name.clone(),
+                mode,
+                size: if mode.is_dir() { 2 } else { 0 },
+                modified: SystemTime::UNIX_EPOCH,
+                uid: 0,
+                gid: 0,
+            };
+            let _ = base;
+            Some(DirEntry::new(name, metadata))
+        })
+        .collect()
+}
+
+fn parse_http_metadata(name: &str, headers: &BTreeMap<String, String>, body_len: u64) -> Metadata {
+    let content_type = header_value(headers, "Content-Type").unwrap_or_default();
+    let mode = header_value(headers, "Content-Mode")
+        .as_deref()
+        .map(parse_http_mode)
+        .unwrap_or_else(|| match content_type.as_str() {
+            "application/x-directory" => FileMode::DIR | FileMode::from_perm(0o755),
+            "application/x-symlink" => FileMode::SYMLINK | FileMode::from_perm(0o777),
+            _ => FileMode::from_perm(0o644),
+        });
+    let size = header_value(headers, "Content-Length")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(body_len);
+    let modified = header_value(headers, "Content-Modified")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let (uid, gid) = header_value(headers, "Content-Ownership")
+        .and_then(|value| {
+            value
+                .split_once(':')
+                .map(|(uid, gid)| (uid.to_string(), gid.to_string()))
+        })
+        .map(|(uid, gid)| {
+            (
+                uid.parse::<u32>().unwrap_or(0),
+                gid.parse::<u32>().unwrap_or(0),
+            )
+        })
+        .unwrap_or((0, 0));
+    Metadata {
+        name: base_name(name).to_string(),
+        mode,
+        size: if mode.is_dir() { size.max(2) } else { size },
+        modified,
+        uid,
+        gid,
+    }
+}
+
+fn parse_http_mode(mode: &str) -> FileMode {
+    let Ok(bits) = mode.parse::<u32>() else {
+        return FileMode::from_perm(0o644);
+    };
+    let perm = bits & 0o777;
+    match bits & 0o170000 {
+        0o040000 => FileMode::DIR | FileMode::from_perm(perm),
+        0o120000 => FileMode::SYMLINK | FileMode::from_perm(perm),
+        _ => FileMode::from_perm(perm),
+    }
+}
+
+fn format_http_mode(mode: FileMode) -> String {
+    mode.unix_type_and_perm().to_string()
+}
+
+fn header_value(headers: &BTreeMap<String, String>, name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.clone())
+}
+
+fn unix_secs(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[derive(Clone)]
+pub struct TarFs {
+    nodes: Arc<BTreeMap<String, TarNode>>,
+}
+
+#[derive(Clone)]
+struct TarNode {
+    metadata: Metadata,
+    data: Vec<u8>,
+    linkname: Option<String>,
+}
+
+impl TarFs {
+    pub fn from_reader(reader: impl Read) -> Result<Self> {
+        let mut archive = tar::Archive::new(reader);
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            ".".to_string(),
+            TarNode {
+                metadata: Metadata::dir(".", 0o755),
+                data: Vec::new(),
+                linkname: None,
+            },
+        );
+
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let header = entry.header().clone();
+            let raw_path = header.path()?.to_string_lossy().into_owned();
+            let path = clean_path(raw_path.trim_start_matches('/'));
+            if path == "." || !valid_path(&path) {
+                continue;
+            }
+
+            ensure_tar_parent_dirs(&mut nodes, &path);
+
+            let entry_type = header.entry_type();
+            let perm = header.mode().unwrap_or(0o644) & 0o777;
+            let modified = header
+                .mtime()
+                .ok()
+                .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let mut data = Vec::new();
+            let mut linkname = None;
+            let mode = if entry_type.is_dir() {
+                FileMode::DIR | FileMode::from_perm(perm)
+            } else if entry_type.is_symlink() {
+                if let Some(link) = header.link_name()? {
+                    linkname = Some(link.to_string_lossy().into_owned());
+                }
+                FileMode::SYMLINK | FileMode::from_perm(0o777)
+            } else {
+                entry.read_to_end(&mut data)?;
+                FileMode::from_perm(perm)
+            };
+
+            let mut metadata = Metadata {
+                name: base_name(&path).to_string(),
+                mode,
+                size: if mode.is_dir() {
+                    2
+                } else if mode.is_symlink() {
+                    linkname.as_deref().map(str::len).unwrap_or(0) as u64
+                } else {
+                    data.len() as u64
+                },
+                modified,
+                uid: header.uid().unwrap_or(0) as u32,
+                gid: header.gid().unwrap_or(0) as u32,
+            };
+            if metadata.mode.is_symlink() {
+                data = linkname.clone().unwrap_or_default().into_bytes();
+                metadata.size = data.len() as u64;
+            }
+            nodes.insert(
+                path,
+                TarNode {
+                    metadata,
+                    data,
+                    linkname,
+                },
+            );
+        }
+
+        recompute_tar_dir_sizes(&mut nodes);
+        Ok(Self {
+            nodes: Arc::new(nodes),
+        })
+    }
+
+    pub fn archive_to_writer(fsys: &dyn FileSystem, writer: impl Write) -> Result<()> {
+        let mut builder = tar::Builder::new(writer);
+        append_tar_path(&mut builder, fsys, ".")?;
+        builder.finish()?;
+        Ok(())
+    }
+
+    fn node(&self, name: &str) -> Option<TarNode> {
+        self.nodes.get(name).cloned()
+    }
+
+    fn children_for(&self, name: &str) -> Vec<DirEntry> {
+        let mut entries = Vec::new();
+        let prefix = if name == "." {
+            String::new()
+        } else {
+            format!("{name}/")
+        };
+        let mut seen = BTreeSet::new();
+        for path in self.nodes.keys() {
+            if path == name || path == "." {
+                continue;
+            }
+            let Some(rest) = path.strip_prefix(&prefix) else {
+                continue;
+            };
+            if rest.is_empty() {
+                continue;
+            }
+            let child_name = rest.split('/').next().unwrap();
+            if seen.insert(child_name.to_string()) {
+                let child_path = if name == "." {
+                    child_name.to_string()
+                } else {
+                    format!("{name}/{child_name}")
+                };
+                let metadata = self
+                    .nodes
+                    .get(&child_path)
+                    .map(|child| child.metadata.clone())
+                    .unwrap_or_else(|| Metadata::dir(child_name, 0o755));
+                entries.push(DirEntry::new(child_name.to_string(), metadata));
+            }
+        }
+        entries
+    }
+}
+
+impl FileSystem for TarFs {
+    fn open(&self, ctx: &FsContext, name: &str) -> Result<BoxFile> {
+        if !valid_path(name) {
+            return Err(Error::path("open", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        let node = self
+            .node(&name)
+            .ok_or_else(|| Error::path("open", &name, ErrorKind::NotFound))?;
+        if ctx.follow_symlinks && node.metadata.mode.is_symlink() {
+            let target = node.linkname.unwrap_or_default();
+            let resolved = if target.starts_with('/') {
+                clean_path(target.trim_start_matches('/'))
+            } else {
+                clean_path(&format!("{}/{}", parent_path(&name), target))
+            };
+            return self.open(ctx, &resolved);
+        }
+        if node.metadata.is_dir() {
+            return Ok(directory_file(node.metadata, self.children_for(&name)));
+        }
+        Ok(Box::new(TarFile {
+            metadata: node.metadata,
+            data: Cursor::new(node.data),
+            closed: false,
+        }))
+    }
+
+    fn stat(&self, ctx: &FsContext, name: &str) -> Result<Metadata> {
+        if !valid_path(name) {
+            return Err(Error::path("stat", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        let node = self
+            .node(&name)
+            .ok_or_else(|| Error::path("stat", &name, ErrorKind::NotFound))?;
+        if ctx.follow_symlinks && node.metadata.mode.is_symlink() {
+            let target = node.linkname.unwrap_or_default();
+            let resolved = if target.starts_with('/') {
+                clean_path(target.trim_start_matches('/'))
+            } else {
+                clean_path(&format!("{}/{}", parent_path(&name), target))
+            };
+            return self.stat(ctx, &resolved);
+        }
+        Ok(node.metadata)
+    }
+
+    fn readlink(&self, name: &str) -> Result<String> {
+        let name = clean_path(name);
+        let node = self
+            .node(&name)
+            .ok_or_else(|| Error::path("readlink", &name, ErrorKind::NotFound))?;
+        node.linkname
+            .ok_or_else(|| Error::path("readlink", name, ErrorKind::Invalid))
+    }
+}
+
+struct TarFile {
+    metadata: Metadata,
+    data: Cursor<Vec<u8>>,
+    closed: bool,
+}
+
+impl FileHandle for TarFile {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        Ok(self.data.read(buf)?)
+    }
+
+    fn read_at(&mut self, buf: &mut [u8], offset: u64) -> Result<usize> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        let pos = self.data.position();
+        self.data.seek(SeekFrom::Start(offset))?;
+        let result = self.data.read(buf).map_err(Error::from);
+        self.data.seek(SeekFrom::Start(pos))?;
+        result
+    }
+
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        Ok(self.data.seek(pos)?)
+    }
+
+    fn stat(&self) -> Result<Metadata> {
+        Ok(self.metadata.clone())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        self.closed = true;
+        Ok(())
+    }
+}
+
+fn ensure_tar_parent_dirs(nodes: &mut BTreeMap<String, TarNode>, path: &str) {
+    let mut dir = parent_path(path);
+    let mut dirs = Vec::new();
+    while dir != "." {
+        dirs.push(dir.clone());
+        dir = parent_path(&dir);
+    }
+    for dir in dirs.into_iter().rev() {
+        nodes.entry(dir.clone()).or_insert_with(|| TarNode {
+            metadata: Metadata::dir(base_name(&dir), 0o755),
+            data: Vec::new(),
+            linkname: None,
+        });
+    }
+}
+
+fn recompute_tar_dir_sizes(nodes: &mut BTreeMap<String, TarNode>) {
+    let dirs: Vec<String> = nodes
+        .iter()
+        .filter_map(|(path, node)| node.metadata.is_dir().then_some(path.clone()))
+        .collect();
+    for dir in dirs {
+        let prefix = if dir == "." {
+            String::new()
+        } else {
+            format!("{dir}/")
+        };
+        let mut children = BTreeSet::new();
+        for path in nodes.keys() {
+            if path == &dir || path == "." {
+                continue;
+            }
+            let Some(rest) = path.strip_prefix(&prefix) else {
+                continue;
+            };
+            if let Some(child) = rest.split('/').next() {
+                children.insert(child.to_string());
+            }
+        }
+        if let Some(node) = nodes.get_mut(&dir) {
+            node.metadata.size = 2 + children.len() as u64;
+        }
+    }
+}
+
+fn append_tar_path<W: Write>(
+    builder: &mut tar::Builder<W>,
+    fsys: &dyn FileSystem,
+    path: &str,
+) -> Result<()> {
+    let metadata = lstat(fsys, path)?;
+    let archive_path = if path == "." { "." } else { path };
+    let mut header = tar::Header::new_gnu();
+    header.set_mode(metadata.mode.perm());
+    header.set_mtime(
+        metadata
+            .modified
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+    header.set_uid(metadata.uid as u64);
+    header.set_gid(metadata.gid as u64);
+
+    if metadata.mode.is_symlink() {
+        let target = fsys.readlink(path)?;
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_link_name(target)?;
+        header.set_cksum();
+        builder.append_data(&mut header, archive_path, Cursor::new(Vec::new()))?;
+    } else if metadata.is_dir() {
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_cksum();
+        builder.append_data(&mut header, archive_path, Cursor::new(Vec::new()))?;
+        for entry in read_dir(fsys, path)? {
+            let child = if path == "." {
+                entry.name
+            } else {
+                format!("{path}/{}", entry.name)
+            };
+            append_tar_path(builder, fsys, &child)?;
+        }
+    } else {
+        let data = read_file(fsys, path)?;
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(data.len() as u64);
+        header.set_cksum();
+        builder.append_data(&mut header, archive_path, Cursor::new(data))?;
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -1759,5 +2593,157 @@ mod tests {
         b.write(b"pong").unwrap();
         let n = a.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"pong");
+    }
+
+    #[test]
+    fn tarfs_reads_files_dirs_and_symlinks() {
+        let src = MemFs::from_entries([
+            ("bin/tool", b"#!/bin/tool\n".to_vec()),
+            ("share/doc/readme", b"read me\n".to_vec()),
+        ]);
+        src.symlink("../share/doc/readme", "bin/readme").unwrap();
+
+        let mut buf = Vec::new();
+        TarFs::archive_to_writer(&src, &mut buf).unwrap();
+        let tar = TarFs::from_reader(Cursor::new(buf)).unwrap();
+
+        assert_eq!(read_file(&tar, "bin/tool").unwrap(), b"#!/bin/tool\n");
+        assert_eq!(read_file(&tar, "bin/readme").unwrap(), b"read me\n");
+        assert!(lstat(&tar, "bin/readme").unwrap().mode.is_symlink());
+        assert_eq!(tar.readlink("bin/readme").unwrap(), "../share/doc/readme");
+
+        let root: Vec<_> = read_dir(&tar, ".")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(root, vec!["bin", "share"]);
+        let bin: Vec<_> = read_dir(&tar, "bin")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(bin, vec!["readme", "tool"]);
+    }
+
+    #[test]
+    fn tarfs_is_read_only() {
+        let src = MemFs::from_entries([("file", b"value".to_vec())]);
+        let mut buf = Vec::new();
+        TarFs::archive_to_writer(&src, &mut buf).unwrap();
+        let tar = TarFs::from_reader(Cursor::new(buf)).unwrap();
+
+        assert_eq!(read_file(&tar, "file").unwrap(), b"value");
+        let create_err = match tar.create("new") {
+            Ok(_) => panic!("tarfs unexpectedly created a file"),
+            Err(err) => err,
+        };
+        assert_eq!(create_err.kind(), ErrorKind::NotSupported);
+        assert_eq!(
+            tar.mkdir("dir", FileMode::DIR | FileMode::from_perm(0o755))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::NotSupported
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingTransport {
+        responses: Mutex<VecDeque<HttpResponse>>,
+        requests: Mutex<Vec<HttpRequest>>,
+    }
+
+    impl RecordingTransport {
+        fn push(&self, response: HttpResponse) {
+            self.responses.lock().unwrap().push_back(response);
+        }
+
+        fn requests(&self) -> Vec<HttpRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl HttpTransport for RecordingTransport {
+        fn request(&self, request: HttpRequest) -> Result<HttpResponse> {
+            self.requests.lock().unwrap().push(request);
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| Error::Message("missing test response".to_string()))
+        }
+    }
+
+    #[test]
+    fn httpfs_reads_files_and_directories() {
+        let transport = Arc::new(RecordingTransport::default());
+        transport.push(
+            HttpResponse::new(200)
+                .with_header("Content-Type", "application/octet-stream")
+                .with_header("Content-Mode", "33188")
+                .with_header("Content-Length", "5")
+                .with_body(b"hello".to_vec()),
+        );
+        transport.push(
+            HttpResponse::new(200)
+                .with_header("Content-Type", "application/x-directory")
+                .with_header("Content-Mode", "16877")
+                .with_body(b"file 33188\nsub 16877\nlink 41471\n".to_vec()),
+        );
+        let fs = HttpFs::new("https://example.invalid/root", transport.clone());
+
+        assert_eq!(read_file(&fs, "file").unwrap(), b"hello");
+        let entries: Vec<_> = read_dir(&fs, ".")
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.name, entry.metadata.mode))
+            .collect();
+        assert_eq!(entries[0].0, "file");
+        assert_eq!(entries[1].0, "link");
+        assert_eq!(entries[2].0, "sub");
+        assert!(entries[2].1.is_dir());
+
+        let requests = transport.requests();
+        assert_eq!(requests[0].method, Method::GET);
+        assert_eq!(requests[0].url, "https://example.invalid/root/file");
+        assert_eq!(requests[1].url, "https://example.invalid/root/");
+    }
+
+    #[test]
+    fn httpfs_write_mkdir_symlink_rename_and_remove_use_protocol_headers() {
+        let transport = Arc::new(RecordingTransport::default());
+        for _ in 0..5 {
+            transport.push(HttpResponse::new(200));
+        }
+        let fs = HttpFs::new("https://example.invalid/fs", transport.clone());
+
+        write_file(&fs, "new.txt", b"content", FileMode::from_perm(0o600)).unwrap();
+        fs.mkdir("dir", FileMode::from_perm(0o755)).unwrap();
+        fs.symlink("new.txt", "link").unwrap();
+        fs.rename("new.txt", "dir/new.txt").unwrap();
+        fs.remove("link").unwrap();
+
+        let requests = transport.requests();
+        assert_eq!(requests[0].method, Method::PUT);
+        assert_eq!(requests[0].url, "https://example.invalid/fs/new.txt");
+        assert_eq!(
+            requests[0].headers["Content-Type"],
+            "application/octet-stream"
+        );
+        assert_eq!(requests[0].headers["Content-Mode"], "33152");
+        assert_eq!(requests[0].body, b"content");
+
+        assert_eq!(
+            requests[1].headers["Content-Type"],
+            "application/x-directory"
+        );
+        assert_eq!(requests[1].headers["Content-Mode"], "16877");
+        assert_eq!(requests[2].headers["Content-Type"], "application/x-symlink");
+        assert_eq!(requests[2].headers["Content-Mode"], "41471");
+        assert_eq!(requests[2].body, b"new.txt");
+
+        assert_eq!(requests[3].method.as_str(), "MOVE");
+        assert_eq!(requests[3].headers["Destination"], "/dir/new.txt");
+        assert_eq!(requests[4].method, Method::DELETE);
     }
 }

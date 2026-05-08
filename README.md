@@ -9,8 +9,10 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Plan 9-style namespaces and bind semantics.
 - Filesystem traits, helpers, metadata, paths, file handles, and open flags.
 - In-memory, local, map, union, pipe, signal, cache, and tar-compatible filesystem surfaces.
+- HTTP filesystem protocol semantics through a Rust transport abstraction.
 - Task/resource filesystem with per-task namespaces, aliases, drivers, and file descriptors.
 - Typed public file API for the Wanix JS handle operation set.
+- CBOR encode/decode helpers for the typed public API boundary.
 - Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, and `#download` surfaces.
 - Browser/WASM facade and CLI smoke paths.
 

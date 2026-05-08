@@ -7,7 +7,9 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Core path validation and path cleaning.
 - File mode type bits, permission bits, and Unix mode projection.
 - `MemFs` create, read, write, stat, directory synthesis, directory rename, symlink, lstat, and readlink behavior.
+- `TarFs` archive reads, directory listings, symlink lstat/readlink/follow behavior, archive round-tripping, and read-only mutation failures.
 - `MapFs` mount exposure and synthetic parent directories.
+- `HttpFs` GET/HEAD reads, directory listing parsing, PUT writes, mkdir, symlink, MOVE rename, DELETE remove, metadata parsing, and protocol header formatting through a Rust recording transport.
 - Pipe bidirectional reads and writes with file close preserving the underlying pipe.
 - Namespace file and directory binds.
 - Namespace root unions and overlapping directory reads.
@@ -19,6 +21,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Task fd open, read, close, and invalid-fd behavior.
 - Child task namespace cloning.
 - Typed protocol dispatch for JS-handle file operations.
+- CBOR request/response round-tripping for the typed protocol boundary.
+- Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Runtime root bindings for core and device surfaces.
 - Device allocator resource creation.
@@ -37,6 +41,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:
 
 - HTTP filesystem caching and remote metadata semantics.
+- HTTP filesystem caching, multipart parsing, PATCH archive updates, and real network transport.
 - 9P import/export bridge details.
 - Browser storage backends such as OPFS and file-system-access handles.
 - Terminal screen protocol details.

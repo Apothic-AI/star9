@@ -26,7 +26,7 @@ The crate also ports the key `fskit` building blocks:
 - `MapFs` with synthetic parent directories.
 - `UnionFs` with directory merge behavior.
 - `FieldFile` and `ControlFile`.
-- `MemFs`, `LocalFs`, `PipeFs`, `SignalFs`, `CacheFs`, and `TarFs` surfaces.
+- `MemFs`, `LocalFs`, `TarFs`, `HttpFs`, `PipeFs`, `SignalFs`, and `CacheFs` surfaces.
 
 ## Namespace
 
@@ -57,6 +57,8 @@ The crate also ports the key `fskit` building blocks:
 `Open`, `OpenFile`, `Create`, `Close`, `Sync`, `Read`, `Write`, `WriteAt`, `ReadDir`, `Mkdir`, `MkdirAll`, `Bind`, `Unbind`, `Stat`, `Truncate`, `WaitFor`, `Rename`, `Copy`, `Remove`, `RemoveAll`, `ReadFile`, `WriteFile`, `AppendFile`, `Fstat`, `Lstat`, `Chmod`, `Chown`, `Fchmod`, `Fchown`, `Ftruncate`, `Readlink`, `Symlink`, and `Chtimes`.
 
 `WanixApi` executes those requests against a `Task`.
+
+Typed requests and responses can be encoded and decoded as CBOR through `wanix-protocol`, keeping the wire boundary Rust-owned while matching the public Wanix operation set.
 
 ## Runtime And Web
 
