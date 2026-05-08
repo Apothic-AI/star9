@@ -7,6 +7,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Core path validation and path cleaning.
 - File mode type bits, permission bits, and Unix mode projection.
 - `MemFs` create, read, write, stat, directory synthesis, directory rename, symlink, lstat, and readlink behavior.
+- `MemFs`/`Node` xattr set, get, list, remove, and missing-attribute behavior.
 - `TarFs` archive reads, directory listings, symlink lstat/readlink/follow behavior, archive round-tripping, and read-only mutation failures.
 - `MapFs` mount exposure and synthetic parent directories.
 - `HttpFs` GET/HEAD reads, directory listing parsing, PUT writes, mkdir, symlink, MOVE rename, DELETE remove, metadata parsing, and protocol header formatting through a Rust recording transport.

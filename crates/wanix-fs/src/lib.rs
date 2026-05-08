@@ -339,6 +339,22 @@ pub fn copy_fs(
     Ok(())
 }
 
+pub fn set_xattr(fsys: &dyn FileSystem, name: &str, attr: &str, data: &[u8]) -> Result<()> {
+    fsys.set_xattr(name, attr, data)
+}
+
+pub fn get_xattr(fsys: &dyn FileSystem, name: &str, attr: &str) -> Result<Vec<u8>> {
+    fsys.get_xattr(name, attr)
+}
+
+pub fn list_xattrs(fsys: &dyn FileSystem, name: &str) -> Result<Vec<String>> {
+    fsys.list_xattrs(name)
+}
+
+pub fn remove_xattr(fsys: &dyn FileSystem, name: &str, attr: &str) -> Result<()> {
+    fsys.remove_xattr(name, attr)
+}
+
 #[derive(Clone)]
 pub struct Node {
     inner: Arc<Mutex<NodeInner>>,
@@ -348,6 +364,7 @@ pub struct Node {
 struct NodeInner {
     meta: Metadata,
     data: Vec<u8>,
+    xattrs: BTreeMap<String, Vec<u8>>,
 }
 
 impl Node {
@@ -356,7 +373,11 @@ impl Node {
         let mut meta = Metadata::file(name, mode.perm(), data.len() as u64);
         meta.mode = mode;
         Self {
-            inner: Arc::new(Mutex::new(NodeInner { meta, data })),
+            inner: Arc::new(Mutex::new(NodeInner {
+                meta,
+                data,
+                xattrs: BTreeMap::new(),
+            })),
         }
     }
 
@@ -367,6 +388,7 @@ impl Node {
             inner: Arc::new(Mutex::new(NodeInner {
                 meta,
                 data: Vec::new(),
+                xattrs: BTreeMap::new(),
             })),
         }
     }
@@ -377,6 +399,7 @@ impl Node {
             inner: Arc::new(Mutex::new(NodeInner {
                 meta: Metadata::symlink(name, data.len() as u64),
                 data,
+                xattrs: BTreeMap::new(),
             })),
         }
     }
@@ -411,6 +434,26 @@ impl Node {
     fn set_modified(&self, modified: SystemTime) {
         self.inner.lock().unwrap().meta.modified = modified;
     }
+
+    fn set_xattr(&self, attr: &str, data: &[u8]) {
+        self.inner
+            .lock()
+            .unwrap()
+            .xattrs
+            .insert(attr.to_string(), data.to_vec());
+    }
+
+    fn get_xattr(&self, attr: &str) -> Option<Vec<u8>> {
+        self.inner.lock().unwrap().xattrs.get(attr).cloned()
+    }
+
+    fn list_xattrs(&self) -> Vec<String> {
+        self.inner.lock().unwrap().xattrs.keys().cloned().collect()
+    }
+
+    fn remove_xattr(&self, attr: &str) -> bool {
+        self.inner.lock().unwrap().xattrs.remove(attr).is_some()
+    }
 }
 
 impl FileSystem for Node {
@@ -444,6 +487,40 @@ impl FileSystem for Node {
         data.resize(size as usize, 0);
         self.set_data(data);
         Ok(())
+    }
+
+    fn set_xattr(&self, name: &str, attr: &str, data: &[u8]) -> Result<()> {
+        if name != "." {
+            return Err(Error::path("setxattr", name, ErrorKind::NotFound));
+        }
+        self.set_xattr(attr, data);
+        Ok(())
+    }
+
+    fn get_xattr(&self, name: &str, attr: &str) -> Result<Vec<u8>> {
+        if name != "." {
+            return Err(Error::path("getxattr", name, ErrorKind::NotFound));
+        }
+        self.get_xattr(attr)
+            .ok_or_else(|| Error::path("getxattr", attr, ErrorKind::NotFound))
+    }
+
+    fn list_xattrs(&self, name: &str) -> Result<Vec<String>> {
+        if name != "." {
+            return Err(Error::path("listxattrs", name, ErrorKind::NotFound));
+        }
+        Ok(self.list_xattrs())
+    }
+
+    fn remove_xattr(&self, name: &str, attr: &str) -> Result<()> {
+        if name != "." {
+            return Err(Error::path("removexattr", name, ErrorKind::NotFound));
+        }
+        if self.remove_xattr(attr) {
+            Ok(())
+        } else {
+            Err(Error::path("removexattr", attr, ErrorKind::NotFound))
+        }
     }
 }
 
@@ -1086,6 +1163,44 @@ impl FileSystem for MemFs {
             return Err(Error::path("readlink", name, ErrorKind::Invalid));
         }
         Ok(String::from_utf8_lossy(&node.data()).into_owned())
+    }
+
+    fn set_xattr(&self, name: &str, attr: &str, data: &[u8]) -> Result<()> {
+        let name = clean_path(name);
+        let node = self
+            .node(&name)
+            .ok_or_else(|| Error::path("setxattr", &name, ErrorKind::NotFound))?;
+        node.set_xattr(attr, data);
+        Ok(())
+    }
+
+    fn get_xattr(&self, name: &str, attr: &str) -> Result<Vec<u8>> {
+        let name = clean_path(name);
+        let node = self
+            .node(&name)
+            .ok_or_else(|| Error::path("getxattr", &name, ErrorKind::NotFound))?;
+        node.get_xattr(attr)
+            .ok_or_else(|| Error::path("getxattr", attr, ErrorKind::NotFound))
+    }
+
+    fn list_xattrs(&self, name: &str) -> Result<Vec<String>> {
+        let name = clean_path(name);
+        let node = self
+            .node(&name)
+            .ok_or_else(|| Error::path("listxattrs", &name, ErrorKind::NotFound))?;
+        Ok(node.list_xattrs())
+    }
+
+    fn remove_xattr(&self, name: &str, attr: &str) -> Result<()> {
+        let name = clean_path(name);
+        let node = self
+            .node(&name)
+            .ok_or_else(|| Error::path("removexattr", &name, ErrorKind::NotFound))?;
+        if node.remove_xattr(attr) {
+            Ok(())
+        } else {
+            Err(Error::path("removexattr", attr, ErrorKind::NotFound))
+        }
     }
 }
 
@@ -3047,6 +3162,31 @@ mod tests {
         assert!(lstat(&fs, "link").unwrap().mode.is_symlink());
         assert_eq!(read_file(&fs, "link").unwrap(), b"value");
         assert_eq!(fs.readlink("link").unwrap(), "target");
+    }
+
+    #[test]
+    fn memfs_xattrs_round_trip_and_remove() {
+        let fs = MemFs::from_entries([("file", b"value".to_vec())]);
+        set_xattr(&fs, "file", "user.mime_type", b"text/plain").unwrap();
+        set_xattr(&fs, "file", "user.author", b"wanix").unwrap();
+
+        assert_eq!(
+            get_xattr(&fs, "file", "user.mime_type").unwrap(),
+            b"text/plain"
+        );
+        assert_eq!(
+            list_xattrs(&fs, "file").unwrap(),
+            vec!["user.author".to_string(), "user.mime_type".to_string()]
+        );
+        remove_xattr(&fs, "file", "user.author").unwrap();
+        assert_eq!(
+            list_xattrs(&fs, "file").unwrap(),
+            vec!["user.mime_type".to_string()]
+        );
+        assert_eq!(
+            get_xattr(&fs, "file", "user.author").unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
     }
 
     #[test]

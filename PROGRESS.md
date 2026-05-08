@@ -29,6 +29,8 @@
 - Added an R2-style object storage filesystem over a Rust `ObjectStore` trait, plus an in-memory object store for conformance tests.
 - Ported R2 storage-format behavior for object keys, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates.
 - Verified `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`; workspace tests now cover 31 passing cases.
+- Added Rust-owned xattr helper functions and `MemFs`/`Node` xattr storage for set/get/list/remove behavior.
+- Verified `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`; workspace tests now cover 32 passing cases.
 
 ## 2026-05-07
 
