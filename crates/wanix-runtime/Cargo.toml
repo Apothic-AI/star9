@@ -1,0 +1,13 @@
+[package]
+name = "wanix-runtime"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wanix-core = { path = "../wanix-core" }
+wanix-fs = { path = "../wanix-fs" }
+wanix-task = { path = "../wanix-task" }
+wanix-vfs = { path = "../wanix-vfs" }

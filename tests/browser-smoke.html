@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>wanix-web smoke</title>
+<pre id="status">running</pre>
+<script type="module">
+  import init, { WanixSystem } from "../target/wanix-web-pkg/wanix_web.js";
+
+  const status = document.querySelector("#status");
+
+  try {
+    await init("../target/wanix-web-pkg/wanix_web_bg.wasm");
+    const system = new WanixSystem();
+
+    const version = system.readText("#wanix/version").trim();
+    system.bindRamFs("tmp");
+    system.writeText("tmp/hello", "browser-ok");
+    const text = system.readText("tmp/hello");
+    const entries = system.readDir("tmp");
+    const wasiTask = system.startWasi("repl.wasm");
+    const goTask = system.startGoJs("repl-gojs.wasm");
+
+    if (version !== "0.1.0") throw new Error(`bad version ${version}`);
+    if (text !== "browser-ok") throw new Error(`bad text ${text}`);
+    if (!entries.includes("hello")) throw new Error(`missing tmp entry: ${entries}`);
+    if (!wasiTask || !goTask || wasiTask === goTask) throw new Error("bad task ids");
+
+    document.body.dataset.status = "ok";
+    status.textContent = JSON.stringify({ version, entries, wasiTask, goTask });
+  } catch (err) {
+    document.body.dataset.status = "error";
+    status.textContent = err && err.stack ? err.stack : String(err);
+    throw err;
+  }
+</script>
