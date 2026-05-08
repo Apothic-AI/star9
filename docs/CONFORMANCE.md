@@ -10,6 +10,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `TarFs` archive reads, directory listings, symlink lstat/readlink/follow behavior, archive round-tripping, and read-only mutation failures.
 - `MapFs` mount exposure and synthetic parent directories.
 - `HttpFs` GET/HEAD reads, directory listing parsing, PUT writes, mkdir, symlink, MOVE rename, DELETE remove, metadata parsing, and protocol header formatting through a Rust recording transport.
+- `R2Fs` object key scoping, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates through a Rust object store trait.
 - Pipe bidirectional reads and writes with file close preserving the underlying pipe.
 - Namespace file and directory binds.
 - Namespace root unions and overlapping directory reads.
@@ -42,6 +43,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 
 - HTTP filesystem caching and remote metadata semantics.
 - HTTP filesystem caching, multipart parsing, PATCH archive updates, and real network transport.
+- R2 compare-and-swap conflict handling and Cloudflare/S3 adapter wiring.
 - 9P import/export bridge details.
 - Browser storage backends such as OPFS and file-system-access handles.
 - Terminal screen protocol details.

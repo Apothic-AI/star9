@@ -26,7 +26,9 @@ The crate also ports the key `fskit` building blocks:
 - `MapFs` with synthetic parent directories.
 - `UnionFs` with directory merge behavior.
 - `FieldFile` and `ControlFile`.
-- `MemFs`, `LocalFs`, `TarFs`, `HttpFs`, `PipeFs`, `SignalFs`, and `CacheFs` surfaces.
+- `MemFs`, `LocalFs`, `TarFs`, `HttpFs`, `R2Fs`, `PipeFs`, `SignalFs`, and `CacheFs` surfaces.
+
+`R2Fs` is implemented over a Rust `ObjectStore` trait. The crate includes `InMemoryObjectStore` for conformance tests and keeps remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
 
 ## Namespace
 

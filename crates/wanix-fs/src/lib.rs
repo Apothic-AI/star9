@@ -1692,6 +1692,492 @@ impl FileHandle for SignalHandle {
 pub type CacheFs = MemFs;
 
 #[derive(Clone)]
+pub struct R2Fs {
+    inner: Arc<R2FsInner>,
+}
+
+struct R2FsInner {
+    base_path: String,
+    store: Arc<dyn ObjectStore>,
+}
+
+pub trait ObjectStore: Send + Sync {
+    fn get(&self, key: &str) -> Result<Option<Object>>;
+    fn put(&self, key: &str, object: Object) -> Result<()>;
+    fn delete(&self, key: &str) -> Result<()>;
+    fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Object)>>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Object {
+    pub metadata: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl Object {
+    pub fn new(metadata: BTreeMap<String, String>, body: impl Into<Vec<u8>>) -> Self {
+        Self {
+            metadata,
+            body: body.into(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct InMemoryObjectStore {
+    objects: RwLock<BTreeMap<String, Object>>,
+}
+
+impl InMemoryObjectStore {
+    pub fn objects(&self) -> BTreeMap<String, Object> {
+        self.objects.read().unwrap().clone()
+    }
+}
+
+impl ObjectStore for InMemoryObjectStore {
+    fn get(&self, key: &str) -> Result<Option<Object>> {
+        Ok(self.objects.read().unwrap().get(key).cloned())
+    }
+
+    fn put(&self, key: &str, object: Object) -> Result<()> {
+        self.objects
+            .write()
+            .unwrap()
+            .insert(key.to_string(), object);
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        self.objects.write().unwrap().remove(key);
+        Ok(())
+    }
+
+    fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Object)>> {
+        Ok(self
+            .objects
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .map(|(key, object)| (key.clone(), object.clone()))
+            .collect())
+    }
+}
+
+impl R2Fs {
+    pub fn new(store: Arc<dyn ObjectStore>) -> Self {
+        Self::with_base_path(store, "")
+    }
+
+    pub fn with_base_path(store: Arc<dyn ObjectStore>, base_path: impl Into<String>) -> Self {
+        let fs = Self {
+            inner: Arc::new(R2FsInner {
+                base_path: normalize_r2_base_path(&base_path.into()),
+                store,
+            }),
+        };
+        let _ = fs.ensure_root();
+        fs
+    }
+
+    fn key(&self, name: &str) -> String {
+        let path = clean_path(name);
+        match (self.inner.base_path.as_str(), path.as_str()) {
+            ("", ".") => "/".to_string(),
+            ("", path) => format!("/{path}"),
+            (base, ".") => format!("/{base}"),
+            (base, path) => format!("/{base}/{path}"),
+        }
+    }
+
+    fn store(&self) -> &dyn ObjectStore {
+        self.inner.store.as_ref()
+    }
+
+    fn ensure_root(&self) -> Result<()> {
+        let key = self.key(".");
+        if self.store().get(&key)?.is_none() {
+            self.put_directory_object(".", Vec::new())?;
+        }
+        Ok(())
+    }
+
+    fn get_object(&self, name: &str) -> Result<Object> {
+        self.store()
+            .get(&self.key(name))?
+            .ok_or_else(|| Error::path("r2fs", name, ErrorKind::NotFound))
+    }
+
+    fn put_file_object(&self, name: &str, mode: FileMode, body: Vec<u8>) -> Result<()> {
+        self.store().put(
+            &self.key(name),
+            Object::new(
+                r2_metadata("application/octet-stream", mode, body.len()),
+                body,
+            ),
+        )?;
+        self.update_parent_listing(name, Some(mode))
+    }
+
+    fn put_directory_object(&self, name: &str, entries: Vec<(String, FileMode)>) -> Result<()> {
+        self.store().put(
+            &self.key(name),
+            Object::new(
+                r2_metadata(
+                    "application/x-directory",
+                    FileMode::DIR | FileMode::from_perm(0o755),
+                    0,
+                ),
+                format_r2_listing(entries).into_bytes(),
+            ),
+        )
+    }
+
+    fn update_parent_listing(&self, name: &str, child_mode: Option<FileMode>) -> Result<()> {
+        let parent = parent_path(name);
+        let child = base_name(name).to_string();
+        if child == "." || child.is_empty() {
+            return Ok(());
+        }
+        let parent_object = match self.store().get(&self.key(&parent))? {
+            Some(object) => object,
+            None if parent == "." => Object::new(
+                r2_metadata(
+                    "application/x-directory",
+                    FileMode::DIR | FileMode::from_perm(0o755),
+                    0,
+                ),
+                Vec::new(),
+            ),
+            None => return Err(Error::path("r2fs", parent, ErrorKind::NotFound)),
+        };
+        let mut entries = parse_r2_listing(&parent_object.body);
+        if let Some(mode) = child_mode {
+            entries.insert(child, mode);
+        } else {
+            entries.remove(&child);
+        }
+        self.store().put(
+            &self.key(&parent),
+            Object::new(
+                r2_metadata(
+                    "application/x-directory",
+                    FileMode::DIR | FileMode::from_perm(0o755),
+                    0,
+                ),
+                format_r2_listing(entries.into_iter().collect()).into_bytes(),
+            ),
+        )
+    }
+
+    fn parse_object(&self, name: &str, object: Object) -> R2Node {
+        let metadata = parse_http_metadata(name, &object.metadata, object.body.len() as u64);
+        let entries = if metadata.is_dir() {
+            parse_r2_listing(&object.body)
+                .into_iter()
+                .map(|(name, mode)| {
+                    DirEntry::new(
+                        name.clone(),
+                        Metadata {
+                            name,
+                            mode,
+                            size: if mode.is_dir() { 2 } else { 0 },
+                            modified: SystemTime::UNIX_EPOCH,
+                            uid: 0,
+                            gid: 0,
+                        },
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        R2Node {
+            metadata,
+            body: object.body,
+            entries,
+        }
+    }
+}
+
+impl FileSystem for R2Fs {
+    fn open(&self, ctx: &FsContext, name: &str) -> Result<BoxFile> {
+        if !valid_path(name) {
+            return Err(Error::path("open", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        let object = self.get_object(&name)?;
+        let node = self.parse_object(&name, object);
+        if ctx.follow_symlinks && node.metadata.mode.is_symlink() {
+            let target = String::from_utf8_lossy(&node.body).into_owned();
+            let resolved = if target.starts_with('/') {
+                clean_path(target.trim_start_matches('/'))
+            } else {
+                clean_path(&format!("{}/{}", parent_path(&name), target))
+            };
+            return self.open(ctx, &resolved);
+        }
+        if node.metadata.is_dir() {
+            return Ok(directory_file(node.metadata, node.entries));
+        }
+        Ok(Box::new(HttpFile {
+            metadata: node.metadata,
+            data: Cursor::new(node.body),
+            closed: false,
+        }))
+    }
+
+    fn stat(&self, ctx: &FsContext, name: &str) -> Result<Metadata> {
+        if !valid_path(name) {
+            return Err(Error::path("stat", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        let object = self.get_object(&name)?;
+        let node = self.parse_object(&name, object);
+        if ctx.follow_symlinks && node.metadata.mode.is_symlink() {
+            let target = String::from_utf8_lossy(&node.body).into_owned();
+            let resolved = if target.starts_with('/') {
+                clean_path(target.trim_start_matches('/'))
+            } else {
+                clean_path(&format!("{}/{}", parent_path(&name), target))
+            };
+            return self.stat(ctx, &resolved);
+        }
+        Ok(node.metadata)
+    }
+
+    fn open_file(&self, name: &str, flags: OpenFlags, perm: FileMode) -> Result<BoxFile> {
+        if !flags.is_write() {
+            return self.open(&FsContext::new(), name);
+        }
+        let name = clean_path(name);
+        let mut data = if flags.contains(OpenFlags::TRUNC) || flags.contains(OpenFlags::CREATE) {
+            Vec::new()
+        } else {
+            read_file(self, &name).unwrap_or_default()
+        };
+        let offset = if flags.contains(OpenFlags::APPEND) {
+            data.len() as u64
+        } else {
+            0
+        };
+        data.shrink_to_fit();
+        Ok(Box::new(R2WriteFile {
+            fs: self.clone(),
+            path: name.clone(),
+            metadata: Metadata::file(
+                name,
+                if perm.bits() == 0 { 0o644 } else { perm.perm() },
+                data.len() as u64,
+            ),
+            data,
+            offset,
+            closed: false,
+        }))
+    }
+
+    fn create(&self, name: &str) -> Result<BoxFile> {
+        self.open_file(
+            name,
+            OpenFlags::WRONLY | OpenFlags::CREATE | OpenFlags::TRUNC,
+            FileMode::from_perm(0o644),
+        )
+    }
+
+    fn mkdir(&self, name: &str, _perm: FileMode) -> Result<()> {
+        let name = clean_path(name);
+        let parent = parent_path(&name);
+        if self.store().get(&self.key(&parent))?.is_none() {
+            return Err(Error::path("mkdir", name, ErrorKind::NotFound));
+        }
+        self.put_directory_object(&name, Vec::new())?;
+        self.update_parent_listing(&name, Some(FileMode::DIR | FileMode::from_perm(0o755)))
+    }
+
+    fn remove(&self, name: &str) -> Result<()> {
+        let name = clean_path(name);
+        let object = self.get_object(&name)?;
+        let node = self.parse_object(&name, object);
+        if node.metadata.is_dir() && !node.entries.is_empty() {
+            return Err(Error::path("remove", name, ErrorKind::NotEmpty));
+        }
+        self.store().delete(&self.key(&name))?;
+        self.update_parent_listing(&name, None)
+    }
+
+    fn rename(&self, old: &str, new: &str) -> Result<()> {
+        let old = clean_path(old);
+        let new = clean_path(new);
+        let parent = parent_path(&new);
+        if self.store().get(&self.key(&parent))?.is_none() {
+            return Err(Error::path("rename", new, ErrorKind::NotFound));
+        }
+        let old_object = self.get_object(&old)?;
+        let old_node = self.parse_object(&old, old_object.clone());
+        let old_key = self.key(&old);
+        let new_key = self.key(&new);
+        self.store().put(&new_key, old_object)?;
+        self.store().delete(&old_key)?;
+
+        if old_node.metadata.is_dir() {
+            let old_prefix = format!("{old_key}/");
+            let new_prefix = format!("{new_key}/");
+            for (key, object) in self.store().list_prefix(&old_prefix)? {
+                let suffix = key.strip_prefix(&old_prefix).unwrap_or_default();
+                self.store().put(&format!("{new_prefix}{suffix}"), object)?;
+                self.store().delete(&key)?;
+            }
+        }
+
+        self.update_parent_listing(&old, None)?;
+        self.update_parent_listing(&new, Some(old_node.metadata.mode))
+    }
+
+    fn symlink(&self, old: &str, new: &str) -> Result<()> {
+        let new = clean_path(new);
+        let parent = parent_path(&new);
+        if self.store().get(&self.key(&parent))?.is_none() {
+            return Err(Error::path("symlink", new, ErrorKind::NotFound));
+        }
+        self.store().put(
+            &self.key(&new),
+            Object::new(
+                r2_metadata(
+                    "application/x-symlink",
+                    FileMode::SYMLINK | FileMode::from_perm(0o777),
+                    old.len(),
+                ),
+                old.as_bytes().to_vec(),
+            ),
+        )?;
+        self.update_parent_listing(&new, Some(FileMode::SYMLINK | FileMode::from_perm(0o777)))
+    }
+
+    fn readlink(&self, name: &str) -> Result<String> {
+        let object = self.get_object(name)?;
+        let node = self.parse_object(name, object);
+        if !node.metadata.mode.is_symlink() {
+            return Err(Error::path("readlink", name, ErrorKind::Invalid));
+        }
+        Ok(String::from_utf8_lossy(&node.body).into_owned())
+    }
+}
+
+struct R2Node {
+    metadata: Metadata,
+    body: Vec<u8>,
+    entries: Vec<DirEntry>,
+}
+
+struct R2WriteFile {
+    fs: R2Fs,
+    path: String,
+    metadata: Metadata,
+    data: Vec<u8>,
+    offset: u64,
+    closed: bool,
+}
+
+impl FileHandle for R2WriteFile {
+    fn read(&mut self, _buf: &mut [u8]) -> Result<usize> {
+        Err(ErrorKind::PermissionDenied.into())
+    }
+
+    fn write(&mut self, data: &[u8]) -> Result<usize> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        let start = self.offset as usize;
+        let end = start + data.len();
+        if start > self.data.len() {
+            self.data.resize(start, 0);
+        }
+        if end > self.data.len() {
+            self.data.resize(end, 0);
+        }
+        self.data[start..end].copy_from_slice(data);
+        self.offset = end as u64;
+        self.metadata.size = self.data.len() as u64;
+        Ok(data.len())
+    }
+
+    fn write_at(&mut self, data: &[u8], offset: u64) -> Result<usize> {
+        self.offset = offset;
+        self.write(data)
+    }
+
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(pos) => pos as i128,
+            SeekFrom::End(offset) => self.data.len() as i128 + offset as i128,
+            SeekFrom::Current(offset) => self.offset as i128 + offset as i128,
+        };
+        if next < 0 {
+            return Err(ErrorKind::Invalid.into());
+        }
+        self.offset = next as u64;
+        Ok(self.offset)
+    }
+
+    fn stat(&self) -> Result<Metadata> {
+        Ok(self.metadata.clone())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Err(ErrorKind::Closed.into());
+        }
+        self.fs
+            .put_file_object(&self.path, self.metadata.mode, self.data.clone())?;
+        self.closed = true;
+        Ok(())
+    }
+}
+
+fn normalize_r2_base_path(base_path: &str) -> String {
+    let trimmed = base_path.trim_matches('/');
+    if trimmed.is_empty() || trimmed == "." {
+        String::new()
+    } else {
+        clean_path(trimmed)
+    }
+}
+
+fn r2_metadata(content_type: &str, mode: FileMode, len: usize) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+    metadata.insert("Content-Type".to_string(), content_type.to_string());
+    metadata.insert("Content-Mode".to_string(), format_http_mode(mode));
+    metadata.insert("Content-Length".to_string(), len.to_string());
+    metadata.insert(
+        "Content-Modified".to_string(),
+        unix_secs(current_time()).to_string(),
+    );
+    metadata.insert("Content-Ownership".to_string(), "0:0".to_string());
+    metadata
+}
+
+fn parse_r2_listing(body: &[u8]) -> BTreeMap<String, FileMode> {
+    String::from_utf8_lossy(body)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next()?.to_string();
+            let mode = parts.next().map(parse_http_mode)?;
+            Some((name, mode))
+        })
+        .collect()
+}
+
+fn format_r2_listing(entries: Vec<(String, FileMode)>) -> String {
+    let mut entries = entries;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+        .into_iter()
+        .map(|(name, mode)| format!("{} {}\n", name, format_http_mode(mode)))
+        .collect()
+}
+
+#[derive(Clone)]
 pub struct HttpFs {
     inner: Arc<HttpFsInner>,
 }
@@ -2745,5 +3231,83 @@ mod tests {
         assert_eq!(requests[3].method.as_str(), "MOVE");
         assert_eq!(requests[3].headers["Destination"], "/dir/new.txt");
         assert_eq!(requests[4].method, Method::DELETE);
+    }
+
+    #[test]
+    fn r2fs_creates_files_dirs_symlinks_and_directory_listings() {
+        let store = Arc::new(InMemoryObjectStore::default());
+        let fs = R2Fs::new(store.clone());
+
+        fs.mkdir("etc", FileMode::from_perm(0o755)).unwrap();
+        write_file(&fs, "etc/passwd", b"root:x\n", FileMode::from_perm(0o644)).unwrap();
+        fs.symlink("passwd", "etc/passwd.link").unwrap();
+
+        assert_eq!(read_file(&fs, "etc/passwd").unwrap(), b"root:x\n");
+        assert_eq!(read_file(&fs, "etc/passwd.link").unwrap(), b"root:x\n");
+        assert!(lstat(&fs, "etc/passwd.link").unwrap().mode.is_symlink());
+        assert_eq!(fs.readlink("etc/passwd.link").unwrap(), "passwd");
+
+        let root: Vec<_> = read_dir(&fs, ".")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(root, vec!["etc"]);
+        let etc: Vec<_> = read_dir(&fs, "etc")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(etc, vec!["passwd", "passwd.link"]);
+
+        let objects = store.objects();
+        assert!(objects.contains_key("/"));
+        assert!(objects.contains_key("/etc"));
+        assert_eq!(
+            String::from_utf8_lossy(&objects["/etc"].body),
+            "passwd 33188\npasswd.link 41471\n"
+        );
+    }
+
+    #[test]
+    fn r2fs_rename_and_remove_keep_parent_listings_consistent() {
+        let store = Arc::new(InMemoryObjectStore::default());
+        let fs = R2Fs::new(store.clone());
+
+        fs.mkdir("a", FileMode::from_perm(0o755)).unwrap();
+        fs.mkdir("b", FileMode::from_perm(0o755)).unwrap();
+        write_file(&fs, "a/file", b"value", FileMode::from_perm(0o600)).unwrap();
+        fs.rename("a/file", "b/moved").unwrap();
+        assert!(read_file(&fs, "a/file").is_err());
+        assert_eq!(read_file(&fs, "b/moved").unwrap(), b"value");
+        assert!(read_dir(&fs, "a").unwrap().is_empty());
+        assert_eq!(
+            read_dir(&fs, "b")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            vec!["moved"]
+        );
+
+        assert_eq!(fs.remove("b").unwrap_err().kind(), ErrorKind::NotEmpty);
+        fs.remove("b/moved").unwrap();
+        assert!(read_dir(&fs, "b").unwrap().is_empty());
+        fs.remove("b").unwrap();
+    }
+
+    #[test]
+    fn r2fs_base_path_scopes_object_keys() {
+        let store = Arc::new(InMemoryObjectStore::default());
+        let fs = R2Fs::with_base_path(store.clone(), "tenant/root");
+        fs.mkdir("data", FileMode::from_perm(0o755)).unwrap();
+        write_file(&fs, "data/file", b"scoped", FileMode::from_perm(0o644)).unwrap();
+
+        assert_eq!(read_file(&fs, "data/file").unwrap(), b"scoped");
+        let objects = store.objects();
+        assert!(objects.contains_key("/tenant/root"));
+        assert!(objects.contains_key("/tenant/root/data"));
+        assert!(objects.contains_key("/tenant/root/data/file"));
+        assert!(!objects.contains_key("/data/file"));
     }
 }
