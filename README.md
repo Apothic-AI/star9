@@ -2,7 +2,7 @@
 
 Rust-native Wanix runtime.
 
-This project does not wrap, execute, link, shell out to, or test against Go code. Runtime behavior is defined by this repository's Rust code, fixtures, and tests.
+`../wanix` is the reference implementation for porting behavior into Rust. This project does not wrap, execute, link, shell out to, or test against Go code; runtime behavior is delivered by this repository's Rust code, fixtures, and tests.
 
 This workspace implements the main Wanix runtime surfaces in Rust:
 

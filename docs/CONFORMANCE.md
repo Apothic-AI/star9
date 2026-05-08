@@ -1,6 +1,6 @@
 # Conformance
 
-The Rust tests are organized around the behavioral gates from `PLAN.md`. This repository's specs, fixtures, and conformance tests are the authoritative behavior source.
+The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixtures and specs are derived from the `../wanix` reference implementation as behavior is ported, then validated independently in Rust without invoking Go code.
 
 ## Covered
 

@@ -2,14 +2,15 @@
 
 ## Current Focus
 
-Build a Rust-native Wanix runtime in a single sprint, without wrapping or depending on the legacy implementation.
+Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the reference implementation to clone and port from without wrapping or depending on Go code.
 
 ## Planning Constraints
 
 - Do not attach scheduling/time estimate assumptions to planning docs.
-- Treat Rust specs, fixtures, and conformance tests as the authoritative behavior source.
-- Do not invoke legacy code from runtime, build, test, browser smoke, or conformance paths.
-- Prefer generalized Rust designs over one-off translations of individual legacy files.
+- Use `../wanix` as the source reference while porting behavior into Rust.
+- Do not invoke Go code from runtime, build, test, browser smoke, or conformance paths.
+- Treat Rust specs, fixtures, and conformance tests as the authoritative behavior source once behavior is ported.
+- Prefer generalized Rust designs over one-off translations of individual files.
 - Do not add compatibility shims for unpublished intermediate APIs unless they are needed for conformance testing or migration of real examples.
 - Validate assumptions with Rust tests, fixtures, browser smoke checks, and source inspection.
 
@@ -46,13 +47,13 @@ These crate names are working names. They can be collapsed if implementation evi
 Proceed through these gates in order. A gate is done only when the Rust implementation has tests or differential evidence proving the targeted behavior.
 
 1. Source map and contracts
-   - Inventory exported APIs, filesystem extension traits, resource/device roots, worker message schemas, and example entry points.
-   - Convert required runtime behavior into Rust-owned conformance fixtures and checklists.
-   - Mark generated, vendored, or legacy-only code that should not be ported directly.
+   - Inventory exported APIs, filesystem extension traits, resource/device roots, worker message schemas, and example entry points from `../wanix`.
+   - Convert required runtime behavior from the reference implementation into Rust-owned conformance fixtures and checklists.
+   - Mark generated, vendored, or reference-only code that should not be ported directly.
 
 2. Workspace foundation
    - Create the Rust workspace, crate boundaries, build commands, lint/test commands, and basic documentation.
-   - Add fixtures and a test harness capable of validating Rust behavior without invoking legacy code.
+   - Add fixtures and a test harness capable of validating Rust behavior without invoking Go code.
 
 3. Core filesystem model
    - Port file modes, file info, directory entries, errors, path validation, open flags, and context/origin flags.

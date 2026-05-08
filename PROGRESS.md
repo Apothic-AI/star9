@@ -5,7 +5,7 @@
 - Direction changed from wrapper-first to a full Rust port in a single sprint.
 - Removed sprint-length assumptions from planning.
 - Rewrote `PLAN.md` around ordered workstreams, evidence gates, target runtime surfaces, and acceptance criteria.
-- Replaced the legacy-oracle posture with Rust-owned specs, fixtures, and conformance tests as the authoritative behavior source.
+- Clarified porting policy: use `../wanix` as the reference implementation to clone/port from, while keeping runtime, build, tests, browser smoke, and conformance free of Go dependencies.
 - Created the Rust workspace with crates for core values, filesystem/backends, namespace, tasks, protocol, runtime, web, and CLI.
 - Ported core path, mode, metadata, context, open flag, and error contracts.
 - Ported the filesystem trait layer, helper operations, `Node`/`MapFs`, `MemFs`, `LocalFs`, union directories, field/control files, pipe, signal, cache, and tar aliases.
@@ -18,7 +18,7 @@
 - Verified `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
 - Verified the generated wasm web package with Playwright at `tests/browser-smoke.html`; the page reached `document.body.dataset.status = "ok"` after binding ramfs, running file API operations, and starting WASI/Go-compatible JS adapter tasks.
 - Observed `wasm-pack test --headless --chrome crates/wanix-web` compile the wasm test target, but the ChromeDriver runner exited before executing the harness. Replaced that harness path with the direct `wasm-pack build` plus Playwright browser smoke.
-- Clarified project policy in docs: runtime, build, test, browser smoke, and conformance paths must not wrap, execute, link, shell out to, or test against Go code.
+- Clarified project policy in docs: `../wanix` is the reference implementation for porting, but runtime, build, test, browser smoke, and conformance paths must not wrap, execute, link, shell out to, or test against Go code.
 
 ## 2026-05-07
 

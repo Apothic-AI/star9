@@ -1,7 +1,7 @@
 //! Typed Wanix file API surface.
 //!
 //! This crate keeps the protocol boundary typed so native callers, browser glue,
-//! and tests exercise the same method set without depending on legacy internals.
+//! and tests exercise the same method set without depending on non-Rust internals.
 
 use std::time::{Duration, SystemTime};
 

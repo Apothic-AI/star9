@@ -1,6 +1,6 @@
 # Architecture
 
-`wanix-rs` is the primary Rust implementation of the Wanix runtime. Runtime behavior is defined entirely by this repository's Rust specs, fixtures, and conformance tests.
+`wanix-rs` is the primary Rust implementation of the Wanix runtime. `../wanix` is the reference implementation for cloning and porting behavior, but runtime behavior is delivered entirely by this repository's Rust code, specs, fixtures, and conformance tests.
 
 ## Core Values
 
@@ -70,4 +70,4 @@ The crate also ports the key `fskit` building blocks:
 
 ## Generated And Vendored Code
 
-Generated worker bundles and vendored/patched legacy support code are not ported line-for-line. Rust equivalents live behind task drivers, device allocators, typed protocols, and browser facade APIs.
+Generated worker bundles and vendored/patched reference support code are not ported line-for-line. Rust equivalents live behind task drivers, device allocators, typed protocols, and browser facade APIs.
