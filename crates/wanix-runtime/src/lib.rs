@@ -334,9 +334,25 @@ impl ExecutionAdapter {
     }
 
     pub fn start(&self, task: &Task) -> Result<()> {
+        task.set_cmd(self.command.clone());
         task.set_worker(format!("{:?}:{}", self.kind, self.command));
+        task.set_exit("running");
+        install_standard_fds(task)?;
+        task.set_exit("started");
         Ok(())
     }
+
+    pub fn finish(&self, task: &Task, status: i32) {
+        task.set_exit(format!("{status}"));
+    }
+}
+
+fn install_standard_fds(task: &Task) -> Result<()> {
+    for (fd, name) in [(0, "stdin"), (1, "stdout"), (2, "stderr")] {
+        let node = Node::file(name, Vec::new(), FileMode::from_perm(0o666));
+        task.set_fd(fd, node.open(&FsContext::new(), ".")?, name);
+    }
+    Ok(())
 }
 
 pub fn setup_namespace(
@@ -410,6 +426,18 @@ mod tests {
             .unwrap();
         ExecutionAdapter::wasi("repl.wasm").start(&task).unwrap();
         assert_eq!(task.worker(), Some("Wasi:repl.wasm".to_string()));
+        assert_eq!(task.cmd(), "repl.wasm");
+        assert_eq!(task.exit(), "started");
+        assert_eq!(
+            task.fd_entries(),
+            vec![
+                (0, "stdin".to_string()),
+                (1, "stdout".to_string()),
+                (2, "stderr".to_string())
+            ]
+        );
+        ExecutionAdapter::wasi("repl.wasm").finish(&task, 0);
+        assert_eq!(task.exit(), "0");
     }
 
     #[test]

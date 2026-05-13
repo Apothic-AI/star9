@@ -6,8 +6,11 @@ Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the re
 
 Immediate protocol/runtime tranche:
 
-- Expand browser system and binding parity on top of the Rust-native runtime and 9P loopback hooks.
+- Expand browser system and binding parity on top of the Rust-native runtime, typed binding descriptors, and 9P loopback hooks.
+- Wire the typed worker/task execution protocol into runtime task drivers, browser worker adapters, and port handoff paths.
 - Add cross-document MessagePort/WebSocket transport wiring for real remote 9P imports.
+- Build host-neutral browser storage backends behind the existing descriptor contracts before adding JS glue.
+- Continue backend hardening with deterministic conflict/error behavior for `SyncFs`, `HttpFs`, and `R2Fs`.
 - Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
 
 ## Planning Constraints

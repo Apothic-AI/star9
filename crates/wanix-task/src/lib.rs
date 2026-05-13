@@ -156,6 +156,10 @@ impl Task {
         self.inner.state.lock().unwrap().env.clone()
     }
 
+    pub fn exit(&self) -> String {
+        self.inner.state.lock().unwrap().exit.clone()
+    }
+
     pub fn alias(&self) -> String {
         self.inner.state.lock().unwrap().alias.clone()
     }
@@ -170,6 +174,22 @@ impl Task {
 
     pub fn worker(&self) -> Option<String> {
         self.inner.worker.lock().unwrap().clone()
+    }
+
+    pub fn set_cmd(&self, cmd: impl Into<String>) {
+        self.inner.state.lock().unwrap().cmd = cmd.into();
+    }
+
+    pub fn set_env(&self, env: impl IntoIterator<Item = impl Into<String>>) {
+        self.inner.state.lock().unwrap().env = env.into_iter().map(Into::into).collect();
+    }
+
+    pub fn set_dir(&self, dir: impl Into<String>) {
+        self.inner.state.lock().unwrap().dir = dir.into();
+    }
+
+    pub fn set_exit(&self, exit: impl Into<String>) {
+        self.inner.state.lock().unwrap().exit = exit.into();
     }
 
     pub fn bind(&self, src_path: &str, dst_path: &str) -> Result<()> {
@@ -214,6 +234,31 @@ impl Task {
             },
         );
         fd
+    }
+
+    pub fn set_fd(&self, fd: u32, file: BoxFile, path: impl Into<String>) {
+        let mut fds = self.inner.fds.lock().unwrap();
+        if fd >= fds.next {
+            fds.next = fd + 1;
+        }
+        fds.files.insert(
+            fd,
+            OpenFile {
+                file,
+                path: path.into(),
+            },
+        );
+    }
+
+    pub fn fd_entries(&self) -> Vec<(u32, String)> {
+        self.inner
+            .fds
+            .lock()
+            .unwrap()
+            .files
+            .iter()
+            .map(|(fd, file)| (*fd, file.path.clone()))
+            .collect()
     }
 
     pub fn close_fd(&self, fd: u32) -> Result<()> {
@@ -712,6 +757,41 @@ mod tests {
         assert_eq!(&buf[..n], b"ab");
         task.close_fd(fd).unwrap();
         assert!(task.with_fd_mut(fd, |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn explicit_fd_setup_supports_standard_streams() {
+        let task = TaskFs::new().alloc("auto", None).unwrap();
+        let stdin = wanix_fs::Node::file("stdin", b"input".to_vec(), FileMode::from_perm(0o666));
+        task.set_fd(0, stdin.open(&FsContext::new(), ".").unwrap(), "stdin");
+        assert_eq!(task.fd_entries(), vec![(0, "stdin".to_string())]);
+
+        let mut buf = [0_u8; 8];
+        let n = task.with_fd_mut(0, |file| file.read(&mut buf)).unwrap();
+        assert_eq!(&buf[..n], b"input");
+
+        let next = task.open_fd(
+            wanix_fs::Node::file("next", Vec::new(), FileMode::from_perm(0o666))
+                .open(&FsContext::new(), ".")
+                .unwrap(),
+            "next",
+        );
+        assert_eq!(next, 3);
+    }
+
+    #[test]
+    fn public_task_state_setters_update_fields() {
+        let task = TaskFs::new().alloc("auto", None).unwrap();
+        task.set_cmd("run --flag");
+        task.set_env(["A=1", "B=2"]);
+        task.set_dir("work");
+        task.set_exit("running");
+        assert_eq!(task.cmd(), "run --flag");
+        assert_eq!(task.env(), vec!["A=1".to_string(), "B=2".to_string()]);
+        assert_eq!(task.dir(), "work");
+        assert_eq!(task.exit(), "running");
+        assert_eq!(read_file(&task, "cmd").unwrap(), b"run --flag\n");
+        assert_eq!(read_file(&task, "exit").unwrap(), b"running\n");
     }
 
     #[test]

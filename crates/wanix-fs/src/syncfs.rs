@@ -20,6 +20,8 @@ pub trait RemoteSyncBackend: Send + Sync {
 pub struct SyncFs {
     local: FsRef,
     remote: RemoteSyncRef,
+    pull_conflict_policy: PullConflictPolicy,
+    retain_pull_conflicts: bool,
     state: Arc<Mutex<SyncState>>,
     sync_lock: Arc<Mutex<()>>,
 }
@@ -27,6 +29,7 @@ pub struct SyncFs {
 struct SyncState {
     next_generation: u64,
     dirty: BTreeMap<String, DirtyEntry>,
+    pull_conflicts: BTreeMap<String, DirtyChange>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,17 +44,53 @@ pub enum DirtyChange {
     Remove { recursive: bool },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PullConflictPolicy {
+    KeepLocal,
+    PreferRemote,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PullPathAction {
+    DeleteLocal,
+    SyncRemoteDir,
+    SyncRemoteLeaf,
+}
+
 impl SyncFs {
     pub fn new(local: FsRef, remote: RemoteSyncRef) -> Self {
         Self {
             local,
             remote,
+            pull_conflict_policy: PullConflictPolicy::KeepLocal,
+            retain_pull_conflicts: false,
             state: Arc::new(Mutex::new(SyncState {
                 next_generation: 0,
                 dirty: BTreeMap::new(),
+                pull_conflicts: BTreeMap::new(),
             })),
             sync_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub fn with_pull_conflicts_keep_local(mut self) -> Self {
+        self.pull_conflict_policy = PullConflictPolicy::KeepLocal;
+        self
+    }
+
+    pub fn with_pull_conflicts_prefer_remote(mut self) -> Self {
+        self.pull_conflict_policy = PullConflictPolicy::PreferRemote;
+        self
+    }
+
+    pub fn with_pull_conflict_policy(mut self, policy: PullConflictPolicy) -> Self {
+        self.pull_conflict_policy = policy;
+        self
+    }
+
+    pub fn with_pull_conflicts_retained(mut self, retain: bool) -> Self {
+        self.retain_pull_conflicts = retain;
+        self
     }
 
     pub fn local(&self) -> FsRef {
@@ -66,6 +105,14 @@ impl SyncFs {
             .iter()
             .map(|(path, entry)| (path.clone(), entry.change))
             .collect()
+    }
+
+    pub fn pull_conflicts(&self) -> BTreeMap<String, DirtyChange> {
+        self.state.lock().unwrap().pull_conflicts.clone()
+    }
+
+    pub fn clear_pull_conflicts(&self) {
+        self.state.lock().unwrap().pull_conflicts.clear();
     }
 
     pub fn push(&self) -> Result<()> {
@@ -90,6 +137,7 @@ impl SyncFs {
                 .is_some_and(|current| current.generation == snapshot.generation)
             {
                 state.dirty.remove(&path);
+                state.pull_conflicts.remove(&path);
             }
         }
         Ok(())
@@ -98,27 +146,71 @@ impl SyncFs {
     pub fn pull(&self) -> Result<()> {
         let _guard = self.sync_lock.lock().unwrap();
         let remote = self.remote.index()?;
-        let dirty = self.state.lock().unwrap().dirty.clone();
-        let dirty_paths: BTreeMap<_, _> = dirty
-            .iter()
-            .map(|(path, entry)| (path.clone(), entry.change))
-            .collect();
+        let original_dirty = self.state.lock().unwrap().dirty.clone();
+        let mut dirty = original_dirty.clone();
+        let mut retained_conflicts = BTreeMap::new();
 
         let remote_paths = collect_paths(remote.as_ref())?;
         let local_paths = collect_paths(self.local.as_ref())?;
 
         for path in local_paths.iter().rev() {
-            if path_is_dirty(&dirty_paths, path) || remote_paths.contains(path) {
+            if remote_paths.contains(path) {
                 continue;
             }
+            let conflicts = conflicting_dirty_paths(
+                &dirty,
+                path,
+                PullPathAction::DeleteLocal,
+                self.local.as_ref(),
+            )?;
+            if conflicts.is_empty() {
+                remove_local_path(self.local.as_ref(), path)?;
+                continue;
+            }
+
+            if self.pull_conflict_policy == PullConflictPolicy::KeepLocal {
+                record_conflicts(&mut retained_conflicts, &dirty, &conflicts);
+                continue;
+            }
+
             remove_local_path(self.local.as_ref(), path)?;
+            clear_dirty_subtree(&mut dirty, path);
         }
 
         for path in &remote_paths {
-            if path_is_dirty(&dirty_paths, path) {
+            let action = pull_path_action(remote.as_ref(), self.local.as_ref(), path)?;
+            let conflicts = conflicting_dirty_paths(&dirty, path, action, self.local.as_ref())?;
+            if conflicts.is_empty() {
+                sync_path_from_remote(remote.as_ref(), self.local.as_ref(), path)?;
                 continue;
             }
+
+            if self.pull_conflict_policy == PullConflictPolicy::KeepLocal {
+                record_conflicts(&mut retained_conflicts, &dirty, &conflicts);
+                continue;
+            }
+
             sync_path_from_remote(remote.as_ref(), self.local.as_ref(), path)?;
+            clear_dirty_paths_for_remote_sync(&mut dirty, path, action);
+        }
+
+        let mut state = self.state.lock().unwrap();
+        for (path, snapshot) in &original_dirty {
+            if dirty.contains_key(path) {
+                continue;
+            }
+            if state
+                .dirty
+                .get(path)
+                .is_some_and(|current| current.generation == snapshot.generation)
+            {
+                state.dirty.remove(path);
+            }
+        }
+        if self.retain_pull_conflicts {
+            state.pull_conflicts = retained_conflicts;
+        } else {
+            state.pull_conflicts.clear();
         }
 
         Ok(())
@@ -374,19 +466,107 @@ fn collect_paths_from(fsys: &dyn FileSystem, path: &str, out: &mut Vec<String>) 
     Ok(())
 }
 
-fn path_is_dirty(dirty: &BTreeMap<String, DirtyChange>, path: &str) -> bool {
+fn path_contains(ancestor: &str, descendant: &str) -> bool {
+    let ancestor = clean_path(ancestor);
+    let descendant = clean_path(descendant);
+    descendant == ancestor || descendant.strip_prefix(&(ancestor.clone() + "/")).is_some()
+}
+
+fn paths_overlap(left: &str, right: &str) -> bool {
+    path_contains(left, right) || path_contains(right, left)
+}
+
+fn conflicting_dirty_paths(
+    dirty: &BTreeMap<String, DirtyEntry>,
+    path: &str,
+    action: PullPathAction,
+    local: &dyn FileSystem,
+) -> Result<Vec<String>> {
     let path = clean_path(path);
-    if dirty.contains_key(&path) {
-        return true;
-    }
-    let mut parent = parent_path(&path);
-    while parent != "." {
-        if dirty.contains_key(&parent) {
-            return true;
+    let conflicts = match action {
+        PullPathAction::DeleteLocal => dirty
+            .keys()
+            .filter(|dirty_path| paths_overlap(dirty_path, &path))
+            .cloned()
+            .collect(),
+        PullPathAction::SyncRemoteLeaf => dirty
+            .keys()
+            .filter(|dirty_path| paths_overlap(dirty_path, &path))
+            .cloned()
+            .collect(),
+        PullPathAction::SyncRemoteDir => {
+            if exists(local, &path)? && lstat(local, &path)?.is_dir() {
+                dirty
+                    .keys()
+                    .filter(|dirty_path| path_contains(dirty_path, &path))
+                    .cloned()
+                    .collect()
+            } else {
+                dirty
+                    .keys()
+                    .filter(|dirty_path| paths_overlap(dirty_path, &path))
+                    .cloned()
+                    .collect()
+            }
         }
-        parent = parent_path(&parent);
+    };
+    Ok(conflicts)
+}
+
+fn record_conflicts(
+    retained_conflicts: &mut BTreeMap<String, DirtyChange>,
+    dirty: &BTreeMap<String, DirtyEntry>,
+    conflicts: &[String],
+) {
+    for path in conflicts {
+        if let Some(entry) = dirty.get(path) {
+            retained_conflicts.insert(path.clone(), entry.change);
+        }
     }
-    dirty.contains_key(".")
+}
+
+fn clear_dirty_subtree(dirty: &mut BTreeMap<String, DirtyEntry>, path: &str) {
+    let to_remove: Vec<_> = dirty
+        .keys()
+        .filter(|dirty_path| path_contains(path, dirty_path))
+        .cloned()
+        .collect();
+    for path in to_remove {
+        dirty.remove(&path);
+    }
+}
+
+fn clear_dirty_paths_for_remote_sync(
+    dirty: &mut BTreeMap<String, DirtyEntry>,
+    path: &str,
+    action: PullPathAction,
+) {
+    match action {
+        PullPathAction::DeleteLocal | PullPathAction::SyncRemoteLeaf => {
+            clear_dirty_subtree(dirty, path)
+        }
+        PullPathAction::SyncRemoteDir => {
+            dirty.remove(path);
+        }
+    }
+}
+
+fn pull_path_action(
+    remote: &dyn FileSystem,
+    local: &dyn FileSystem,
+    path: &str,
+) -> Result<PullPathAction> {
+    let remote_meta = lstat(remote, path)?;
+    if remote_meta.is_dir() {
+        return Ok(PullPathAction::SyncRemoteDir);
+    }
+    if remote_meta.mode.is_symlink() {
+        return Ok(PullPathAction::SyncRemoteLeaf);
+    }
+    if exists(local, path)? && lstat(local, path)?.is_dir() {
+        return Ok(PullPathAction::SyncRemoteLeaf);
+    }
+    Ok(PullPathAction::SyncRemoteLeaf)
 }
 
 fn sync_path_from_remote(
@@ -505,11 +685,12 @@ fn append_delete_marker<W: std::io::Write>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::io::{Cursor, Read};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use super::{DirtyChange, RemoteSyncBackend, SyncFs};
+    use super::{DirtyChange, PullConflictPolicy, RemoteSyncBackend, SyncFs};
     use crate::{
         clean_path, fs_ref, parent_path, read_dir, read_file, write_file, FileMode, FileSystem,
         MemFs, Result, TarFs,
@@ -687,6 +868,78 @@ mod tests {
         assert_eq!(sync.dirty()["notes.txt"], DirtyChange::Upsert);
         sync.pull().unwrap();
         assert_eq!(read_file(&local, "notes.txt").unwrap(), b"LOCAL");
+        assert!(sync.pull_conflicts().is_empty());
+    }
+
+    #[test]
+    fn syncfs_pull_prefer_remote_overwrites_dirty_local_paths() {
+        let local = MemFs::new();
+        let remote = Arc::new(MemoryRemoteSync::default());
+        write_file(&local, "notes.txt", b"local", FileMode::from_perm(0o644)).unwrap();
+        write_file(
+            &remote.fs(),
+            "notes.txt",
+            b"remote",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+
+        let sync = SyncFs::new(fs_ref(local.clone()), remote.clone())
+            .with_pull_conflict_policy(PullConflictPolicy::PreferRemote);
+        let mut file = sync
+            .open_file(
+                "notes.txt",
+                crate::OpenFlags::WRONLY,
+                FileMode::from_perm(0o644),
+            )
+            .unwrap();
+        file.write_at(b"LOCAL", 0).unwrap();
+        file.close().unwrap();
+
+        sync.pull().unwrap();
+
+        assert_eq!(read_file(&local, "notes.txt").unwrap(), b"remote");
+        assert!(sync.dirty().is_empty());
+        assert!(sync.pull_conflicts().is_empty());
+    }
+
+    #[test]
+    fn syncfs_pull_retains_conflicts_for_dirty_descendants() {
+        let local = MemFs::new();
+        let remote = Arc::new(MemoryRemoteSync::default());
+        local.mkdir("docs", FileMode::from_perm(0o755)).unwrap();
+        write_file(
+            &local,
+            "docs/readme.txt",
+            b"local",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+
+        let sync = SyncFs::new(fs_ref(local.clone()), remote.clone())
+            .with_pull_conflicts_keep_local()
+            .with_pull_conflicts_retained(true);
+        let mut file = sync
+            .open_file(
+                "docs/readme.txt",
+                crate::OpenFlags::WRONLY,
+                FileMode::from_perm(0o644),
+            )
+            .unwrap();
+        file.write_at(b"LOCAL", 0).unwrap();
+        file.close().unwrap();
+
+        sync.pull().unwrap();
+
+        assert_eq!(read_file(&local, "docs/readme.txt").unwrap(), b"LOCAL");
+        assert_eq!(
+            sync.pull_conflicts(),
+            BTreeMap::from([("docs/readme.txt".to_string(), DirtyChange::Upsert)])
+        );
+        assert_eq!(sync.dirty()["docs/readme.txt"], DirtyChange::Upsert);
+
+        sync.clear_pull_conflicts();
+        assert!(sync.pull_conflicts().is_empty());
     }
 
     #[test]

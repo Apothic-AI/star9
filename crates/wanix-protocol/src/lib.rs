@@ -11,6 +11,7 @@ use wanix_fs::{self as fs, FileSystem};
 use wanix_task::Task;
 
 pub mod p9;
+pub mod runtime;
 
 pub fn encode_request(request: &ApiRequest) -> Result<Vec<u8>> {
     encode_cbor(request)
@@ -28,13 +29,13 @@ pub fn decode_response(data: &[u8]) -> Result<ApiResponse> {
     decode_cbor(data)
 }
 
-fn encode_cbor(value: &impl Serialize) -> Result<Vec<u8>> {
+pub(crate) fn encode_cbor(value: &impl Serialize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     ciborium::into_writer(value, &mut out).map_err(|err| Error::Message(err.to_string()))?;
     Ok(out)
 }
 
-fn decode_cbor<T: for<'de> Deserialize<'de>>(data: &[u8]) -> Result<T> {
+pub(crate) fn decode_cbor<T: for<'de> Deserialize<'de>>(data: &[u8]) -> Result<T> {
     ciborium::from_reader(data).map_err(|err| Error::Message(err.to_string()))
 }
 

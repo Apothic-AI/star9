@@ -1,24 +1,14 @@
 //! Browser/WASM entry points for the Rust Wanix runtime.
 
+mod descriptors;
 pub mod p9_transport;
 
-use serde::{Deserialize, Serialize};
 use wanix_core::Result;
 use wanix_protocol::WanixApi;
 use wanix_runtime::{ExecutionAdapter, Runtime};
 use wanix_vfs::BindMode;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WebBinding {
-    pub dst: String,
-    pub src: Option<String>,
-    #[serde(default = "default_binding_type")]
-    pub kind: String,
-}
-
-fn default_binding_type() -> String {
-    "ns".to_string()
-}
+pub use descriptors::*;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
 pub struct WanixSystem {
@@ -72,16 +62,23 @@ impl WanixSystem {
     pub fn setup_namespace_native(&self, task_id: &str, bindings: &[WebBinding]) -> Result<()> {
         let task = self.runtime.root().lookup(task_id)?;
         for binding in bindings {
-            if binding.kind == "ns" {
-                let src = binding.src.as_deref().unwrap_or(".");
-                task.namespace().bind(
-                    self.runtime.namespace(),
-                    src,
-                    &binding.dst,
-                    BindMode::After,
-                )?;
-            } else if binding.kind == "file" {
-                self.api.write_file(&binding.dst, b"")?;
+            binding.validate()?;
+            match binding.kind {
+                WebBindingKind::Ns => {
+                    let src = binding.src_or_default().unwrap_or(".");
+                    task.namespace().bind(
+                        self.runtime.namespace(),
+                        src,
+                        &binding.dst,
+                        BindMode::After,
+                    )?;
+                }
+                WebBindingKind::File => {
+                    self.api.write_file(&binding.dst, b"")?;
+                }
+                WebBindingKind::Archive | WebBindingKind::Import => {
+                    return Err(wanix_core::ErrorKind::NotSupported.into());
+                }
             }
         }
         Ok(())

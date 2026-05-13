@@ -2,6 +2,14 @@
 
 ## 2026-05-13
 
+- Added `wanix_protocol::runtime`, a focused typed protocol module for worker spawn/start, execution specs, port open/handoff, task message payloads, stdio/fd descriptors, and exit status messages.
+- Added CBOR encode/decode helpers plus round-trip tests for runtime requests, runtime responses, and task messages in `wanix-protocol`.
+- Added a typed `wanix-web` descriptor module for browser binding planning with explicit `ns`, `file`, `archive`, and `import` binding kinds plus host-neutral storage backend descriptors for `opfs`, `file-system-access`, `cache`, `js-value`, `download`, `worker`, and `dom`.
+- Added deterministic validation rules and Rust-native unit tests for binding path hygiene, archive/import source requirements, and backend-specific descriptor fields without invoking browser APIs.
+- Switched `WanixSystem::setup_namespace_native` to validate descriptor plans up front, apply typed `ns`/`file` bindings, and reject unimplemented `archive`/`import` execution with `not supported`.
+- Added task-state setters and explicit fd installation APIs so runtime execution drivers can set command, env, cwd, exit state, and standard descriptors without reaching through task internals.
+- Extended the WASI/Go-compatible execution adapters to install standard fds, mark task start/finish state, and record the command used for driver startup.
+- Hardened `SyncFs::pull` with an explicit `PullConflictPolicy`, retained conflict reporting, keep-local default behavior, prefer-remote overwrite behavior, and deterministic descendant-conflict tests.
 - Added runtime 9P import/export hooks: a `Runtime` can export a task namespace through `NinePServer`, import any `NinePTransport` as `NinePClientFs`, and mount a loopback 9P export into its namespace.
 - Added a browser-facing 9P frame buffer helper plus a `WanixSystem::mountSelf9p` smoke path that mounts the current system through the Rust 9P bridge.
 - Extended the browser smoke fixture to verify 9P import/export by reading `remote/tmp/hello` through the imported mount.

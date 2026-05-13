@@ -30,7 +30,7 @@ The crate also ports the key `fskit` building blocks:
 
 `MetaCacheFs` wraps any `FileSystem` and caches `stat`, `lstat`, and `read_dir` metadata with TTL expiry, half-TTL refresh-ahead, cached errors, explicit invalidation, and close-time invalidation after writes.
 
-`SyncFs` is currently a contained local-first wrapper over a local `FileSystem` plus a `RemoteSyncBackend` trait. It tracks dirty upserts/removes and exposes explicit `push`, `pull`, and `sync` entry points using tar-based patch payloads.
+`SyncFs` is currently a contained local-first wrapper over a local `FileSystem` plus a `RemoteSyncBackend` trait. It tracks dirty upserts/removes and exposes explicit `push`, `pull`, and `sync` entry points using tar-based patch payloads. Pull conflict handling is explicit through `PullConflictPolicy`, with keep-local default behavior, prefer-remote overwrite behavior, and optional retained conflict reporting for callers that need to surface skipped dirty paths.
 
 `R2Fs` is implemented over a Rust `ObjectStore` trait. The crate includes `InMemoryObjectStore` for conformance tests and keeps remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
 
@@ -54,6 +54,7 @@ The crate also ports the key `fskit` building blocks:
 - `Task` exposes `ctl`, `id`, `kind`, `cmd`, `alias`, `env`, `dir`, `exit`, `fd`, and `ns`.
 - Child tasks clone the parent namespace.
 - File descriptors are task-local and accessed through fd helpers or `fd/<n>` proxy files.
+- Runtime drivers can set task command/env/cwd/exit state and install explicit descriptors, including standard fds, through public task APIs.
 - Drivers implement `TaskDriver`; function drivers cover auto-selection and adapter use cases.
 
 ## Protocol
@@ -68,6 +69,8 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 
 `wanix-protocol::p9` provides the Rust-native 9P bridge baseline. It owns a 9P2000.L-style frame codec, a `NinePServer` that exports any `wanix-fs::FileSystem`, a synchronous `NinePTransport` trait, and a `NinePClientFs` that imports a remote 9P export back into the normal filesystem trait surface. Browser MessagePort/WebSocket adapters can wrap the frame transport without changing the core protocol implementation.
 
+`wanix-protocol::runtime` owns typed worker/task messages for spawn/start requests, execution specs, stdio/fd descriptors, port open and handoff, task message payloads, and exit status. The protocol has Rust-owned CBOR round-trip tests and is the shared contract for runtime drivers and browser worker adapters.
+
 `wanix-runtime` exposes helpers to export a task namespace as 9P and import a `NinePTransport` into the root namespace. `wanix-web` layers browser-facing frame helpers and smoke facade methods over those hooks while keeping the core bridge host-neutral.
 
 ## Runtime And Web
@@ -79,6 +82,8 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 - `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, and `#download`.
 
 `wanix-web` exposes a `wasm-bindgen` `WanixSystem` facade. Browser-specific logic stays in this crate; core runtime state remains Rust-native and host-neutral.
+
+Browser binding and storage setup is represented by typed descriptors in `wanix-web` before touching browser APIs. Namespace/file/archive/import binds and OPFS, File System Access, Cache API, JS value, download, worker, and DOM storage plans validate independently of JS host objects so runtime behavior can be tested natively first.
 
 ## Generated And Vendored Code
 
