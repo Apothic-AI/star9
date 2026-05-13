@@ -4,6 +4,11 @@
 
 Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the reference implementation to clone and port from without wrapping or depending on Go code.
 
+Immediate filesystem tranche:
+
+- Complete a Rust-native metadata cache wrapper with TTL, refresh-ahead, error caching, and mutation invalidation.
+- Land a contained `SyncFs` baseline with local-first dirty tracking plus explicit `push`/`pull`/`sync` operations before adding backend-specific conflict policies or background scheduling.
+
 ## Planning Constraints
 
 - Do not attach scheduling/time estimate assumptions to planning docs.

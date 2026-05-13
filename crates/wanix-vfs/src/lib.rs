@@ -114,7 +114,7 @@ impl Namespace {
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        out.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
         out
     }
 

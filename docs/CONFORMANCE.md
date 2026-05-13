@@ -8,6 +8,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - File mode type bits, permission bits, and Unix mode projection.
 - `MemFs` create, read, write, stat, directory synthesis, directory rename, symlink, lstat, and readlink behavior.
 - `MemFs`/`Node` xattr set, get, list, remove, and missing-attribute behavior.
+- `MetaCacheFs` cached success/error behavior, TTL expiry, refresh-ahead, and mutation invalidation.
+- `SyncFs` local-first dirty tracking plus explicit push/pull/sync behavior over tar patch payloads.
 - `TarFs` archive reads, directory listings, symlink lstat/readlink/follow behavior, archive round-tripping, and read-only mutation failures.
 - `MapFs` mount exposure and synthetic parent directories.
 - `HttpFs` GET/HEAD reads, directory listing parsing, PUT writes, mkdir, symlink, MOVE rename, DELETE remove, metadata parsing, and protocol header formatting through a Rust recording transport.
@@ -43,6 +45,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:
 
 - HTTP filesystem caching and remote metadata semantics.
+- `SyncFs` conflict policy, background/debounced scheduling, and backend-specific patch/application semantics beyond the in-memory test backend.
 - HTTP filesystem caching, multipart parsing, PATCH archive updates, and real network transport.
 - R2 compare-and-swap conflict handling and Cloudflare/S3 adapter wiring.
 - 9P import/export bridge details.

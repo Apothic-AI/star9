@@ -1,5 +1,17 @@
 # wanix-rs Progress
 
+## 2026-05-12
+
+- Replaced the `CacheFs = MemFs` placeholder with a real Rust-native `MetaCacheFs` wrapper in `wanix-fs`.
+- Ported metadata cache behavior from `../wanix/fs/metacache` into Rust: cached `stat`/`lstat`/`read_dir` results, cached errors, TTL expiry, refresh-ahead after roughly half-TTL, explicit invalidation methods, and file-handle close invalidation after writes.
+- Added focused `MetaCacheFs` tests covering cached success, cached errors, TTL expiry, refresh-ahead with transient refresh failure extension, and mutation-driven invalidation of file and parent directory listings.
+- Added an initial Rust-native `SyncFs` implementation in `wanix-fs` using `../wanix/fs/syncfs` as the behavior reference for a local-first model.
+- Added a `RemoteSyncBackend` trait plus explicit `SyncFs::push`, `pull`, and `sync` operations, with dirty upsert/remove tracking and tar-based patch generation.
+- Added focused `SyncFs` tests covering push of local writes/removes, pull of remote files and symlinks, protection of locally dirty paths during pull, and combined sync behavior.
+- Review pass tightened `SyncFs::sync_fs` so it runs the wrapper sync operation, prevented no-op writable opens from marking paths dirty, and aligned delete patch entries with the reference tar PAX delete marker shape.
+- Documented the current `SyncFs` scope as an initial baseline; remaining work includes richer conflict policy, background/debounced sync scheduling, and backend-specific patch semantics beyond the in-memory test backend.
+- Verified `cargo fmt`, `cargo test -p wanix-fs`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
+
 ## 2026-05-08
 
 - Direction changed from wrapper-first to a full Rust port in a single sprint.

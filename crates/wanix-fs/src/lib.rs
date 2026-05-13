@@ -5,6 +5,9 @@
 //! copy, metadata, symlinks, and open flags so backends do not need to duplicate
 //! fallback behavior.
 
+mod metacache;
+mod syncfs;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -14,6 +17,8 @@ use std::time::{Duration, SystemTime};
 
 use http::Method;
 
+pub use metacache::{CacheFs, MetaCacheFs};
+pub use syncfs::{DirtyChange, DirtyEntry, RemoteSyncBackend, RemoteSyncRef, SyncFs};
 pub use wanix_core::{
     base_name, clean_path, parent_path, valid_path, DirEntry, Error, ErrorKind, FileMode,
     FsContext, Metadata, OpenFlags, Result,
@@ -736,7 +741,7 @@ impl MapFs {
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        out.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
         out
     }
 }
@@ -1803,8 +1808,6 @@ impl FileHandle for SignalHandle {
         Ok(Metadata::file("data", 0o666, self.reader.len() as u64))
     }
 }
-
-pub type CacheFs = MemFs;
 
 #[derive(Clone)]
 pub struct R2Fs {

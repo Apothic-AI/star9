@@ -26,7 +26,11 @@ The crate also ports the key `fskit` building blocks:
 - `MapFs` with synthetic parent directories.
 - `UnionFs` with directory merge behavior.
 - `FieldFile` and `ControlFile`.
-- `MemFs`, `LocalFs`, `TarFs`, `HttpFs`, `R2Fs`, `PipeFs`, `SignalFs`, and `CacheFs` surfaces.
+- `MemFs`, `LocalFs`, `TarFs`, `HttpFs`, `R2Fs`, `PipeFs`, `SignalFs`, `MetaCacheFs`, and an initial `SyncFs` surface.
+
+`MetaCacheFs` wraps any `FileSystem` and caches `stat`, `lstat`, and `read_dir` metadata with TTL expiry, half-TTL refresh-ahead, cached errors, explicit invalidation, and close-time invalidation after writes.
+
+`SyncFs` is currently a contained local-first wrapper over a local `FileSystem` plus a `RemoteSyncBackend` trait. It tracks dirty upserts/removes and exposes explicit `push`, `pull`, and `sync` entry points using tar-based patch payloads.
 
 `R2Fs` is implemented over a Rust `ObjectStore` trait. The crate includes `InMemoryObjectStore` for conformance tests and keeps remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
 
