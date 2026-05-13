@@ -8,6 +8,8 @@
 mod metacache;
 mod syncfs;
 
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -28,6 +30,11 @@ pub type FsRef = Arc<dyn FileSystem>;
 pub type BoxFile = Box<dyn FileHandle>;
 
 fn current_time() -> SystemTime {
+    #[cfg(test)]
+    if let Some(time) = TEST_CURRENT_TIME.with(|slot| slot.borrow().clone()) {
+        return time;
+    }
+
     #[cfg(target_arch = "wasm32")]
     {
         SystemTime::UNIX_EPOCH
@@ -36,6 +43,32 @@ fn current_time() -> SystemTime {
     {
         SystemTime::now()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CURRENT_TIME: RefCell<Option<SystemTime>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn with_test_current_time<T>(time: SystemTime, f: impl FnOnce() -> T) -> T {
+    struct ResetCurrentTime {
+        previous: Option<SystemTime>,
+    }
+
+    impl Drop for ResetCurrentTime {
+        fn drop(&mut self) {
+            TEST_CURRENT_TIME.with(|slot| {
+                slot.replace(self.previous.take());
+            });
+        }
+    }
+
+    TEST_CURRENT_TIME.with(|slot| {
+        let previous = slot.replace(Some(time));
+        let _reset = ResetCurrentTime { previous };
+        f()
+    })
 }
 
 pub fn fs_ref<T>(fs: T) -> FsRef
@@ -2465,7 +2498,21 @@ impl HttpFs {
         );
         headers.insert("Content-Ownership".to_string(), "0:0".to_string());
         headers.insert("Content-Length".to_string(), body.len().to_string());
+        insert_change_timestamp(&mut headers);
         self.request(Method::PUT, name, headers, body).map(|_| ())
+    }
+
+    pub fn patch_tar(&self, name: &str, body: impl Into<Vec<u8>>) -> Result<()> {
+        let mut headers = BTreeMap::new();
+        headers.insert("Content-Type".to_string(), "application/x-tar".to_string());
+        insert_change_timestamp(&mut headers);
+        self.request(
+            Method::from_bytes(b"PATCH").unwrap(),
+            name,
+            headers,
+            body.into(),
+        )
+        .map(|_| ())
     }
 
     fn parse_node(&self, name: &str, response: HttpResponse) -> Result<HttpNode> {
@@ -2563,7 +2610,9 @@ impl FileSystem for HttpFs {
     }
 
     fn remove(&self, name: &str) -> Result<()> {
-        self.request(Method::DELETE, name, BTreeMap::new(), Vec::new())
+        let mut headers = BTreeMap::new();
+        insert_change_timestamp(&mut headers);
+        self.request(Method::DELETE, name, headers, Vec::new())
             .map(|_| ())
     }
 
@@ -2573,6 +2622,7 @@ impl FileSystem for HttpFs {
             "Destination".to_string(),
             Self::normalize_http_path(new).to_string(),
         );
+        insert_change_timestamp(&mut headers);
         self.request(
             Method::from_bytes(b"MOVE").unwrap(),
             old,
@@ -2816,6 +2866,19 @@ fn unix_secs(time: SystemTime) -> u64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn unix_micros(time: SystemTime) -> u128 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros()
+}
+
+fn insert_change_timestamp(headers: &mut BTreeMap<String, String>) {
+    headers.insert(
+        "Change-Timestamp".to_string(),
+        unix_micros(current_time()).to_string(),
+    );
 }
 
 #[derive(Clone)]
@@ -3366,40 +3429,134 @@ mod tests {
 
     #[test]
     fn httpfs_write_mkdir_symlink_rename_and_remove_use_protocol_headers() {
-        let transport = Arc::new(RecordingTransport::default());
-        for _ in 0..5 {
-            transport.push(HttpResponse::new(200));
-        }
-        let fs = HttpFs::new("https://example.invalid/fs", transport.clone());
+        let now = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(1_700_000_000)
+            + Duration::from_micros(123_456);
+        with_test_current_time(now, || {
+            let transport = Arc::new(RecordingTransport::default());
+            for _ in 0..5 {
+                transport.push(HttpResponse::new(200));
+            }
+            let fs = HttpFs::new("https://example.invalid/fs", transport.clone());
 
-        write_file(&fs, "new.txt", b"content", FileMode::from_perm(0o600)).unwrap();
-        fs.mkdir("dir", FileMode::from_perm(0o755)).unwrap();
-        fs.symlink("new.txt", "link").unwrap();
-        fs.rename("new.txt", "dir/new.txt").unwrap();
-        fs.remove("link").unwrap();
+            write_file(&fs, "new.txt", b"content", FileMode::from_perm(0o600)).unwrap();
+            fs.mkdir("dir", FileMode::from_perm(0o755)).unwrap();
+            fs.symlink("new.txt", "link").unwrap();
+            fs.rename("new.txt", "dir/new.txt").unwrap();
+            fs.remove("link").unwrap();
 
-        let requests = transport.requests();
-        assert_eq!(requests[0].method, Method::PUT);
-        assert_eq!(requests[0].url, "https://example.invalid/fs/new.txt");
-        assert_eq!(
-            requests[0].headers["Content-Type"],
-            "application/octet-stream"
-        );
-        assert_eq!(requests[0].headers["Content-Mode"], "33152");
-        assert_eq!(requests[0].body, b"content");
+            let requests = transport.requests();
+            let change_timestamp = "1700000000123456";
+            let modified = "1700000000";
 
-        assert_eq!(
-            requests[1].headers["Content-Type"],
-            "application/x-directory"
-        );
-        assert_eq!(requests[1].headers["Content-Mode"], "16877");
-        assert_eq!(requests[2].headers["Content-Type"], "application/x-symlink");
-        assert_eq!(requests[2].headers["Content-Mode"], "41471");
-        assert_eq!(requests[2].body, b"new.txt");
+            assert_eq!(requests[0].method, Method::PUT);
+            assert_eq!(requests[0].url, "https://example.invalid/fs/new.txt");
+            assert_eq!(
+                requests[0].headers["Content-Type"],
+                "application/octet-stream"
+            );
+            assert_eq!(requests[0].headers["Content-Mode"], "33152");
+            assert_eq!(requests[0].headers["Content-Modified"], modified);
+            assert_eq!(requests[0].headers["Content-Ownership"], "0:0");
+            assert_eq!(requests[0].headers["Content-Length"], "7");
+            assert_eq!(requests[0].headers["Change-Timestamp"], change_timestamp);
+            assert_eq!(requests[0].body, b"content");
 
-        assert_eq!(requests[3].method.as_str(), "MOVE");
-        assert_eq!(requests[3].headers["Destination"], "/dir/new.txt");
-        assert_eq!(requests[4].method, Method::DELETE);
+            assert_eq!(requests[1].method, Method::PUT);
+            assert_eq!(requests[1].url, "https://example.invalid/fs/dir");
+            assert_eq!(
+                requests[1].headers["Content-Type"],
+                "application/x-directory"
+            );
+            assert_eq!(requests[1].headers["Content-Mode"], "16877");
+            assert_eq!(requests[1].headers["Content-Modified"], modified);
+            assert_eq!(requests[1].headers["Content-Ownership"], "0:0");
+            assert_eq!(requests[1].headers["Content-Length"], "0");
+            assert_eq!(requests[1].headers["Change-Timestamp"], change_timestamp);
+            assert!(requests[1].body.is_empty());
+
+            assert_eq!(requests[2].method, Method::PUT);
+            assert_eq!(requests[2].url, "https://example.invalid/fs/link");
+            assert_eq!(requests[2].headers["Content-Type"], "application/x-symlink");
+            assert_eq!(requests[2].headers["Content-Mode"], "41471");
+            assert_eq!(requests[2].headers["Content-Modified"], modified);
+            assert_eq!(requests[2].headers["Content-Ownership"], "0:0");
+            assert_eq!(requests[2].headers["Content-Length"], "7");
+            assert_eq!(requests[2].headers["Change-Timestamp"], change_timestamp);
+            assert_eq!(requests[2].body, b"new.txt");
+
+            assert_eq!(requests[3].method.as_str(), "MOVE");
+            assert_eq!(requests[3].url, "https://example.invalid/fs/new.txt");
+            assert_eq!(requests[3].headers["Destination"], "/dir/new.txt");
+            assert_eq!(requests[3].headers["Change-Timestamp"], change_timestamp);
+            assert!(requests[3].body.is_empty());
+
+            assert_eq!(requests[4].method, Method::DELETE);
+            assert_eq!(requests[4].url, "https://example.invalid/fs/link");
+            assert_eq!(requests[4].headers["Change-Timestamp"], change_timestamp);
+            assert!(requests[4].body.is_empty());
+        });
+    }
+
+    #[test]
+    fn httpfs_patch_tar_uses_patch_method_headers_and_body() {
+        let now = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(1_700_000_000)
+            + Duration::from_micros(123_456);
+        with_test_current_time(now, || {
+            let transport = Arc::new(RecordingTransport::default());
+            transport.push(HttpResponse::new(204));
+            let fs = HttpFs::new("https://example.invalid/fs", transport.clone());
+
+            fs.patch_tar("dir", b"tar-patch".to_vec()).unwrap();
+
+            let requests = transport.requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].method.as_str(), "PATCH");
+            assert_eq!(requests[0].url, "https://example.invalid/fs/dir");
+            assert_eq!(requests[0].headers.len(), 2);
+            assert_eq!(requests[0].headers["Content-Type"], "application/x-tar");
+            assert_eq!(requests[0].headers["Change-Timestamp"], "1700000000123456");
+            assert_eq!(requests[0].body, b"tar-patch");
+        });
+    }
+
+    #[test]
+    fn httpfs_patch_tar_maps_http_errors_like_other_requests() {
+        let now = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(1_700_000_000)
+            + Duration::from_micros(123_456);
+        with_test_current_time(now, || {
+            let transport = Arc::new(RecordingTransport::default());
+            transport.push(HttpResponse::new(404));
+            transport.push(HttpResponse::new(500));
+            let fs = HttpFs::new("https://example.invalid/fs", transport.clone());
+
+            let not_found = fs.patch_tar("dir", b"one".to_vec()).unwrap_err();
+            assert_eq!(not_found.kind(), ErrorKind::NotFound);
+
+            let server_error = fs.patch_tar("dir", b"two".to_vec()).unwrap_err();
+            match server_error {
+                Error::Message(message) => {
+                    assert_eq!(message, "httpfs dir returned HTTP 500");
+                }
+                other => panic!("unexpected error: {other:?}"),
+            }
+
+            let requests = transport.requests();
+            assert_eq!(requests.len(), 2);
+            assert!(requests
+                .iter()
+                .all(|request| request.method.as_str() == "PATCH"));
+            assert!(requests
+                .iter()
+                .all(|request| request.headers["Content-Type"] == "application/x-tar"));
+            assert!(requests
+                .iter()
+                .all(|request| request.headers["Change-Timestamp"] == "1700000000123456"));
+            assert_eq!(requests[0].body, b"one");
+            assert_eq!(requests[1].body, b"two");
+        });
     }
 
     #[test]
