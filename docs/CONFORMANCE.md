@@ -21,7 +21,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `HttpFs` opt-in metadata/node caching behavior for success and not-found responses, deterministic TTL expiry, and mutation-driven invalidation after write, mkdir/symlink, remove, rename, and PATCH tar operations.
 - `HttpFs` multipart/mixed directory listing parsing and fake-transport PATCH tar application behavior.
 - `HttpFs` opt-in native blocking transport behavior through loopback `TcpListener` tests for request/response round trips, response header/body preservation, and 404 status mapping without live external services.
-- `HttpFsHandler` server-side protocol behavior over in-memory filesystems for GET/HEAD metadata, plain and multipart directory listings, PUT file/directory/symlink, DELETE, MOVE, metadata PATCH, unsupported methods, and explicit tar-PATCH rejection.
+- `HttpFsHandler` server-side protocol behavior over in-memory filesystems for GET/HEAD metadata, plain and multipart directory listings, PUT file/directory/symlink, DELETE, MOVE, metadata PATCH, tar PATCH application through `apply_sync_patch`, and unsupported methods.
 - `R2Fs` object key scoping, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates through a Rust object store trait.
 - `R2Fs` parent listing compare-and-swap retry behavior and deterministic conflict exhaustion through Rust in-memory object stores.
 - Pipe bidirectional reads and writes with file close preserving the underlying pipe.
@@ -44,7 +44,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Browser Worker/MessagePort JS glue for tagged binary runtime envelopes, endpoint wrappers, port transfer helpers, system facade resolution, and import-port requests.
 - Browser Worker host facade coverage for fake Worker-like startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
 - Browser JS/WASM Worker host bootstrap coverage for normalized execution messages, runtime descriptor transfer, task-message observation, existing-host wrapping, and cleanup.
-- Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, task-message emission, exit/error reporting, and cleanup.
+- Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, default dynamic JS runner import, explicit direct-WASM unsupported errors, task-message emission, exit/error reporting, and cleanup.
 - Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
@@ -89,7 +89,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/browser-js-wasm-worker-host.test.mjs` exercises JS/WASM execution bootstrap messages over the browser Worker host facade with fake Worker and MessagePort targets, covering runtime port transfer and task-message observation without running a real JS/WASM payload.
 
-`tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution without a real browser worker or Go shim.
+`tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, and explicit direct-WASM rejection without a real browser worker or Go shim.
 
 ## Remaining Oracle Areas
 
@@ -97,7 +97,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 
 - HTTP filesystem remote metadata semantics beyond the currently covered cache headers and Wanix metadata fields.
 - `SyncFs` browser timer integration and backend-specific transport scheduling semantics beyond reusable tar patch application.
-- HTTP filesystem remote PATCH application through server adapters and broader live-service behavior against real servers.
+- HTTP filesystem broader live-service behavior against real servers.
 - Cloudflare/S3 adapter wiring for the Rust `ObjectStore` contract.
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export using the JS port helpers beyond loopback smoke.
 - Additional 9P edge cases such as flush cancellation and remote conflict/error parity.

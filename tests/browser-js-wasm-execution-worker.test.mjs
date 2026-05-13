@@ -181,6 +181,152 @@ test("runJsWasmExecutionBootstrap posts an error task message and rejects", asyn
     assert.match(errorPayload.stack, /TypeError: runner exploded/);
 });
 
+test("runJsWasmExecutionBootstrap dynamically imports a JS fixture runner and emits task messages", async () => {
+    const channel = new FakeMessageChannel();
+    const endpoint = new WorkerRuntimeEndpoint(channel.port1, { autoStart: true });
+    const taskMessages = [];
+    const moduleUrl = new URL("./fixtures/js-wasm-execution-runner.mjs", import.meta.url).href;
+
+    channel.port2.start();
+    channel.port2.addEventListener("message", (event) => {
+        taskMessages.push(decodeWorkerRuntimeEnvelope(event.data));
+    });
+
+    const result = await runJsWasmExecutionBootstrap(
+        {
+            type: DEFAULT_JS_WASM_BOOTSTRAP_MESSAGE_TYPE,
+            task_id: "task-31",
+            worker_id: "worker-31",
+            module: moduleUrl,
+            args: ["--flag", 9],
+            env: { FIXTURE_EXIT_CODE: 11, DEBUG: 1 },
+            cwd: "/workspace",
+            stdio: {
+                stdout: {
+                    kind: "port",
+                    value: { port_id: "stdout", name: "stdout" },
+                },
+            },
+            fds: [{ fd: 4, kind: "pipe", read: true, write: false }],
+            ports: [{ port_id: "control", name: "control" }],
+            runtime: {
+                type: DEFAULT_RUNTIME_PORT_MESSAGE_TYPE,
+                descriptor: { port_id: "runtime", name: "runtime" },
+            },
+        },
+        {
+            runtimeEndpoint: endpoint,
+            runtimeDescriptor: { port_id: "runtime", name: "runtime" },
+            runtimeMessage: {
+                type: DEFAULT_RUNTIME_PORT_MESSAGE_TYPE,
+                task_id: "task-31",
+                worker_id: "worker-31",
+                descriptor: { port_id: "runtime", name: "runtime" },
+                port: channel.port1,
+            },
+        },
+    );
+
+    assert.equal(result.exitCode, 11);
+    assert.equal(result.context.module, moduleUrl);
+    assert.equal(result.context.taskId, "task-31");
+    assert.equal(result.context.workerId, "worker-31");
+    assert.deepEqual(result.context.args, ["--flag", "9"]);
+    assert.deepEqual(result.context.envMap, {
+        FIXTURE_EXIT_CODE: "11",
+        DEBUG: "1",
+    });
+
+    assert.equal(taskMessages.length, 3);
+    assert.equal(taskMessages[0].kind, "task");
+    assert.deepEqual(
+        JSON.parse(new TextDecoder().decode(taskMessages[0].payload)),
+        {
+            taskId: "task-31",
+            workerId: "worker-31",
+            kind: "js_wasm",
+            module: moduleUrl,
+            args: ["--flag", "9"],
+            env: [
+                { name: "FIXTURE_EXIT_CODE", value: "11" },
+                { name: "DEBUG", value: "1" },
+            ],
+            envMap: {
+                FIXTURE_EXIT_CODE: "11",
+                DEBUG: "1",
+            },
+            cwd: "/workspace",
+            stdio: {
+                stdout: {
+                    kind: "port",
+                    value: { port_id: "stdout", name: "stdout" },
+                },
+            },
+            fds: [{ fd: 4, kind: "pipe", read: true, write: false }],
+            ports: [{ port_id: "control", name: "control" }],
+            runtime: {
+                type: DEFAULT_RUNTIME_PORT_MESSAGE_TYPE,
+                descriptor: { port_id: "runtime", name: "runtime" },
+            },
+        },
+    );
+    assert.deepEqual(taskMessages[1].payload, new Uint8Array([7, 11, 13, 17]));
+    assert.deepEqual(
+        JSON.parse(new TextDecoder().decode(taskMessages[2].payload)),
+        {
+            type: DEFAULT_JS_WASM_EXIT_TASK_MESSAGE_TYPE,
+            task_id: "task-31",
+            worker_id: "worker-31",
+            kind: "js_wasm",
+            module: moduleUrl,
+            exit_code: 11,
+        },
+    );
+});
+
+test("runJsWasmExecutionBootstrap rejects direct WASM execution and emits an error task message", async () => {
+    const channel = new FakeMessageChannel();
+    const endpoint = new WorkerRuntimeEndpoint(channel.port1, { autoStart: true });
+    const taskMessages = [];
+    const moduleUrl = new URL("./fixtures/js-wasm-execution-runner.wasm?direct=1", import.meta.url)
+        .href;
+
+    channel.port2.start();
+    channel.port2.addEventListener("message", (event) => {
+        taskMessages.push(decodeWorkerRuntimeEnvelope(event.data));
+    });
+
+    await assert.rejects(
+        () =>
+            runJsWasmExecutionBootstrap(
+                {
+                    type: DEFAULT_JS_WASM_BOOTSTRAP_MESSAGE_TYPE,
+                    task_id: "task-37",
+                    worker_id: "worker-37",
+                    module: moduleUrl,
+                    env: {},
+                },
+                {
+                    runtimeEndpoint: endpoint,
+                },
+            ),
+        new Error(`direct WASM execution is not supported for ${JSON.stringify(moduleUrl)}`),
+    );
+
+    assert.equal(taskMessages.length, 1);
+    const errorPayload = JSON.parse(new TextDecoder().decode(taskMessages[0].payload));
+    assert.equal(errorPayload.type, DEFAULT_JS_WASM_ERROR_TASK_MESSAGE_TYPE);
+    assert.equal(errorPayload.task_id, "task-37");
+    assert.equal(errorPayload.worker_id, "worker-37");
+    assert.equal(errorPayload.kind, "js_wasm");
+    assert.equal(errorPayload.module, moduleUrl);
+    assert.equal(errorPayload.name, "Error");
+    assert.equal(
+        errorPayload.message,
+        `direct WASM execution is not supported for ${JSON.stringify(moduleUrl)}`,
+    );
+});
+
 test("acceptJsWasmExecutionWorker cleanup removes the listener and stops future handling", async () => {
     const scope = new FakeWorkerScope();
     const channel = new FakeMessageChannel();

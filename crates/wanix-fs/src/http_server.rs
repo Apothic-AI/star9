@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use http::Method;
 
 use crate::{
-    clean_path, lstat, read_dir, read_file, write_file, Error, ErrorKind, FileMode, FsRef,
-    HttpRequest, HttpResponse, Result,
+    apply_sync_patch, clean_path, lstat, read_dir, read_file, write_file, Error, ErrorKind,
+    FileMode, FsRef, HttpRequest, HttpResponse, Result,
 };
 
 const ALLOW_METHODS: &str = "GET, HEAD, PUT, DELETE, PATCH, MOVE";
@@ -158,9 +158,8 @@ impl HttpFsHandler {
         if header_value(&request.headers, "Content-Type")
             .is_some_and(|value| value.eq_ignore_ascii_case("application/x-tar"))
         {
-            return Ok(unsupported_media_type(
-                "application/x-tar PATCH is not supported by HttpFsHandler",
-            ));
+            apply_sync_patch(self.fsys.as_ref(), &request.body)?;
+            return Ok(ok_response());
         }
         self.apply_metadata_headers(name, &request.headers)?;
         Ok(ok_response())
@@ -415,10 +414,6 @@ fn bad_request(message: &str) -> HttpResponse {
     HttpResponse::new(400).with_body(message)
 }
 
-fn unsupported_media_type(message: &str) -> HttpResponse {
-    HttpResponse::new(415).with_body(message)
-}
-
 fn response_from_error(err: Error) -> HttpResponse {
     let (status, body) = match err.kind() {
         ErrorKind::NotFound => (404, "Not Found".to_string()),
@@ -440,6 +435,7 @@ struct RequestTarget {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io::Cursor;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
 
@@ -484,6 +480,47 @@ mod tests {
             headers: BTreeMap::new(),
             body: Vec::new(),
         }
+    }
+
+    fn tar_patch_bytes(
+        entries: impl IntoIterator<Item = (impl Into<String>, impl Into<Vec<u8>>)>,
+    ) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, body) in entries {
+            let path = path.into();
+            let body = body.into();
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_mode(0o644);
+            header.set_size(body.len() as u64);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, Cursor::new(body))
+                .unwrap();
+        }
+        builder.finish().unwrap();
+        builder.into_inner().unwrap()
+    }
+
+    fn tar_delete_patch(entries: impl IntoIterator<Item = (impl Into<String>, bool)>) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, recursive) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_mode(0);
+            header.set_size(0);
+            let mut pax = vec![("delete", b"".as_slice())];
+            if recursive {
+                pax.push(("recursive", b"1".as_slice()));
+            }
+            builder.append_pax_extensions(pax).unwrap();
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path.into(), Cursor::new(Vec::new()))
+                .unwrap();
+        }
+        builder.finish().unwrap();
+        builder.into_inner().unwrap()
     }
 
     #[test]
@@ -718,17 +755,63 @@ mod tests {
     }
 
     #[test]
-    fn httpfs_handler_rejects_tar_patch_requests() {
+    fn httpfs_handler_patch_tar_via_httpfs_upserts_server_files() {
         let fs = MemFs::from_entries([("dir/file.txt", b"old".to_vec())]);
+        let transport = Arc::new(HandlerTransport::new(fs_ref(fs.clone())));
+        let httpfs = HttpFs::new("https://example.invalid", transport.clone());
+        let patch = tar_patch_bytes([
+            ("dir/file.txt", b"new".to_vec()),
+            ("dir/nested.txt", b"fresh".to_vec()),
+        ]);
+
+        httpfs.patch_tar(".", patch).unwrap();
+
+        assert_eq!(read_file(&fs, "dir/file.txt").unwrap(), b"new");
+        assert_eq!(read_file(&fs, "dir/nested.txt").unwrap(), b"fresh");
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::PATCH);
+        assert_eq!(requests[0].headers["Content-Type"], "application/x-tar");
+    }
+
+    #[test]
+    fn httpfs_handler_patch_tar_delete_markers_remove_paths_and_subtrees() {
+        let fs = MemFs::from_entries([
+            ("gone.txt", b"gone".to_vec()),
+            ("keep.txt", b"keep".to_vec()),
+            ("tree/branch/file.txt", b"leaf".to_vec()),
+        ]);
+        let transport = Arc::new(HandlerTransport::new(fs_ref(fs.clone())));
+        let httpfs = HttpFs::new("https://example.invalid", transport);
+        let patch = tar_delete_patch([("gone.txt", false), ("tree", true)]);
+
+        httpfs.patch_tar(".", patch).unwrap();
+
+        assert!(!exists(&fs, "gone.txt").unwrap());
+        assert!(!exists(&fs, "tree").unwrap());
+        assert_eq!(read_file(&fs, "keep.txt").unwrap(), b"keep");
+    }
+
+    #[test]
+    fn httpfs_handler_invalid_tar_patch_returns_http_error_to_httpfs() {
+        let fs = MemFs::new();
         let handler = HttpFsHandler::new(fs_ref(fs.clone()));
-        let mut request = request(Method::PATCH, "/dir");
-        request.headers =
+        let mut raw_request = request(Method::PATCH, "/dir");
+        raw_request.headers =
             BTreeMap::from([("Content-Type".to_string(), "application/x-tar".to_string())]);
-        request.body = b"tar".to_vec();
+        raw_request.body = b"not a tar archive".to_vec();
 
-        let response = handler.handle(request).unwrap();
+        let response = handler.handle(raw_request).unwrap();
+        assert!(!(200..=299).contains(&response.status));
 
-        assert_eq!(response.status, 415);
-        assert_eq!(read_file(&fs, "dir/file.txt").unwrap(), b"old");
+        let transport = Arc::new(HandlerTransport::new(fs_ref(fs)));
+        let httpfs = HttpFs::new("https://example.invalid", transport);
+        let err = httpfs
+            .patch_tar("dir", b"not a tar archive".to_vec())
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("httpfs dir returned HTTP {}", response.status)
+        );
     }
 }

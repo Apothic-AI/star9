@@ -22,7 +22,7 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Rust-native 9P import/export with xattr read/list/write support.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
 - Browser Worker/MessagePort JS glue for runtime message envelopes and transferred ports.
-- Browser Worker host facade and execution-worker helper for Worker-like startup, runtime port transfer, message routing, JS/WASM execution bootstrap, runner context, exit/error reporting, and cleanup.
+- Browser Worker host facade and execution-worker helper for Worker-like startup, runtime port transfer, message routing, JS/WASM execution bootstrap, dynamic JS runner import, runner context, exit/error reporting, and cleanup.
 - Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests.
 - Wasmi-backed WASI preview1 execution over Wanix task namespaces and fd tables.
 - Native CLI acceptance commands for 9P loopback, deterministic devices, and runtime worker protocol flows.
