@@ -14,6 +14,10 @@
 - Added a browser-facing 9P frame buffer helper plus a `WanixSystem::mountSelf9p` smoke path that mounts the current system through the Rust 9P bridge.
 - Extended the browser smoke fixture to verify 9P import/export by reading `remote/tmp/hello` through the imported mount.
 - Hardened 9P walk behavior so raw server partial walks return the successful qid prefix, duplicate `newfid` walks are rejected, and the client maps partial walks to not-found instead of using a partially resolved fid.
+- Added a host-neutral `BrowserStorageRegistry` in `wanix-web` that resolves typed OPFS, File System Access, Cache API, JS value, download, worker, and DOM descriptors into registered filesystems or deterministic in-memory stand-ins.
+- Wired descriptor-backed storage mounts into `WanixSystem::setup_namespace_native`, with native tests for writable registered handles, persistent descriptor identities, and subpath-rooted mounts.
+- Added a `RuntimeProtocolHost` and `WorkerHost` in `wanix-runtime` that handle typed runtime worker requests for spawn, start, port open/handoff, task messages, stdio/fd setup, and exit-state updates without browser or Go dependencies.
+- Hardened `R2Fs` parent directory listings with an `ObjectStore::compare_and_swap` contract, bounded retry behavior, deterministic conflict errors, and in-memory object-store tests for retry success and conflict exhaustion.
 - Verified `cargo fmt`, `cargo test -p wanix-runtime`, `cargo test -p wanix-web`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
 - Added a Rust-native `wanix_protocol::p9` module implementing a 9P2000.L-style frame codec for version, attach, walk, open/create, getattr/setattr, read/write, clunk/remove, mkdir/readdir, renameat/unlinkat, fsync, symlink, and readlink messages.
 - Added `NinePServer` over `wanix_fs::FileSystem`, with fid tracking, stable FNV-1a qids, Wanix metadata-to-9P attribute mapping, directory-entry encoding, and errno-based `Rlerror` responses.

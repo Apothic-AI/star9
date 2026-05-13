@@ -32,7 +32,7 @@ The crate also ports the key `fskit` building blocks:
 
 `SyncFs` is currently a contained local-first wrapper over a local `FileSystem` plus a `RemoteSyncBackend` trait. It tracks dirty upserts/removes and exposes explicit `push`, `pull`, and `sync` entry points using tar-based patch payloads. Pull conflict handling is explicit through `PullConflictPolicy`, with keep-local default behavior, prefer-remote overwrite behavior, and optional retained conflict reporting for callers that need to surface skipped dirty paths.
 
-`R2Fs` is implemented over a Rust `ObjectStore` trait. The crate includes `InMemoryObjectStore` for conformance tests and keeps remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
+`R2Fs` is implemented over a Rust `ObjectStore` trait. The trait includes compare-and-swap for parent directory listing updates, allowing deterministic retry and conflict behavior to be tested with `InMemoryObjectStore` while keeping remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
 
 ## Namespace
 
@@ -73,6 +73,8 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 
 `wanix-runtime` exposes helpers to export a task namespace as 9P and import a `NinePTransport` into the root namespace. `wanix-web` layers browser-facing frame helpers and smoke facade methods over those hooks while keeping the core bridge host-neutral.
 
+`wanix-runtime::RuntimeProtocolHost` handles the typed runtime protocol in a host-neutral way. It allocates worker tasks, applies execution specs to task state and descriptors, tracks in-memory port open/handoff records, records task messages, and updates task exit state from exit messages. Real browser/native execution drivers attach beyond that contract.
+
 ## Runtime And Web
 
 `wanix-runtime` builds the root task and binds the built-in surfaces:
@@ -84,6 +86,8 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 `wanix-web` exposes a `wasm-bindgen` `WanixSystem` facade. Browser-specific logic stays in this crate; core runtime state remains Rust-native and host-neutral.
 
 Browser binding and storage setup is represented by typed descriptors in `wanix-web` before touching browser APIs. Namespace/file/archive/import binds and OPFS, File System Access, Cache API, JS value, download, worker, and DOM storage plans validate independently of JS host objects so runtime behavior can be tested natively first.
+
+`BrowserStorageRegistry` maps those storage descriptors to `FileSystem` instances. It can use registered host handles or deterministic in-memory stand-ins, preserves descriptor identity for repeated mounts, and can expose a descriptor subpath as the mounted root through the existing namespace machinery.
 
 ## Generated And Vendored Code
 

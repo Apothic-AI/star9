@@ -15,6 +15,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `MapFs` mount exposure and synthetic parent directories.
 - `HttpFs` GET/HEAD reads, directory listing parsing, PUT writes, mkdir, symlink, MOVE rename, DELETE remove, metadata parsing, and protocol header formatting through a Rust recording transport.
 - `R2Fs` object key scoping, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates through a Rust object store trait.
+- `R2Fs` parent listing compare-and-swap retry behavior and deterministic conflict exhaustion through Rust in-memory object stores.
 - Pipe bidirectional reads and writes with file close preserving the underlying pipe.
 - Namespace file and directory binds.
 - Namespace root unions and overlapping directory reads.
@@ -29,6 +30,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Typed protocol dispatch for JS-handle file operations.
 - CBOR request/response round-tripping for the typed protocol boundary.
 - CBOR round-tripping for typed runtime worker spawn/start, execution, port handoff, task messages, stdio/fd descriptors, and exit status.
+- Runtime protocol host handling for worker spawn/start, stdio/fd setup, port open/handoff, task messages, and exit-state updates.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
@@ -38,6 +40,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Runtime 9P namespace export and loopback import behavior.
 - Browser smoke coverage for reading files through a Rust 9P imported mount.
 - Typed browser binding/storage descriptor validation for namespace, file, archive, import, OPFS, File System Access, Cache API, JS value, download, worker, and DOM plans.
+- Host-neutral browser storage registry resolution for writable registered handles, persistent descriptor identities, and subpath-rooted mounts.
 - Runtime root bindings for core and device surfaces.
 - Device allocator resource creation.
 - WASI and Go-compatible JS execution adapter task starts.
@@ -57,10 +60,10 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - HTTP filesystem caching and remote metadata semantics.
 - `SyncFs` background/debounced scheduling and backend-specific patch/application semantics beyond the in-memory test backend.
 - HTTP filesystem caching, multipart parsing, PATCH archive updates, and real network transport.
-- R2 compare-and-swap conflict handling and Cloudflare/S3 adapter wiring.
+- Cloudflare/S3 adapter wiring for the Rust `ObjectStore` contract.
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export beyond loopback smoke.
 - Additional 9P edge cases such as flush cancellation, xattr messages, and remote conflict/error parity.
-- Browser storage backends such as OPFS and file-system-access handles.
+- Browser JS glue for OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage handles.
 - Browser worker adapter wiring for the typed runtime protocol.
 - Terminal screen protocol details.
 - VM/network device behavior.
