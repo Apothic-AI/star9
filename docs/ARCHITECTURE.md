@@ -95,6 +95,10 @@ Browser binding and storage setup is represented by typed descriptors in `wanix-
 
 `wanix-web` also provides a host-neutral `MessagePort` trait, an in-memory port for native tests, and worker-runtime adapters that move typed runtime requests, responses, and task messages over complete message payloads. Browser-specific `Worker` and `MessagePort` glue can attach to that surface without changing protocol encoding.
 
+`BrowserBindingRegistry` is the host-neutral source registry for `<wanix-bind>`-style file, archive, and import bindings. It maps source identifiers to bytes or 9P transports so native tests can validate file writes, tar mounts, and 9P imports before browser fetch/iframe glue is attached.
+
+`wanix-runtime::ExecutionRegistry` is the host-neutral execution contract for WASI and JS-WASM modules. Callers register native handlers by execution kind and module name; the registry applies the typed execution spec to task state and descriptors, invokes the handler, and records the returned exit status.
+
 ## Generated And Vendored Code
 
 Generated worker bundles and vendored/patched reference support code are not ported line-for-line. Rust equivalents live behind task drivers, device allocators, typed protocols, and browser facade APIs.

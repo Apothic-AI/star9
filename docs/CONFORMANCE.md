@@ -33,6 +33,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - CBOR round-tripping for typed runtime worker spawn/start, execution, port handoff, task messages, stdio/fd descriptors, and exit status.
 - Runtime protocol host handling for worker spawn/start, stdio/fd setup, port open/handoff, task messages, and exit-state updates.
 - Browser worker/message-port adapter coverage for typed runtime request/response dispatch, task message delivery, and lossless 9P frame transfer through a host-neutral port.
+- Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
+- Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
@@ -54,7 +56,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 ## Explicit Replacement Fixtures
 
-`tests/browser-smoke.html` replaces the representative browser examples as a Rust-backed acceptance path. It initializes the wasm package, binds a ramfs, writes and reads a file through the public API, lists the directory, and starts WASI/Go JS adapter tasks.
+`tests/browser-smoke.html` replaces the representative browser examples as a Rust-backed acceptance path. It initializes the wasm package, binds a ramfs, mounts descriptor-backed storage, writes and reads files through the public API and 9P loopback import, lists directories, verifies task fields, and starts WASI/Go JS adapter tasks.
 
 `tests/fixtures/api-operations.json` lists the public operation names used by the typed protocol boundary.
 
@@ -72,7 +74,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - Cloudflare/S3 adapter wiring for the Rust `ObjectStore` contract.
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export beyond loopback smoke.
 - Additional 9P edge cases such as flush cancellation, xattr messages, and remote conflict/error parity.
-- Browser JS glue for OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage handles.
+- Browser JS glue for real fetch/archive/import sources and OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage handles.
 - Browser JS glue for real Worker and MessagePort objects on top of the host-neutral typed runtime adapter.
 - Terminal screen protocol details beyond the host-neutral file protocol.
 - Real VM execution and network/TCP transport behavior beyond deterministic placeholder resources.

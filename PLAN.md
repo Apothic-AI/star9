@@ -7,11 +7,10 @@ Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the re
 Immediate protocol/runtime tranche:
 
 - Expand browser system and binding parity on top of the Rust-native runtime, typed binding descriptors, and 9P loopback hooks.
-- Wire the typed worker/task execution protocol from the runtime host into browser worker adapters and real execution drivers.
-- Add cross-document MessagePort/WebSocket transport wiring for real remote 9P imports.
-- Add JS/browser glue for the host-neutral browser storage registry and validated `<wanix-bind>` descriptors.
+- Attach real browser `Worker`, `MessagePort`, fetch/archive/import, and storage API glue to the host-neutral registries and adapters.
+- Replace deterministic execution handlers with real WASI syscall execution and browser/native JS-WASM execution drivers.
 - Continue backend hardening with deterministic conflict/error behavior for `HttpFs`, plus real transport boundaries for browser/native adapters.
-- Deepen placeholder device surfaces for terminal, VM, worker, and network behavior using Rust-owned tests.
+- Deepen remaining placeholder device behavior, especially real terminal screen protocol, VM execution, worker integration, and network/TCP behavior.
 - Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
 
 ## Planning Constraints
