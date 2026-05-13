@@ -2,6 +2,7 @@
 
 mod descriptors;
 pub mod p9_transport;
+mod storage;
 
 use wanix_core::Result;
 use wanix_protocol::WanixApi;
@@ -9,18 +10,25 @@ use wanix_runtime::{ExecutionAdapter, Runtime};
 use wanix_vfs::BindMode;
 
 pub use descriptors::*;
+pub use storage::*;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
 pub struct WanixSystem {
     runtime: Runtime,
     api: WanixApi,
+    storage_registry: BrowserStorageRegistry,
 }
 
 impl WanixSystem {
     fn build() -> Result<Self> {
         let runtime = Runtime::new()?;
         let api = WanixApi::new(runtime.root());
-        Ok(Self { runtime, api })
+        let storage_registry = BrowserStorageRegistry::new();
+        Ok(Self {
+            runtime,
+            api,
+            storage_registry,
+        })
     }
 
     pub fn runtime(&self) -> Runtime {
@@ -29,6 +37,10 @@ impl WanixSystem {
 
     pub fn api(&self) -> WanixApi {
         self.api.clone()
+    }
+
+    pub fn storage_registry(&self) -> BrowserStorageRegistry {
+        self.storage_registry.clone()
     }
 
     pub fn read_text_native(&self, path: &str) -> Result<String> {
@@ -63,6 +75,12 @@ impl WanixSystem {
         let task = self.runtime.root().lookup(task_id)?;
         for binding in bindings {
             binding.validate()?;
+            if let Some(storage) = &binding.storage {
+                let fs = self.storage_registry.resolve(storage)?;
+                task.namespace()
+                    .bind(fs, ".", &binding.dst, BindMode::After)?;
+                continue;
+            }
             match binding.kind {
                 WebBindingKind::Ns => {
                     let src = binding.src_or_default().unwrap_or(".");
@@ -194,6 +212,16 @@ mod wasm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wanix_fs::{fs_ref, read_file, write_file, FileMode, MemFs};
+
+    fn alloc_task(system: &WanixSystem) -> String {
+        let runtime = system.runtime();
+        runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap()
+            .id()
+    }
 
     #[test]
     fn native_browser_facade_runs_file_operations_and_tasks() {
@@ -209,6 +237,117 @@ mod tests {
         let wasi = system.start_wasi_native("repl.wasm").unwrap();
         let gojs = system.start_gojs_native("repl-gojs.wasm").unwrap();
         assert_ne!(wasi, gojs);
+    }
+
+    #[test]
+    fn descriptor_backed_mount_is_writable_from_registered_handle() {
+        let system = WanixSystem::new().unwrap();
+        let backing = fs_ref(MemFs::new());
+        system
+            .storage_registry()
+            .register_cache("shell", backing.clone())
+            .unwrap();
+        let task_id = alloc_task(&system);
+        let binding = WebBinding {
+            dst: "mnt".to_string(),
+            src: None,
+            kind: WebBindingKind::Ns,
+            storage: Some(WebStorageDescriptor::Cache(CacheStorageDescriptor {
+                cache: "shell".to_string(),
+                path: None,
+            })),
+        };
+
+        system.setup_namespace_native(&task_id, &[binding]).unwrap();
+        let task = system.runtime().root().lookup(&task_id).unwrap();
+        write_file(
+            task.namespace().as_ref(),
+            "mnt/hello.txt",
+            b"hello",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+
+        assert_eq!(read_file(backing.as_ref(), "hello.txt").unwrap(), b"hello");
+    }
+
+    #[test]
+    fn descriptor_backed_mount_persists_for_same_descriptor_identity() {
+        let system = WanixSystem::new().unwrap();
+        let descriptor = WebStorageDescriptor::JsValue(JsValueStorageDescriptor {
+            value: "window.fsRoot".to_string(),
+            path: None,
+        });
+        let first_task_id = alloc_task(&system);
+        let second_task_id = alloc_task(&system);
+        let first_binding = WebBinding {
+            dst: "shared".to_string(),
+            src: None,
+            kind: WebBindingKind::Ns,
+            storage: Some(descriptor.clone()),
+        };
+        let second_binding = WebBinding {
+            dst: "shared".to_string(),
+            src: None,
+            kind: WebBindingKind::Ns,
+            storage: Some(descriptor),
+        };
+
+        system
+            .setup_namespace_native(&first_task_id, &[first_binding])
+            .unwrap();
+        let first_task = system.runtime().root().lookup(&first_task_id).unwrap();
+        write_file(
+            first_task.namespace().as_ref(),
+            "shared/state.txt",
+            b"persisted",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+
+        system
+            .setup_namespace_native(&second_task_id, &[second_binding])
+            .unwrap();
+        let second_task = system.runtime().root().lookup(&second_task_id).unwrap();
+        assert_eq!(
+            read_file(second_task.namespace().as_ref(), "shared/state.txt").unwrap(),
+            b"persisted"
+        );
+    }
+
+    #[test]
+    fn descriptor_backed_mount_respects_descriptor_subpath_rooting() {
+        let system = WanixSystem::new().unwrap();
+        let backing = fs_ref(MemFs::new());
+        system
+            .storage_registry()
+            .register_worker_handle("worker-1", backing.clone())
+            .unwrap();
+        let task_id = alloc_task(&system);
+        let binding = WebBinding {
+            dst: "worker".to_string(),
+            src: None,
+            kind: WebBindingKind::Ns,
+            storage: Some(WebStorageDescriptor::Worker(WorkerStorageDescriptor {
+                worker: "worker-1".to_string(),
+                path: Some("nested/root".to_string()),
+            })),
+        };
+
+        system.setup_namespace_native(&task_id, &[binding]).unwrap();
+        let task = system.runtime().root().lookup(&task_id).unwrap();
+        write_file(
+            task.namespace().as_ref(),
+            "worker/file.txt",
+            b"subpath",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_file(backing.as_ref(), "nested/root/file.txt").unwrap(),
+            b"subpath"
+        );
     }
 }
 
