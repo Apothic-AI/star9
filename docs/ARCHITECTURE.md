@@ -34,7 +34,7 @@ The crate also ports the key `fskit` building blocks:
 
 `R2Fs` is implemented over a Rust `ObjectStore` trait. The trait includes compare-and-swap for parent directory listing updates, allowing deterministic retry and conflict behavior to be tested with `InMemoryObjectStore` while keeping remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
 
-`HttpFs` is implemented over a Rust `HttpTransport` trait. Mutating requests carry Wanix metadata headers plus a `Change-Timestamp`, and `patch_tar` sends complete tar patch payloads through `PATCH` without requiring a live network transport in tests.
+`HttpFs` is implemented over a Rust `HttpTransport` trait. Mutating requests carry Wanix metadata headers plus a `Change-Timestamp`, and `patch_tar` sends complete tar patch payloads through `PATCH` without requiring a live network transport in tests. Caching is opt-in through `with_cache_ttl`, stores stat/node successes and not-found responses, and invalidates affected cached entries after mutations.
 
 ## Namespace
 
@@ -93,7 +93,7 @@ Browser binding and storage setup is represented by typed descriptors in `wanix-
 
 `BrowserStorageRegistry` maps those storage descriptors to `FileSystem` instances. It can use registered host handles or deterministic in-memory stand-ins, preserves descriptor identity for repeated mounts, and can expose a descriptor subpath as the mounted root through the existing namespace machinery.
 
-`wanix-web` also provides a host-neutral `MessagePort` trait, an in-memory port for native tests, and worker-runtime adapters that move typed runtime requests, responses, and task messages over complete message payloads. Browser-specific `Worker` and `MessagePort` glue can attach to that surface without changing protocol encoding.
+`wanix-web` also provides a host-neutral `MessagePort` trait, an in-memory port for native tests, and worker-runtime adapters that move typed runtime requests, responses, and task messages over complete message payloads. The JS `worker-runtime.js` module adds browser-native Worker/MessagePort helpers for tagged binary envelopes, endpoint listeners, transferred ports, system facade resolution, and import-port requests without changing protocol encoding.
 
 `BrowserBindingRegistry` is the host-neutral source registry for `<wanix-bind>`-style file, archive, and import bindings. It maps source identifiers to bytes or 9P transports so native tests can validate file writes, tar mounts, and 9P imports. Browser custom elements register fetched file/archive bytes through the wasm facade before applying typed namespace descriptors.
 

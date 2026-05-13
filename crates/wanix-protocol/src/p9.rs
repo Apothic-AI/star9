@@ -990,7 +990,7 @@ impl NinePServer {
             } => self.symlink(fid, &name, &target),
             NinePRequest::Readlink { fid } => self.readlink(fid),
             NinePRequest::Fsync { fid } => self.fsync(fid),
-            NinePRequest::Flush { .. } => Ok(NinePResponse::Flush),
+            NinePRequest::Flush { oldtag } => Ok(self.flush(oldtag)),
         }
     }
 
@@ -1245,6 +1245,11 @@ impl NinePServer {
         Ok(NinePResponse::Fsync)
     }
 
+    fn flush(&self, _oldtag: u16) -> NinePResponse {
+        // Requests are handled synchronously, so flush is an acknowledgement-only no-op.
+        NinePResponse::Flush
+    }
+
     fn fid_path(&self, fid: u32) -> Result<String> {
         self.state
             .lock()
@@ -1291,6 +1296,17 @@ struct NinePClientInner {
     next_tag: AtomicU16,
     next_fid: AtomicU32,
     root_fid: u32,
+}
+
+fn validated_client_path(op: &'static str, name: &str) -> Result<String> {
+    if name.is_empty() || name.starts_with('/') || name.split('/').any(|part| part == "..") {
+        return Err(Error::path(op, name, ErrorKind::Invalid));
+    }
+    let path = clean_path(name);
+    if !valid_path(&path) {
+        return Err(Error::path(op, path, ErrorKind::Invalid));
+    }
+    Ok(path)
 }
 
 impl NinePClientFs {
@@ -1353,10 +1369,7 @@ impl NinePClientFs {
     }
 
     fn walk_fid(&self, name: &str) -> Result<u32> {
-        let name = clean_path(name);
-        if !valid_path(&name) {
-            return Err(Error::path("walk", name, ErrorKind::Invalid));
-        }
+        let name = validated_client_path("walk", name)?;
         let fid = self.alloc_fid();
         let names = if name == "." {
             Vec::new()
@@ -1396,7 +1409,7 @@ impl NinePClientFs {
     }
 
     fn open_existing(&self, name: &str, flags: u32) -> Result<NinePFile> {
-        let path = clean_path(name);
+        let path = validated_client_path("open", name)?;
         let fid = self.walk_fid(&path)?;
         match self.call(NinePRequest::Lopen { fid, flags }) {
             Ok(NinePResponse::Lopen { .. }) => Ok(NinePFile::new(self.clone(), fid, path)),
@@ -1434,7 +1447,7 @@ impl FileSystem for NinePClientFs {
     }
 
     fn stat(&self, _ctx: &FsContext, name: &str) -> Result<Metadata> {
-        let name = clean_path(name);
+        let name = validated_client_path("stat", name)?;
         let fid = self.walk_fid(&name)?;
         let result = self.getattr_fid(fid, &name);
         let clunk = self.clunk_fid(fid);
@@ -1465,8 +1478,8 @@ impl FileSystem for NinePClientFs {
     }
 
     fn open_file(&self, name: &str, flags: OpenFlags, perm: FileMode) -> Result<BoxFile> {
-        let path = clean_path(name);
-        if !valid_path(&path) || path == "." {
+        let path = validated_client_path("open", name)?;
+        if path == "." {
             return Err(Error::path("open", path, ErrorKind::Invalid));
         }
         if flags.contains(OpenFlags::CREATE) {
@@ -1515,8 +1528,8 @@ impl FileSystem for NinePClientFs {
     }
 
     fn mkdir(&self, name: &str, perm: FileMode) -> Result<()> {
-        let path = clean_path(name);
-        if !valid_path(&path) || path == "." {
+        let path = validated_client_path("mkdir", name)?;
+        if path == "." {
             return Err(Error::path("mkdir", path, ErrorKind::Invalid));
         }
         let parent = parent_path(&path);
@@ -1536,8 +1549,8 @@ impl FileSystem for NinePClientFs {
     }
 
     fn remove(&self, name: &str) -> Result<()> {
-        let path = clean_path(name);
-        if !valid_path(&path) || path == "." {
+        let path = validated_client_path("remove", name)?;
+        if path == "." {
             return Err(Error::path("remove", path, ErrorKind::Invalid));
         }
         let meta = self.stat(&FsContext::new().no_follow(), &path)?;
@@ -1557,11 +1570,8 @@ impl FileSystem for NinePClientFs {
     }
 
     fn rename(&self, old: &str, new: &str) -> Result<()> {
-        let old = clean_path(old);
-        let new = clean_path(new);
-        if !valid_path(&old) || !valid_path(&new) {
-            return Err(Error::path("rename", old, ErrorKind::Invalid));
-        }
+        let old = validated_client_path("rename", old)?;
+        let new = validated_client_path("rename", new)?;
         let old_parent = self.walk_fid(&parent_path(&old))?;
         let new_parent = self.walk_fid(&parent_path(&new))?;
         let result = match self.call(NinePRequest::RenameAt {
@@ -1627,7 +1637,7 @@ impl FileSystem for NinePClientFs {
     }
 
     fn symlink(&self, old: &str, new: &str) -> Result<()> {
-        let new = clean_path(new);
+        let new = validated_client_path("symlink", new)?;
         let parent = self.walk_fid(&parent_path(&new))?;
         let result = match self.call(NinePRequest::Symlink {
             fid: parent,
@@ -2073,6 +2083,19 @@ mod tests {
         (mem, client)
     }
 
+    fn fid_snapshot(server: &NinePServer) -> Vec<(u32, String, bool, u32)> {
+        let mut fids: Vec<_> = server
+            .state
+            .lock()
+            .unwrap()
+            .fids
+            .iter()
+            .map(|(fid, state)| (*fid, state.path.clone(), state.file.is_some(), state.flags))
+            .collect();
+        fids.sort_by_key(|(fid, ..)| *fid);
+        fids
+    }
+
     #[test]
     fn codec_round_trips_core_messages() {
         round_trip_request(NinePRequest::Version {
@@ -2095,6 +2118,7 @@ mod tests {
             newdirfid: 3,
             newname: "b".to_string(),
         });
+        round_trip_request(NinePRequest::Flush { oldtag: 17 });
 
         let qid = Qid {
             typ: QTDIR,
@@ -2129,6 +2153,7 @@ mod tests {
                 data_version: 0,
             },
         });
+        round_trip_response(NinePResponse::Flush);
     }
 
     #[test]
@@ -2325,6 +2350,65 @@ mod tests {
     }
 
     #[test]
+    fn raw_server_flush_acknowledges_without_mutating_fids() {
+        let mem = MemFs::from_entries([("dir/file.txt", b"hello".as_slice())]);
+        let server = NinePServer::new(fs_ref(mem));
+        server
+            .handle_frame(
+                &encode_request(
+                    1,
+                    &NinePRequest::Attach {
+                        fid: 1,
+                        afid: NOFID,
+                        uname: "u".into(),
+                        aname: String::new(),
+                        n_uname: 0,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        server
+            .handle_frame(
+                &encode_request(
+                    2,
+                    &NinePRequest::Walk {
+                        fid: 1,
+                        newfid: 2,
+                        names: vec!["dir".into()],
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let before = fid_snapshot(&server);
+        let flush = server
+            .handle_frame(&encode_request(9, &NinePRequest::Flush { oldtag: 2 }).unwrap())
+            .unwrap();
+        assert_eq!(decode_response(&flush).unwrap(), (9, NinePResponse::Flush));
+        assert_eq!(fid_snapshot(&server), before);
+
+        let getattr = server
+            .handle_frame(
+                &encode_request(
+                    10,
+                    &NinePRequest::GetAttr {
+                        fid: 2,
+                        request_mask: ATTR_BASIC,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let (_, response) = decode_response(&getattr).unwrap();
+        match response {
+            NinePResponse::GetAttr { attr } => assert_ne!(attr.mode & 0o040000, 0),
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
     fn client_filesystem_reads_writes_and_lists_memfs() {
         let (_mem, client) = client_with_memfs();
 
@@ -2403,4 +2487,27 @@ mod tests {
 
         assert_eq!(fs::read_file(&client, "dir/file.txt").unwrap(), b"hello");
     }
+
+    #[test]
+    fn client_rejects_invalid_paths_like_reference() {
+        let (_mem, client) = client_with_memfs();
+
+        for path in ["", "../etc/passwd", "foo/../../../bar"] {
+            let err = match client.open(&FsContext::new(), path) {
+                Ok(_) => panic!("unexpected open success for {path}"),
+                Err(err) => err,
+            };
+            assert_eq!(err.kind(), ErrorKind::Invalid);
+            assert_eq!(
+                client
+                    .mkdir(path, FileMode::from_perm(0o755))
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::Invalid
+            );
+            assert_eq!(client.remove(path).unwrap_err().kind(), ErrorKind::Invalid);
+        }
+    }
+
+    // TODO: Add Txattrwalk/Txattrcreate coverage once this module models xattr handle semantics.
 }

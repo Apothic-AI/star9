@@ -7,6 +7,7 @@ defineElement("wanix-bind", BindElement);
 defineElement("wanix-task", TaskElement);
 
 export { BindElement, SystemElement, TaskElement };
+export * from "./worker-runtime.js";
 
 function defineElement(name, ctor) {
     if (typeof window === "undefined" || !window.customElements) {

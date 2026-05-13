@@ -2366,6 +2366,25 @@ struct HttpFsInner {
     base_url: String,
     transport: Arc<dyn HttpTransport>,
     ignores: RwLock<Vec<String>>,
+    cache: Mutex<HttpFsCache>,
+}
+
+struct HttpFsCache {
+    ttl: Duration,
+    stat: BTreeMap<String, HttpFsCacheEntry<Metadata>>,
+    node: BTreeMap<String, HttpFsCacheEntry<HttpNode>>,
+}
+
+#[derive(Clone)]
+struct HttpFsCacheEntry<T> {
+    payload: HttpFsCachePayload<T>,
+    expires_at: SystemTime,
+}
+
+#[derive(Clone)]
+enum HttpFsCachePayload<T> {
+    Value(T),
+    NotFound,
 }
 
 pub trait HttpTransport: Send + Sync {
@@ -2409,13 +2428,37 @@ impl HttpResponse {
 
 impl HttpFs {
     pub fn new(base_url: impl Into<String>, transport: Arc<dyn HttpTransport>) -> Self {
+        Self::with_cache_ttl(base_url, transport, Duration::ZERO)
+    }
+
+    pub fn with_cache_ttl(
+        base_url: impl Into<String>,
+        transport: Arc<dyn HttpTransport>,
+        ttl: Duration,
+    ) -> Self {
         Self {
             inner: Arc::new(HttpFsInner {
                 base_url: base_url.into().trim_end_matches('/').to_string(),
                 transport,
                 ignores: RwLock::new(Vec::new()),
+                cache: Mutex::new(HttpFsCache {
+                    ttl,
+                    stat: BTreeMap::new(),
+                    node: BTreeMap::new(),
+                }),
             }),
         }
+    }
+
+    pub fn cache_ttl(&self) -> Duration {
+        self.inner.cache.lock().unwrap().ttl
+    }
+
+    pub fn set_cache_ttl(&self, ttl: Duration) {
+        let mut cache = self.inner.cache.lock().unwrap();
+        cache.ttl = ttl;
+        cache.stat.clear();
+        cache.node.clear();
     }
 
     pub fn ignore(&self, names: impl IntoIterator<Item = impl Into<String>>) {
@@ -2446,6 +2489,143 @@ impl HttpFs {
 
     fn build_url(&self, name: &str) -> String {
         format!("{}{}", self.inner.base_url, Self::normalize_http_path(name))
+    }
+
+    fn cache_lookup<T: Clone>(
+        entries: &mut BTreeMap<String, HttpFsCacheEntry<T>>,
+        name: &str,
+    ) -> Option<HttpFsCachePayload<T>> {
+        let now = current_time();
+        if let Some(entry) = entries.get(name) {
+            if entry.expires_at > now {
+                return Some(entry.payload.clone());
+            }
+        }
+        entries.remove(name);
+        None
+    }
+
+    fn cache_store<T: Clone>(
+        entries: &mut BTreeMap<String, HttpFsCacheEntry<T>>,
+        ttl: Duration,
+        name: &str,
+        payload: HttpFsCachePayload<T>,
+    ) {
+        if ttl.is_zero() {
+            return;
+        }
+        entries.insert(
+            name.to_string(),
+            HttpFsCacheEntry {
+                payload,
+                expires_at: current_time() + ttl,
+            },
+        );
+    }
+
+    fn cached_stat(&self, name: &str) -> Option<Result<Metadata>> {
+        let mut cache = self.inner.cache.lock().unwrap();
+        Self::cache_lookup(&mut cache.stat, name).map(|payload| match payload {
+            HttpFsCachePayload::Value(metadata) => Ok(metadata),
+            HttpFsCachePayload::NotFound => Err(Error::path("httpfs", name, ErrorKind::NotFound)),
+        })
+    }
+
+    fn cache_stat_result(&self, name: &str, result: &Result<Metadata>) {
+        let mut cache = self.inner.cache.lock().unwrap();
+        let ttl = cache.ttl;
+        match result {
+            Ok(metadata) => Self::cache_store(
+                &mut cache.stat,
+                ttl,
+                name,
+                HttpFsCachePayload::Value(metadata.clone()),
+            ),
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                Self::cache_store(&mut cache.stat, ttl, name, HttpFsCachePayload::NotFound);
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn cached_node(&self, name: &str) -> Option<Result<HttpNode>> {
+        let mut cache = self.inner.cache.lock().unwrap();
+        Self::cache_lookup(&mut cache.node, name).map(|payload| match payload {
+            HttpFsCachePayload::Value(node) => Ok(node),
+            HttpFsCachePayload::NotFound => Err(Error::path("httpfs", name, ErrorKind::NotFound)),
+        })
+    }
+
+    fn cache_node_result(&self, name: &str, result: &Result<HttpNode>) {
+        let mut cache = self.inner.cache.lock().unwrap();
+        let ttl = cache.ttl;
+        match result {
+            Ok(node) => Self::cache_store(
+                &mut cache.node,
+                ttl,
+                name,
+                HttpFsCachePayload::Value(node.clone()),
+            ),
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                Self::cache_store(&mut cache.node, ttl, name, HttpFsCachePayload::NotFound);
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn invalidate_exact(cache: &mut HttpFsCache, name: &str) {
+        cache.stat.remove(name);
+        cache.node.remove(name);
+    }
+
+    fn invalidate_tree(cache: &mut HttpFsCache, name: &str) {
+        if name == "." {
+            cache.stat.clear();
+            cache.node.clear();
+            return;
+        }
+        cache
+            .stat
+            .retain(|path, _| path != name && !path.starts_with(&format!("{name}/")));
+        cache
+            .node
+            .retain(|path, _| path != name && !path.starts_with(&format!("{name}/")));
+    }
+
+    fn invalidate_cache_after_put(&self, name: &str) {
+        let name = clean_path(name);
+        let parent = parent_path(&name);
+        let mut cache = self.inner.cache.lock().unwrap();
+        Self::invalidate_tree(&mut cache, &name);
+        Self::invalidate_exact(&mut cache, &parent);
+    }
+
+    fn invalidate_cache_after_remove(&self, name: &str) {
+        let name = clean_path(name);
+        let parent = parent_path(&name);
+        let mut cache = self.inner.cache.lock().unwrap();
+        Self::invalidate_tree(&mut cache, &name);
+        Self::invalidate_exact(&mut cache, &parent);
+    }
+
+    fn invalidate_cache_after_rename(&self, old: &str, new: &str) {
+        let old = clean_path(old);
+        let new = clean_path(new);
+        let old_parent = parent_path(&old);
+        let new_parent = parent_path(&new);
+        let mut cache = self.inner.cache.lock().unwrap();
+        Self::invalidate_tree(&mut cache, &old);
+        Self::invalidate_tree(&mut cache, &new);
+        Self::invalidate_exact(&mut cache, &old_parent);
+        Self::invalidate_exact(&mut cache, &new_parent);
+    }
+
+    fn invalidate_cache_after_patch(&self, name: &str) {
+        let name = clean_path(name);
+        let parent = parent_path(&name);
+        let mut cache = self.inner.cache.lock().unwrap();
+        Self::invalidate_tree(&mut cache, &name);
+        Self::invalidate_exact(&mut cache, &parent);
     }
 
     fn request(
@@ -2485,6 +2665,28 @@ impl HttpFs {
         self.request(Method::HEAD, name, BTreeMap::new(), Vec::new())
     }
 
+    fn load_node(&self, name: &str) -> Result<HttpNode> {
+        if let Some(result) = self.cached_node(name) {
+            return result;
+        }
+        let result = self
+            .get(name)
+            .and_then(|response| self.parse_node(name, response));
+        self.cache_node_result(name, &result);
+        result
+    }
+
+    fn load_metadata(&self, name: &str) -> Result<Metadata> {
+        if let Some(result) = self.cached_stat(name) {
+            return result;
+        }
+        let result = self.head(name).map(|response| {
+            parse_http_metadata(name, &response.headers, response.body.len() as u64)
+        });
+        self.cache_stat_result(name, &result);
+        result
+    }
+
     fn put_node(
         &self,
         name: &str,
@@ -2502,7 +2704,9 @@ impl HttpFs {
         headers.insert("Content-Ownership".to_string(), "0:0".to_string());
         headers.insert("Content-Length".to_string(), body.len().to_string());
         insert_change_timestamp(&mut headers);
-        self.request(Method::PUT, name, headers, body).map(|_| ())
+        self.request(Method::PUT, name, headers, body).map(|_| {
+            self.invalidate_cache_after_put(name);
+        })
     }
 
     pub fn patch_tar(&self, name: &str, body: impl Into<Vec<u8>>) -> Result<()> {
@@ -2515,7 +2719,9 @@ impl HttpFs {
             headers,
             body.into(),
         )
-        .map(|_| ())
+        .map(|_| {
+            self.invalidate_cache_after_patch(name);
+        })
     }
 
     fn parse_node(&self, name: &str, response: HttpResponse) -> Result<HttpNode> {
@@ -2539,7 +2745,7 @@ impl FileSystem for HttpFs {
             return Err(Error::path("open", name, ErrorKind::NotFound));
         }
         let name = clean_path(name);
-        let node = self.parse_node(&name, self.get(&name)?)?;
+        let node = self.load_node(&name)?;
         if node.metadata.is_dir() {
             return Ok(directory_file(node.metadata, node.entries));
         }
@@ -2555,12 +2761,7 @@ impl FileSystem for HttpFs {
             return Err(Error::path("stat", name, ErrorKind::NotFound));
         }
         let name = clean_path(name);
-        let response = self.head(&name)?;
-        Ok(parse_http_metadata(
-            &name,
-            &response.headers,
-            response.body.len() as u64,
-        ))
+        self.load_metadata(&name)
     }
 
     fn open_file(&self, name: &str, flags: OpenFlags, perm: FileMode) -> Result<BoxFile> {
@@ -2616,7 +2817,7 @@ impl FileSystem for HttpFs {
         let mut headers = BTreeMap::new();
         insert_change_timestamp(&mut headers);
         self.request(Method::DELETE, name, headers, Vec::new())
-            .map(|_| ())
+            .map(|_| self.invalidate_cache_after_remove(name))
     }
 
     fn rename(&self, old: &str, new: &str) -> Result<()> {
@@ -2632,7 +2833,7 @@ impl FileSystem for HttpFs {
             headers,
             Vec::new(),
         )
-        .map(|_| ())
+        .map(|_| self.invalidate_cache_after_rename(old, new))
     }
 
     fn symlink(&self, old: &str, new: &str) -> Result<()> {
@@ -2645,15 +2846,15 @@ impl FileSystem for HttpFs {
     }
 
     fn readlink(&self, name: &str) -> Result<String> {
-        let response = self.get(name)?;
-        let content_type = header_value(&response.headers, "Content-Type").unwrap_or_default();
-        if content_type != "application/x-symlink" {
+        let node = self.load_node(name)?;
+        if !node.metadata.mode.is_symlink() {
             return Err(Error::path("readlink", name, ErrorKind::Invalid));
         }
-        Ok(String::from_utf8_lossy(&response.body).into_owned())
+        Ok(String::from_utf8_lossy(&node.body).into_owned())
     }
 }
 
+#[derive(Clone)]
 struct HttpNode {
     metadata: Metadata,
     body: Vec<u8>,
@@ -3395,6 +3596,37 @@ mod tests {
         }
     }
 
+    fn http_file_response(body: &[u8]) -> HttpResponse {
+        HttpResponse::new(200)
+            .with_header("Content-Type", "application/octet-stream")
+            .with_header("Content-Mode", "33188")
+            .with_header("Content-Length", body.len().to_string())
+            .with_body(body.to_vec())
+    }
+
+    fn http_directory_response(listing: &str) -> HttpResponse {
+        HttpResponse::new(200)
+            .with_header("Content-Type", "application/x-directory")
+            .with_header("Content-Mode", "16877")
+            .with_header("Content-Length", listing.len().to_string())
+            .with_body(listing.as_bytes().to_vec())
+    }
+
+    fn http_symlink_response(target: &str) -> HttpResponse {
+        HttpResponse::new(200)
+            .with_header("Content-Type", "application/x-symlink")
+            .with_header("Content-Mode", "41471")
+            .with_header("Content-Length", target.len().to_string())
+            .with_body(target.as_bytes().to_vec())
+    }
+
+    fn http_head_response(content_type: &str, mode: &str, len: usize) -> HttpResponse {
+        HttpResponse::new(200)
+            .with_header("Content-Type", content_type)
+            .with_header("Content-Mode", mode)
+            .with_header("Content-Length", len.to_string())
+    }
+
     #[test]
     fn httpfs_reads_files_and_directories() {
         let transport = Arc::new(RecordingTransport::default());
@@ -3428,6 +3660,293 @@ mod tests {
         assert_eq!(requests[0].method, Method::GET);
         assert_eq!(requests[0].url, "https://example.invalid/root/file");
         assert_eq!(requests[1].url, "https://example.invalid/root/");
+    }
+
+    #[test]
+    fn httpfs_cache_reuses_head_and_get_until_ttl_expires() {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let transport = Arc::new(RecordingTransport::default());
+        transport.push(http_head_response("application/octet-stream", "33188", 5));
+        transport.push(http_file_response(b"hello"));
+        transport.push(http_head_response("application/octet-stream", "33188", 6));
+        transport.push(http_file_response(b"world!"));
+        let fs = HttpFs::with_cache_ttl(
+            "https://example.invalid/cache",
+            transport.clone(),
+            Duration::from_secs(10),
+        );
+
+        with_test_current_time(base, || {
+            assert_eq!(stat(&fs, "file").unwrap().size, 5);
+            assert_eq!(read_file(&fs, "file").unwrap(), b"hello");
+            assert_eq!(stat(&fs, "file").unwrap().size, 5);
+            assert_eq!(read_file(&fs, "file").unwrap(), b"hello");
+        });
+
+        with_test_current_time(base + Duration::from_secs(11), || {
+            assert_eq!(stat(&fs, "file").unwrap().size, 6);
+            assert_eq!(read_file(&fs, "file").unwrap(), b"world!");
+        });
+
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0].method, Method::HEAD);
+        assert_eq!(requests[1].method, Method::GET);
+        assert_eq!(requests[2].method, Method::HEAD);
+        assert_eq!(requests[3].method, Method::GET);
+    }
+
+    #[test]
+    fn httpfs_cache_caches_not_found_until_ttl_expires() {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let transport = Arc::new(RecordingTransport::default());
+        transport.push(HttpResponse::new(404));
+        transport.push(HttpResponse::new(404));
+        transport.push(http_head_response("application/octet-stream", "33188", 1));
+        transport.push(http_file_response(b"x"));
+        let fs = HttpFs::with_cache_ttl(
+            "https://example.invalid/cache",
+            transport.clone(),
+            Duration::from_secs(10),
+        );
+
+        with_test_current_time(base, || {
+            assert_eq!(
+                stat(&fs, "missing").unwrap_err().kind(),
+                ErrorKind::NotFound
+            );
+            assert_eq!(
+                stat(&fs, "missing").unwrap_err().kind(),
+                ErrorKind::NotFound
+            );
+            assert_eq!(
+                read_file(&fs, "missing").unwrap_err().kind(),
+                ErrorKind::NotFound
+            );
+            assert_eq!(
+                read_file(&fs, "missing").unwrap_err().kind(),
+                ErrorKind::NotFound
+            );
+        });
+
+        with_test_current_time(base + Duration::from_secs(11), || {
+            assert_eq!(stat(&fs, "missing").unwrap().size, 1);
+            assert_eq!(read_file(&fs, "missing").unwrap(), b"x");
+        });
+
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0].method, Method::HEAD);
+        assert_eq!(requests[1].method, Method::GET);
+        assert_eq!(requests[2].method, Method::HEAD);
+        assert_eq!(requests[3].method, Method::GET);
+    }
+
+    #[test]
+    fn httpfs_cache_invalidates_put_delete_and_parent_directory_entries() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        with_test_current_time(now, || {
+            let transport = Arc::new(RecordingTransport::default());
+            transport.push(http_directory_response("file 33188\n"));
+            transport.push(http_file_response(b"old"));
+            transport.push(HttpResponse::new(200));
+            transport.push(http_file_response(b"new"));
+            transport.push(http_directory_response("file 33188\n"));
+            transport.push(HttpResponse::new(200));
+            transport.push(http_directory_response("dir 16877\nfile 33188\n"));
+            transport.push(HttpResponse::new(200));
+            transport.push(http_symlink_response("file"));
+            transport.push(http_directory_response(
+                "dir 16877\nfile 33188\nlink 41471\n",
+            ));
+            transport.push(HttpResponse::new(200));
+            transport.push(HttpResponse::new(404));
+            transport.push(http_directory_response("dir 16877\nfile 33188\n"));
+
+            let fs = HttpFs::with_cache_ttl(
+                "https://example.invalid/fs",
+                transport.clone(),
+                Duration::from_secs(60),
+            );
+
+            let root: Vec<_> = read_dir(&fs, ".")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(root, vec!["file"]);
+            assert_eq!(read_file(&fs, "file").unwrap(), b"old");
+
+            write_file(&fs, "file", b"new", FileMode::from_perm(0o644)).unwrap();
+            assert_eq!(read_file(&fs, "file").unwrap(), b"new");
+            let root: Vec<_> = read_dir(&fs, ".")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(root, vec!["file"]);
+
+            fs.mkdir("dir", FileMode::from_perm(0o755)).unwrap();
+            let root: Vec<_> = read_dir(&fs, ".")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(root, vec!["dir", "file"]);
+
+            fs.symlink("file", "link").unwrap();
+            assert_eq!(fs.readlink("link").unwrap(), "file");
+            let root: Vec<_> = read_dir(&fs, ".")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(root, vec!["dir", "file", "link"]);
+
+            fs.remove("link").unwrap();
+            assert_eq!(fs.readlink("link").unwrap_err().kind(), ErrorKind::NotFound);
+            let root: Vec<_> = read_dir(&fs, ".")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(root, vec!["dir", "file"]);
+
+            let requests = transport.requests();
+            let methods: Vec<_> = requests
+                .iter()
+                .map(|request| request.method.as_str().to_string())
+                .collect();
+            assert_eq!(
+                methods,
+                vec![
+                    "GET", "GET", "PUT", "GET", "GET", "PUT", "GET", "PUT", "GET", "GET", "DELETE",
+                    "GET", "GET",
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn httpfs_cache_invalidates_old_new_and_parent_paths_on_rename() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        with_test_current_time(now, || {
+            let transport = Arc::new(RecordingTransport::default());
+            transport.push(http_directory_response("file 33188\n"));
+            transport.push(http_directory_response(""));
+            transport.push(http_file_response(b"old"));
+            transport.push(HttpResponse::new(404));
+            transport.push(HttpResponse::new(200));
+            transport.push(http_directory_response(""));
+            transport.push(http_directory_response("file 33188\n"));
+            transport.push(HttpResponse::new(404));
+            transport.push(http_file_response(b"old"));
+
+            let fs = HttpFs::with_cache_ttl(
+                "https://example.invalid/fs",
+                transport.clone(),
+                Duration::from_secs(60),
+            );
+
+            let src: Vec<_> = read_dir(&fs, "src")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(src, vec!["file"]);
+            assert!(read_dir(&fs, "dst").unwrap().is_empty());
+            assert_eq!(read_file(&fs, "src/file").unwrap(), b"old");
+            assert_eq!(
+                read_file(&fs, "dst/file").unwrap_err().kind(),
+                ErrorKind::NotFound
+            );
+
+            fs.rename("src/file", "dst/file").unwrap();
+
+            assert!(read_dir(&fs, "src").unwrap().is_empty());
+            let dst: Vec<_> = read_dir(&fs, "dst")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(dst, vec!["file"]);
+            assert_eq!(
+                read_file(&fs, "src/file").unwrap_err().kind(),
+                ErrorKind::NotFound
+            );
+            assert_eq!(read_file(&fs, "dst/file").unwrap(), b"old");
+
+            let requests = transport.requests();
+            let methods: Vec<_> = requests
+                .iter()
+                .map(|request| request.method.as_str().to_string())
+                .collect();
+            assert_eq!(
+                methods,
+                vec!["GET", "GET", "GET", "GET", "MOVE", "GET", "GET", "GET", "GET"]
+            );
+        });
+    }
+
+    #[test]
+    fn httpfs_cache_invalidates_subtree_and_parent_on_patch_tar() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        with_test_current_time(now, || {
+            let transport = Arc::new(RecordingTransport::default());
+            transport.push(http_directory_response("dir 16877\n"));
+            transport.push(http_directory_response("child 33188\n"));
+            transport.push(http_file_response(b"old"));
+            transport.push(HttpResponse::new(204));
+            transport.push(http_directory_response("dir 16877\n"));
+            transport.push(http_directory_response("child 33188\nnew 33188\n"));
+            transport.push(http_file_response(b"new"));
+
+            let fs = HttpFs::with_cache_ttl(
+                "https://example.invalid/fs",
+                transport.clone(),
+                Duration::from_secs(60),
+            );
+
+            let root: Vec<_> = read_dir(&fs, ".")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(root, vec!["dir"]);
+            let dir: Vec<_> = read_dir(&fs, "dir")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(dir, vec!["child"]);
+            assert_eq!(read_file(&fs, "dir/child").unwrap(), b"old");
+
+            fs.patch_tar("dir", b"patch".to_vec()).unwrap();
+
+            let root: Vec<_> = read_dir(&fs, ".")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(root, vec!["dir"]);
+            let dir: Vec<_> = read_dir(&fs, "dir")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(dir, vec!["child", "new"]);
+            assert_eq!(read_file(&fs, "dir/child").unwrap(), b"new");
+
+            let requests = transport.requests();
+            let methods: Vec<_> = requests
+                .iter()
+                .map(|request| request.method.as_str().to_string())
+                .collect();
+            assert_eq!(
+                methods,
+                vec!["GET", "GET", "GET", "PATCH", "GET", "GET", "GET"]
+            );
+        });
     }
 
     #[test]

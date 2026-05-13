@@ -10,6 +10,7 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Filesystem traits, helpers, metadata, paths, file handles, and open flags.
 - In-memory, local, map, union, pipe, signal, tar-compatible, metadata-cache, and initial sync filesystem surfaces.
 - HTTP filesystem protocol semantics through a Rust transport abstraction.
+- Opt-in HTTP filesystem caching with deterministic TTL tests and mutation invalidation.
 - R2-style object storage semantics through a Rust object-store abstraction.
 - Explicit metadata caching through `MetaCacheFs` and local-first sync orchestration through `SyncFs`.
 - Task/resource filesystem with per-task namespaces, aliases, drivers, and file descriptors.
@@ -17,6 +18,7 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - CBOR encode/decode helpers for the typed public API boundary.
 - Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, and `#download` surfaces.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
+- Browser Worker/MessagePort JS glue for runtime message envelopes and transferred ports.
 
 ## Workspace
 
