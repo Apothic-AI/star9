@@ -270,6 +270,34 @@ impl Task {
         file.file.close()
     }
 
+    pub fn renumber_fd(&self, from: u32, to: u32) -> Result<()> {
+        let mut fds = self.inner.fds.lock().unwrap();
+        if from == to {
+            return fds
+                .files
+                .contains_key(&from)
+                .then_some(())
+                .ok_or_else(|| Error::path("renumberfd", from.to_string(), ErrorKind::Invalid));
+        }
+        if !fds.files.contains_key(&from) {
+            return Err(Error::path(
+                "renumberfd",
+                from.to_string(),
+                ErrorKind::Invalid,
+            ));
+        }
+        {
+            let target = fds
+                .files
+                .get_mut(&to)
+                .ok_or_else(|| Error::path("renumberfd", to.to_string(), ErrorKind::Invalid))?;
+            target.file.close()?;
+        }
+        let source = fds.files.remove(&from).expect("source fd checked above");
+        fds.files.insert(to, source);
+        Ok(())
+    }
+
     pub fn fd_path(&self, fd: u32) -> Result<String> {
         let fds = self.inner.fds.lock().unwrap();
         fds.files
@@ -757,6 +785,27 @@ mod tests {
         assert_eq!(&buf[..n], b"ab");
         task.close_fd(fd).unwrap();
         assert!(task.with_fd_mut(fd, |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn renumber_fd_moves_source_into_existing_target() {
+        let task = TaskFs::new().alloc("auto", None).unwrap();
+        let mem = MemFs::from_entries([
+            ("source", b"source".to_vec()),
+            ("target", b"target".to_vec()),
+        ]);
+        let source = task.open_fd(wanix_fs::open(&mem, "source").unwrap(), "source");
+        let target = task.open_fd(wanix_fs::open(&mem, "target").unwrap(), "target");
+
+        task.renumber_fd(source, target).unwrap();
+        assert!(task.with_fd_mut(source, |_| Ok(())).is_err());
+        assert_eq!(task.fd_path(target).unwrap(), "source");
+
+        let mut buf = [0_u8; 8];
+        let n = task
+            .with_fd_mut(target, |file| file.read(&mut buf))
+            .unwrap();
+        assert_eq!(&buf[..n], b"source");
     }
 
     #[test]

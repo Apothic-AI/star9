@@ -151,6 +151,9 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .func_wrap(WASI, "fd_close", fd_close)
         .map_err(wasmi_error)?;
     linker
+        .func_wrap(WASI, "fd_renumber", fd_renumber)
+        .map_err(wasmi_error)?;
+    linker
         .func_wrap(WASI, "fd_seek", fd_seek)
         .map_err(wasmi_error)?;
     linker
@@ -427,6 +430,14 @@ fn fd_close(caller: Caller<'_, WasiState>, fd: i32) -> i32 {
         .data()
         .task
         .close_fd(fd as u32)
+        .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
+fn fd_renumber(caller: Caller<'_, WasiState>, fd: i32, to: i32) -> i32 {
+    caller
+        .data()
+        .task
+        .renumber_fd(fd as u32, to as u32)
         .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
 }
 
@@ -2755,6 +2766,166 @@ mod tests {
             modified.duration_since(UNIX_EPOCH).unwrap().as_nanos(),
             1_700_000_000_456_000_000
         );
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_renumbers_open_fds() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "path_open"
+                (func $path_open
+                  (param i32 i32 i32 i32 i32 i64 i64 i32 i32)
+                  (result i32)))
+              (import "wasi_snapshot_preview1" "fd_renumber"
+                (func $fd_renumber (param i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_read"
+                (func $fd_read (param i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_close"
+                (func $fd_close (param i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+              (data (i32.const 100) "source.txt")
+              (data (i32.const 120) "target.txt")
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_errno (param $errno i32) (param $want i32) (param $code i32)
+                local.get $errno
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_i32 (param $actual i32) (param $want i32) (param $code i32)
+                local.get $actual
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 100)
+                    (i32.const 10)
+                    (i32.const 0)
+                    (i64.const 2)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 10))
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 120)
+                    (i32.const 10)
+                    (i32.const 0)
+                    (i64.const 2)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 4))
+                  (i32.const 11))
+
+                (call $assert_ok
+                  (call $fd_renumber
+                    (i32.load (i32.const 0))
+                    (i32.load (i32.const 4)))
+                  (i32.const 12))
+
+                (i32.store (i32.const 40) (i32.const 200))
+                (i32.store (i32.const 44) (i32.const 10))
+                (call $assert_ok
+                  (call $fd_read
+                    (i32.load (i32.const 4))
+                    (i32.const 40)
+                    (i32.const 1)
+                    (i32.const 20))
+                  (i32.const 13))
+                (call $assert_i32
+                  (i32.load (i32.const 20))
+                  (i32.const 10)
+                  (i32.const 14))
+                (call $assert_i32
+                  (i32.load8_u (i32.const 200))
+                  (i32.const 114)
+                  (i32.const 15))
+                (call $assert_i32
+                  (i32.load8_u (i32.const 209))
+                  (i32.const 100)
+                  (i32.const 16))
+                (call $assert_errno
+                  (call $fd_read
+                    (i32.load (i32.const 0))
+                    (i32.const 40)
+                    (i32.const 1)
+                    (i32.const 24))
+                  (i32.const 28)
+                  (i32.const 17))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 4)))
+                  (i32.const 18)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("program.wasm", program),
+                    ("source.txt", b"renumbered".to_vec()),
+                    ("target.txt", b"closed".to_vec()),
+                ])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
     }
 
     #[test]
