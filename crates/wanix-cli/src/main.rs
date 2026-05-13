@@ -184,6 +184,7 @@ fn render_device_acceptance() -> Result<String> {
     let term_data = read_once(data_reader.as_mut())?;
     data_reader.close()?;
     data_writer.close()?;
+    let term_screen = read_text(ns_ref, &format!("#term/{term_id}/screen"))?;
 
     let mut winch_reader = open(ns_ref, &format!("#term/{term_id}/winch/data"))?;
     let mut winch_writer = open(ns_ref, &format!("#term/{term_id}/winch/data"))?;
@@ -240,13 +241,14 @@ fn render_device_acceptance() -> Result<String> {
 
     Ok(format!(
         concat!(
-            "device term id={} program={} data={} winch={} state={} size={}\n",
+            "device term id={} program={} data={} screen={} winch={} state={} size={}\n",
             "device vm id={} kind={} alias={} state={} console={}\n",
             "device net listener={} client={} accepted={} client_status={} accepted_status={} data={} reply={} closed={}\n"
         ),
         term_id,
         escape_text(&(first_program + &second_program)),
         escape_text(&term_data),
+        escape_text(&term_screen),
         escape_text(&winch),
         term_state,
         term_size,
@@ -439,7 +441,7 @@ mod tests {
         assert_eq!(
             render_device_acceptance().unwrap(),
             concat!(
-                "device term id=1 program=run\\r\\nnext\\r\\n data=screen winch=120x40 state=ready size=80x24\n",
+                "device term id=1 program=run\\r\\nnext\\r\\n data=screen screen=screen winch=120x40 state=ready size=80x24\n",
                 "device vm id=1 kind=firecracker alias=guest-a state=stopped console=start\\nstop\\n\n",
                 "device net listener=1 client=2 accepted=3 client_status=connected local=local:10001 remote=service:7 accepted_status=connected local=service:7 remote=local:10001 data=payload reply=reply closed=closed local=local:10001 remote=service:7\n"
             )

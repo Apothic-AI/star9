@@ -170,7 +170,8 @@ impl FileHandle for NewDeviceHandle {
 fn terminal_fs(id: &str) -> FsRef {
     let state = SharedTextFile::readonly("state", "ready");
     let size = SharedTextFile::writable("size", "80x24");
-    let data = QueueFile::loopback("data");
+    let screen = SharedLogFile::new("screen");
+    let data = TerminalDataFile::new("data", screen.clone());
     let program = QueueFile::program("program");
     let winch = SignalFs::default();
 
@@ -201,6 +202,7 @@ fn terminal_fs(id: &str) -> FsRef {
     fs.insert("state", fs_ref(state));
     fs.insert("size", fs_ref(size));
     fs.insert("data", fs_ref(data));
+    fs.insert("screen", fs_ref(screen));
     fs.insert("program", fs_ref(program));
     fs.insert("winch", fs_ref(winch));
     fs_ref(fs)
@@ -1359,6 +1361,58 @@ impl FileHandle for QueueHandle {
 }
 
 #[derive(Clone)]
+struct TerminalDataFile {
+    queue: QueueFile,
+    screen: SharedLogFile,
+}
+
+impl TerminalDataFile {
+    fn new(name: impl Into<String>, screen: SharedLogFile) -> Self {
+        Self {
+            queue: QueueFile::loopback(name),
+            screen,
+        }
+    }
+
+    fn clear(&self) {
+        self.queue.clear();
+        self.screen.clear();
+    }
+}
+
+impl FileSystem for TerminalDataFile {
+    fn open(&self, _ctx: &FsContext, name: &str) -> Result<BoxFile> {
+        if name != "." {
+            return Err(Error::path("open", name, ErrorKind::NotFound));
+        }
+        Ok(Box::new(TerminalDataHandle { file: self.clone() }))
+    }
+
+    fn stat(&self, ctx: &FsContext, name: &str) -> Result<Metadata> {
+        self.queue.stat(ctx, name)
+    }
+}
+
+struct TerminalDataHandle {
+    file: TerminalDataFile,
+}
+
+impl FileHandle for TerminalDataHandle {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        Ok(self.file.queue.reader.read(buf))
+    }
+
+    fn write(&mut self, data: &[u8]) -> Result<usize> {
+        self.file.screen.append(data);
+        Ok(self.file.queue.write(data))
+    }
+
+    fn stat(&self) -> Result<Metadata> {
+        self.file.queue.stat(&FsContext::new(), ".")
+    }
+}
+
+#[derive(Clone)]
 struct SharedTextFile {
     name: String,
     value: Arc<Mutex<String>>,
@@ -1471,6 +1525,10 @@ impl SharedLogFile {
         let mut data = self.data.lock().unwrap();
         data.extend_from_slice(line.as_bytes());
         data.push(b'\n');
+    }
+
+    fn append(&self, bytes: &[u8]) {
+        self.data.lock().unwrap().extend_from_slice(bytes);
     }
 
     fn clear(&self) {
@@ -1588,6 +1646,14 @@ mod tests {
         data_writer.write(b"screen").unwrap();
         let n = data_reader.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"screen");
+        assert_eq!(
+            read_file(
+                runtime.namespace().as_ref(),
+                &format!("#term/{term_id}/screen")
+            )
+            .unwrap(),
+            b"screen"
+        );
 
         let mut winch_reader = open(
             runtime.namespace().as_ref(),
@@ -1611,6 +1677,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(emptied.read(&mut buf).unwrap(), 0);
+        assert_eq!(
+            read_file(
+                runtime.namespace().as_ref(),
+                &format!("#term/{term_id}/screen")
+            )
+            .unwrap(),
+            b""
+        );
 
         write_handle(&runtime, &format!("#term/{term_id}/size"), b"132x43");
         write_handle(&runtime, &format!("#term/{term_id}/ctl"), b"reset");

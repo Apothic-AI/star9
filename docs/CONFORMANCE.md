@@ -69,7 +69,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Host-neutral browser storage registry resolution for writable registered handles, persistent descriptor identities, and subpath-rooted mounts.
 - Runtime root bindings for core and device surfaces.
 - Device allocator resource creation.
-- Terminal device program/data queues, program LF-to-CRLF normalization, winch signal path, ctl clear/reset/noop behavior, state, and size files.
+- Terminal device program/data queues, retained screen file, program LF-to-CRLF normalization, winch signal path, ctl clear/reset/noop behavior, state, and size files.
 - VM device `new/<kind>` allocation, ctl start/stop/reset/alias/config behavior, alias lookup, state fields, console log, id, and kind files.
 - Network deterministic Plan 9-style connection resources for dial, bind, announce, listen accept, hangup/reset, status/local/remote, data flow, and invalid transitions.
 - WASI and Go-compatible JS execution adapter task starts.
@@ -111,7 +111,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - Additional 9P edge cases such as true async flush cancellation and remote conflict/error parity.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters where async browser APIs meet the synchronous Rust filesystem trait boundary.
 - Broader browser Worker startup and real execution orchestration on top of the JS Worker host facade, JS/WASM bootstrap host, and host-neutral typed runtime adapter.
-- Terminal screen protocol details beyond the host-neutral file protocol.
+- Terminal browser element protocol details beyond the host-neutral data/program/screen file protocol.
 - Real VM execution and native/browser TCP transport adapters beyond deterministic state-machine resources.
 - Real WASI socket behavior beyond the current explicit unsupported preview1 imports.
 - WASI syscall coverage beyond the current preview1 fd directory, fd positional I/O/allocation/renumber, fd advice/flags/timestamps, fd sync/truncate, poll/yield/signal imports, path mutation, args/env, clock, and random baseline.
