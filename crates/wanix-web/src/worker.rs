@@ -1,7 +1,5 @@
 use wanix_core::{Error, ErrorKind, Result};
-use wanix_protocol::runtime::{
-    self, RuntimeRequest, RuntimeResponse, TaskMessage, WorkerHandle, WorkerStartRequest,
-};
+use wanix_protocol::runtime::{self, RuntimeRequest, RuntimeResponse, TaskMessage};
 use wanix_runtime::RuntimeProtocolHost;
 
 use crate::message_port::MessagePort;
@@ -193,7 +191,7 @@ mod tests {
     use crate::message_port::InMemoryMessagePort;
     use wanix_protocol::runtime::{
         EnvironmentEntry, ExecutionKind, ExecutionSpec, ExitStatus, StdioSet, TaskMessagePayload,
-        WorkerSpawnRequest,
+        WorkerHandle, WorkerSpawnRequest, WorkerStartRequest,
     };
     use wanix_runtime::Runtime;
 

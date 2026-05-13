@@ -31,7 +31,7 @@ pub type BoxFile = Box<dyn FileHandle>;
 
 fn current_time() -> SystemTime {
     #[cfg(test)]
-    if let Some(time) = TEST_CURRENT_TIME.with(|slot| slot.borrow().clone()) {
+    if let Some(time) = TEST_CURRENT_TIME.with(|slot| *slot.borrow()) {
         return time;
     }
 
