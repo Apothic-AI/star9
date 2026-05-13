@@ -9,6 +9,7 @@
 mod http_native;
 mod http_server;
 mod metacache;
+mod s3_object_store;
 mod syncfs;
 
 #[cfg(test)]
@@ -26,6 +27,7 @@ use http::Method;
 pub use http_native::NativeHttpTransport;
 pub use http_server::HttpFsHandler;
 pub use metacache::{CacheFs, MetaCacheFs};
+pub use s3_object_store::{HttpRequestSigner, S3ObjectStore};
 pub use syncfs::{
     apply_sync_patch, DebouncedSyncScheduler, DirtyChange, DirtyEntry, RemoteSyncBackend,
     RemoteSyncRef, SyncFs, SyncScheduleSnapshot,

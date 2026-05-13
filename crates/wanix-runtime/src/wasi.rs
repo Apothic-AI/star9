@@ -19,6 +19,7 @@ const ERRNO_IO: i32 = 29;
 const ERRNO_ISDIR: i32 = 31;
 const ERRNO_NOENT: i32 = 44;
 const ERRNO_NOTDIR: i32 = 54;
+const ERRNO_NOTEMPTY: i32 = 55;
 const ERRNO_NOTSUP: i32 = 58;
 const ERRNO_PERM: i32 = 63;
 
@@ -146,7 +147,25 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .func_wrap(WASI, "path_open", path_open)
         .map_err(wasmi_error)?;
     linker
+        .func_wrap(WASI, "path_create_directory", path_create_directory)
+        .map_err(wasmi_error)?;
+    linker
         .func_wrap(WASI, "path_filestat_get", path_filestat_get)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "path_unlink_file", path_unlink_file)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "path_remove_directory", path_remove_directory)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "path_rename", path_rename)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "path_symlink", path_symlink)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "path_readlink", path_readlink)
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "random_get", random_get)
@@ -352,16 +371,11 @@ fn path_open(
     fdflags: i32,
     opened_fd_ptr: i32,
 ) -> i32 {
-    let rel = match read_string(&mut caller, path_ptr, path_len) {
+    let task = caller.data().task.clone();
+    let path = match read_wasi_path(&mut caller, &task, fd, path_ptr, path_len) {
         Ok(path) => path,
         Err(errno) => return errno,
     };
-    let task = caller.data().task.clone();
-    let base = match task.fd_path(fd as u32) {
-        Ok(path) => path,
-        Err(err) => return errno_from_error(&err),
-    };
-    let path = join_wasi_path(&base, &rel);
     let file = if (oflags & OFLAGS_DIRECTORY) != 0 {
         task.namespace().open(&FsContext::new(), &path)
     } else {
@@ -377,6 +391,22 @@ fn path_open(
     write_u32(&mut caller, opened_fd_ptr, opened_fd).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
+fn path_create_directory(
+    mut caller: Caller<'_, WasiState>,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
+) -> i32 {
+    let task = caller.data().task.clone();
+    let path = match read_wasi_path(&mut caller, &task, fd, path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    task.namespace()
+        .mkdir(&path, FileMode::DIR | FileMode::from_perm(0o755))
+        .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
 fn path_filestat_get(
     mut caller: Caller<'_, WasiState>,
     fd: i32,
@@ -385,21 +415,140 @@ fn path_filestat_get(
     path_len: i32,
     stat_ptr: i32,
 ) -> i32 {
-    let rel = match read_string(&mut caller, path_ptr, path_len) {
+    let task = caller.data().task.clone();
+    let path = match read_wasi_path(&mut caller, &task, fd, path_ptr, path_len) {
         Ok(path) => path,
         Err(errno) => return errno,
     };
-    let task = caller.data().task.clone();
-    let base = match task.fd_path(fd as u32) {
-        Ok(path) => path,
-        Err(err) => return errno_from_error(&err),
-    };
-    let path = join_wasi_path(&base, &rel);
     let meta = match task.namespace().stat(&FsContext::new(), &path) {
         Ok(meta) => meta,
         Err(err) => return errno_from_error(&err),
     };
     write_filestat(&mut caller, stat_ptr, meta.mode, meta.size)
+        .map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
+fn path_unlink_file(
+    mut caller: Caller<'_, WasiState>,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
+) -> i32 {
+    let task = caller.data().task.clone();
+    let path = match read_wasi_path(&mut caller, &task, fd, path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    let meta = match task.namespace().lstat(&FsContext::new(), &path) {
+        Ok(meta) => meta,
+        Err(err) => return errno_from_error(&err),
+    };
+    if meta.is_dir() {
+        return ERRNO_ISDIR;
+    }
+    task.namespace()
+        .remove(&path)
+        .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
+fn path_remove_directory(
+    mut caller: Caller<'_, WasiState>,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
+) -> i32 {
+    let task = caller.data().task.clone();
+    let path = match read_wasi_path(&mut caller, &task, fd, path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    let meta = match task.namespace().lstat(&FsContext::new(), &path) {
+        Ok(meta) => meta,
+        Err(err) => return errno_from_error(&err),
+    };
+    if !meta.is_dir() {
+        return ERRNO_NOTDIR;
+    }
+    match task.namespace().read_dir(&FsContext::new(), &path) {
+        Ok(entries) if !entries.is_empty() => return errno_from_error(&ErrorKind::NotEmpty.into()),
+        Ok(_) => {}
+        Err(err) => return errno_from_error(&err),
+    }
+    task.namespace()
+        .remove(&path)
+        .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
+fn path_rename(
+    mut caller: Caller<'_, WasiState>,
+    old_fd: i32,
+    old_path_ptr: i32,
+    old_path_len: i32,
+    new_fd: i32,
+    new_path_ptr: i32,
+    new_path_len: i32,
+) -> i32 {
+    let task = caller.data().task.clone();
+    let old_path = match read_wasi_path(&mut caller, &task, old_fd, old_path_ptr, old_path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    let new_path = match read_wasi_path(&mut caller, &task, new_fd, new_path_ptr, new_path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    task.namespace()
+        .rename(&old_path, &new_path)
+        .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
+fn path_symlink(
+    mut caller: Caller<'_, WasiState>,
+    old_path_ptr: i32,
+    old_path_len: i32,
+    fd: i32,
+    new_path_ptr: i32,
+    new_path_len: i32,
+) -> i32 {
+    let old_path = match read_string(&mut caller, old_path_ptr, old_path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    let task = caller.data().task.clone();
+    let new_path = match read_wasi_path(&mut caller, &task, fd, new_path_ptr, new_path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    task.namespace()
+        .symlink(&old_path, &new_path)
+        .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
+fn path_readlink(
+    mut caller: Caller<'_, WasiState>,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
+    buf_ptr: i32,
+    buf_len: i32,
+    used_ptr: i32,
+) -> i32 {
+    if buf_len < 0 {
+        return ERRNO_INVAL;
+    }
+    let task = caller.data().task.clone();
+    let path = match read_wasi_path(&mut caller, &task, fd, path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    let target = match task.namespace().readlink(&path) {
+        Ok(target) => target,
+        Err(err) => return errno_from_error(&err),
+    };
+    let bytes = target.as_bytes();
+    let copied = bytes.len().min(buf_len as usize);
+    write_bytes(&mut caller, buf_ptr, &bytes[..copied])
+        .and_then(|()| write_u32(&mut caller, used_ptr, copied as u32))
         .map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
@@ -466,6 +615,20 @@ fn join_wasi_path(base: &str, rel: &str) -> String {
     } else {
         clean_path(&format!("{base}/{rel}"))
     }
+}
+
+fn read_wasi_path(
+    caller: &mut Caller<'_, WasiState>,
+    task: &Task,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
+) -> std::result::Result<String, i32> {
+    let rel = read_string(caller, path_ptr, path_len)?;
+    let base = task
+        .fd_path(fd as u32)
+        .map_err(|err| errno_from_error(&err))?;
+    Ok(join_wasi_path(&base, &rel))
 }
 
 fn preopen_guest_path(path: &str) -> String {
@@ -680,7 +843,7 @@ fn errno_from_error(err: &Error) -> i32 {
         ErrorKind::NotDir => ERRNO_NOTDIR,
         ErrorKind::IsDir => ERRNO_ISDIR,
         ErrorKind::Closed => ERRNO_BADF,
-        ErrorKind::NotEmpty => ERRNO_PERM,
+        ErrorKind::NotEmpty => ERRNO_NOTEMPTY,
         ErrorKind::Other => ERRNO_IO,
     }
 }
@@ -698,6 +861,14 @@ mod tests {
         StreamDescriptor,
     };
     use wanix_vfs::BindMode;
+
+    #[test]
+    fn wasi_errno_maps_not_empty_to_preview1_errno() {
+        assert_eq!(
+            errno_from_error(&ErrorKind::NotEmpty.into()),
+            ERRNO_NOTEMPTY
+        );
+    }
 
     #[test]
     fn wasmi_wasi_handler_runs_preview1_against_task_namespace() {
@@ -915,5 +1086,355 @@ mod tests {
             read_file(task.namespace().as_ref(), "workspace/stdout.txt").unwrap(),
             b"stdio-ok"
         );
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_mutates_paths_with_preview1_syscalls() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "path_create_directory"
+                (func $path_create_directory (param i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_open"
+                (func $path_open
+                  (param i32 i32 i32 i32 i32 i64 i64 i32 i32)
+                  (result i32)))
+              (import "wasi_snapshot_preview1" "fd_write"
+                (func $fd_write (param i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_close"
+                (func $fd_close (param i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_rename"
+                (func $path_rename (param i32 i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_symlink"
+                (func $path_symlink (param i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_readlink"
+                (func $path_readlink (param i32 i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_unlink_file"
+                (func $path_unlink_file (param i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_remove_directory"
+                (func $path_remove_directory (param i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+              (data (i32.const 100) "dir")
+              (data (i32.const 120) "original.txt")
+              (data (i32.const 140) "dir/renamed.txt")
+              (data (i32.const 170) "renamed.txt")
+              (data (i32.const 190) "link.txt")
+              (data (i32.const 210) "readlink.txt")
+              (data (i32.const 240) "payload")
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_errno (param $errno i32) (param $want i32) (param $code i32)
+                local.get $errno
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (call $assert_ok
+                  (call $path_create_directory
+                    (i32.const 3)
+                    (i32.const 100)
+                    (i32.const 3))
+                  (i32.const 10))
+
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 100)
+                    (i32.const 3)
+                    (i32.const 2)
+                    (i64.const 0)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 11))
+
+                (call $assert_ok
+                  (call $path_open
+                    (i32.load (i32.const 0))
+                    (i32.const 0)
+                    (i32.const 120)
+                    (i32.const 12)
+                    (i32.const 1)
+                    (i64.const 64)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 4))
+                  (i32.const 12))
+
+                (i32.store (i32.const 32) (i32.const 240))
+                (i32.store (i32.const 36) (i32.const 7))
+                (call $assert_ok
+                  (call $fd_write
+                    (i32.load (i32.const 4))
+                    (i32.const 32)
+                    (i32.const 1)
+                    (i32.const 40))
+                  (i32.const 13))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 4)))
+                  (i32.const 14))
+
+                (call $assert_ok
+                  (call $path_rename
+                    (i32.load (i32.const 0))
+                    (i32.const 120)
+                    (i32.const 12)
+                    (i32.const 3)
+                    (i32.const 140)
+                    (i32.const 15))
+                  (i32.const 15))
+
+                (call $assert_errno
+                  (call $path_open
+                    (i32.load (i32.const 0))
+                    (i32.const 0)
+                    (i32.const 120)
+                    (i32.const 12)
+                    (i32.const 0)
+                    (i64.const 2)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 8))
+                  (i32.const 44)
+                  (i32.const 16))
+
+                (call $assert_ok
+                  (call $path_symlink
+                    (i32.const 170)
+                    (i32.const 11)
+                    (i32.load (i32.const 0))
+                    (i32.const 190)
+                    (i32.const 8))
+                  (i32.const 17))
+
+                (call $assert_ok
+                  (call $path_readlink
+                    (i32.load (i32.const 0))
+                    (i32.const 190)
+                    (i32.const 8)
+                    (i32.const 256)
+                    (i32.const 64)
+                    (i32.const 60))
+                  (i32.const 18))
+
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 210)
+                    (i32.const 12)
+                    (i32.const 1)
+                    (i64.const 64)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 12))
+                  (i32.const 19))
+
+                (i32.store (i32.const 32) (i32.const 256))
+                (i32.store (i32.const 36) (i32.load (i32.const 60)))
+                (call $assert_ok
+                  (call $fd_write
+                    (i32.load (i32.const 12))
+                    (i32.const 32)
+                    (i32.const 1)
+                    (i32.const 40))
+                  (i32.const 20))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 12)))
+                  (i32.const 21))
+
+                (call $assert_ok
+                  (call $path_unlink_file
+                    (i32.load (i32.const 0))
+                    (i32.const 190)
+                    (i32.const 8))
+                  (i32.const 22))
+                (call $assert_ok
+                  (call $path_unlink_file
+                    (i32.load (i32.const 0))
+                    (i32.const 170)
+                    (i32.const 11))
+                  (i32.const 23))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 0)))
+                  (i32.const 24))
+                (call $assert_ok
+                  (call $path_remove_directory
+                    (i32.const 3)
+                    (i32.const 100)
+                    (i32.const 3))
+                  (i32.const 25)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([("program.wasm", program)])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/readlink.txt").unwrap(),
+            b"renamed.txt"
+        );
+        assert_eq!(
+            task.namespace()
+                .stat(&FsContext::new(), "workspace/dir")
+                .unwrap_err()
+                .kind(),
+            ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_path_readlink_rejects_regular_files() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "path_open"
+                (func $path_open
+                  (param i32 i32 i32 i32 i32 i64 i64 i32 i32)
+                  (result i32)))
+              (import "wasi_snapshot_preview1" "fd_close"
+                (func $fd_close (param i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_readlink"
+                (func $path_readlink (param i32 i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+              (data (i32.const 100) "plain.txt")
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_errno (param $errno i32) (param $want i32) (param $code i32)
+                local.get $errno
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 100)
+                    (i32.const 9)
+                    (i32.const 1)
+                    (i64.const 64)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 10))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 0)))
+                  (i32.const 11))
+                (call $assert_errno
+                  (call $path_readlink
+                    (i32.const 3)
+                    (i32.const 100)
+                    (i32.const 9)
+                    (i32.const 128)
+                    (i32.const 32)
+                    (i32.const 16))
+                  (i32.const 28)
+                  (i32.const 12)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([("program.wasm", program)])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
     }
 }

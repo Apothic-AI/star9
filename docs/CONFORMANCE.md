@@ -24,6 +24,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `HttpFsHandler` server-side protocol behavior over in-memory filesystems for GET/HEAD metadata, plain and multipart directory listings, PUT file/directory/symlink, DELETE, MOVE, metadata PATCH, tar PATCH application through `apply_sync_patch`, and unsupported methods.
 - `R2Fs` object key scoping, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates through a Rust object store trait.
 - `R2Fs` parent listing compare-and-swap retry behavior and deterministic conflict exhaustion through Rust in-memory object stores.
+- S3/R2-compatible `S3ObjectStore` adapter behavior over the Rust `HttpTransport` trait, including GET/PUT/DELETE/list-prefix requests, XML key parsing, request-signing hooks, ETag-based compare-and-swap headers, and fake-transport coverage without live cloud services.
 - Pipe bidirectional reads and writes with file close preserving the underlying pipe.
 - Namespace file and directory binds.
 - Namespace root unions and overlapping directory reads.
@@ -48,7 +49,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
-- Wasmi-backed WASI preview1 execution coverage for task namespace module loading, args/env/cwd propagation, preopened cwd, fd read/write/seek/close/stat behavior, path open/stat behavior, stdio fd writes, deterministic random/clock imports, and proc-exit mapping.
+- Wasmi-backed WASI preview1 execution coverage for task namespace module loading, args/env/cwd propagation, preopened cwd, fd read/write/seek/close/stat behavior, path open/stat/create-directory/unlink/remove-directory/rename/symlink/readlink behavior, stdio fd writes, deterministic random/clock imports, preview1 errno mapping, and proc-exit mapping.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
@@ -98,12 +99,12 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - HTTP filesystem remote metadata semantics beyond the currently covered cache headers and Wanix metadata fields.
 - `SyncFs` browser timer integration and backend-specific transport scheduling semantics beyond reusable tar patch application.
 - HTTP filesystem broader live-service behavior against real servers.
-- Cloudflare/S3 adapter wiring for the Rust `ObjectStore` contract.
+- Cloudflare/S3 live-service coverage such as SigV4 signing examples, bucket-specific behavior, and opt-in live tests over `S3ObjectStore`.
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export using the JS port helpers beyond loopback smoke.
 - Additional 9P edge cases such as flush cancellation and remote conflict/error parity.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters where async browser APIs meet the synchronous Rust filesystem trait boundary.
 - Broader browser Worker startup and real execution orchestration on top of the JS Worker host facade, JS/WASM bootstrap host, and host-neutral typed runtime adapter.
 - Terminal screen protocol details beyond the host-neutral file protocol.
 - Real VM execution and native/browser TCP transport adapters beyond deterministic state-machine resources.
-- WASI syscall coverage beyond the current preview1 fd/path/args/env/clock/random baseline.
+- WASI syscall coverage beyond the current preview1 fd/path mutation/args/env/clock/random baseline.
 - Full Go-compatible JS/WASM worker execution.

@@ -12,7 +12,7 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - HTTP filesystem protocol semantics through Rust client/server transport abstractions, with an opt-in native blocking transport.
 - Multipart HTTP directory listing parsing, PATCH tar behavior, and server-side request handling tested through fake transports.
 - Opt-in HTTP filesystem caching with deterministic TTL tests and mutation invalidation.
-- R2-style object storage semantics through a Rust object-store abstraction.
+- R2-style object storage semantics through a Rust object-store abstraction plus an S3/R2-compatible HTTP object-store adapter with a signing hook and fake-transport tests.
 - Explicit metadata caching through `MetaCacheFs` and local-first sync orchestration through `SyncFs`, including reusable tar patch application and a native background debounce scheduler.
 - Task/resource filesystem with per-task namespaces, aliases, drivers, and file descriptors.
 - Typed public file API for the Wanix JS handle operation set.
@@ -24,7 +24,7 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Browser Worker/MessagePort JS glue for runtime message envelopes and transferred ports.
 - Browser Worker host facade and execution-worker helper for Worker-like startup, runtime port transfer, message routing, JS/WASM execution bootstrap, dynamic JS runner import, runner context, exit/error reporting, and cleanup.
 - Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests.
-- Wasmi-backed WASI preview1 execution over Wanix task namespaces and fd tables.
+- Wasmi-backed WASI preview1 execution over Wanix task namespaces, fd tables, and path mutation syscalls.
 - Native CLI acceptance commands for 9P loopback, deterministic devices, and runtime worker protocol flows.
 
 ## Workspace
