@@ -59,6 +59,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - 9P client filesystem behavior over loopback transport for read, write, create, readdir, rename, remove, mkdir, and rmdir operations.
 - 9P partial-walk edge behavior, duplicate `newfid` rejection, and client not-found mapping for partial remote walks.
 - 9P flush acknowledgement behavior and fid-state preservation for synchronous server handling.
+- 9P native stream framing helpers for consecutive length-prefixed frames, invalid frame size rejection, and multi-request server dispatch over `Read`/`Write` boundaries.
 - 9P xattr walk/create message codec coverage plus server/client xattr read, list, and write commit behavior over MemFs xattrs.
 - 9P client invalid path rejection before normalization for empty, absolute, and parent-traversal inputs.
 - Runtime 9P namespace export and loopback import behavior.
@@ -105,7 +106,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - HTTP filesystem broader live-service behavior against real servers.
 - Cloudflare/S3 live-service coverage such as bucket-specific behavior and opt-in live tests over `S3ObjectStore` plus `AwsSigV4Signer`.
 - Cross-document/browser MessagePort namespace mounting for remote 9P imports using the JS port helpers beyond whole-frame serving and loopback smoke.
-- Additional 9P edge cases such as flush cancellation and remote conflict/error parity.
+- Additional 9P edge cases such as true async flush cancellation and remote conflict/error parity.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters where async browser APIs meet the synchronous Rust filesystem trait boundary.
 - Broader browser Worker startup and real execution orchestration on top of the JS Worker host facade, JS/WASM bootstrap host, and host-neutral typed runtime adapter.
 - Terminal screen protocol details beyond the host-neutral file protocol.

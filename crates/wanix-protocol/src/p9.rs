@@ -5,7 +5,7 @@
 //! server/client bridge without depending on the reference Go implementation.
 
 use std::collections::HashMap;
-use std::io::SeekFrom;
+use std::io::{Read, SeekFrom, Write};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,7 @@ pub const DEFAULT_MSIZE: u32 = 64 * 1024;
 pub const NOFID: u32 = u32::MAX;
 pub const NOTAG: u16 = u16::MAX;
 pub const AT_REMOVEDIR: u32 = 0x200;
+pub const MAX_STREAM_FRAME_SIZE: usize = DEFAULT_MSIZE as usize;
 
 const QTDIR: u8 = 0x80;
 const QTSYMLINK: u8 = 0x02;
@@ -1489,6 +1490,62 @@ pub trait NinePTransport: Send + Sync {
     fn round_trip(&self, request: Vec<u8>) -> Result<Vec<u8>>;
 }
 
+pub fn read_frame(reader: &mut impl Read) -> Result<Option<Vec<u8>>> {
+    let mut header = [0_u8; 4];
+    match reader.read(&mut header[..1]) {
+        Ok(0) => return Ok(None),
+        Ok(1) => {}
+        Ok(_) => unreachable!("single-byte read buffer cannot read more than one byte"),
+        Err(err) => return Err(err.into()),
+    }
+    reader.read_exact(&mut header[1..])?;
+    let size = u32::from_le_bytes(header) as usize;
+    validate_frame_size(size)?;
+    let mut frame = vec![0_u8; size];
+    frame[..4].copy_from_slice(&header);
+    reader.read_exact(&mut frame[4..])?;
+    Ok(Some(frame))
+}
+
+pub fn write_frame(writer: &mut impl Write, frame: &[u8]) -> Result<()> {
+    let size = encoded_frame_size(frame)?;
+    validate_frame_size(size)?;
+    if size != frame.len() {
+        return Err(ErrorKind::Invalid.into());
+    }
+    writer.write_all(frame)?;
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn serve_frame_stream(
+    server: &NinePServer,
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+) -> Result<usize> {
+    let mut served = 0;
+    while let Some(frame) = read_frame(reader)? {
+        let response = server.handle_frame(&frame)?;
+        write_frame(writer, &response)?;
+        served += 1;
+    }
+    Ok(served)
+}
+
+fn encoded_frame_size(frame: &[u8]) -> Result<usize> {
+    if frame.len() < 4 {
+        return Err(ErrorKind::Invalid.into());
+    }
+    Ok(u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize)
+}
+
+fn validate_frame_size(size: usize) -> Result<()> {
+    if !(7..=MAX_STREAM_FRAME_SIZE).contains(&size) {
+        return Err(ErrorKind::Invalid.into());
+    }
+    Ok(())
+}
+
 pub struct LoopbackTransport {
     server: Arc<NinePServer>,
 }
@@ -2543,6 +2600,103 @@ mod tests {
             },
         });
         round_trip_response(NinePResponse::Flush);
+    }
+
+    #[test]
+    fn stream_helpers_preserve_consecutive_frame_boundaries() {
+        let first = encode_request(
+            1,
+            &NinePRequest::Version {
+                msize: DEFAULT_MSIZE,
+                version: VERSION.to_string(),
+            },
+        )
+        .unwrap();
+        let second = encode_request(2, &NinePRequest::Flush { oldtag: 1 }).unwrap();
+        let mut stream = Vec::new();
+        write_frame(&mut stream, &first).unwrap();
+        write_frame(&mut stream, &second).unwrap();
+
+        let mut reader = std::io::Cursor::new(stream);
+        assert_eq!(read_frame(&mut reader).unwrap(), Some(first));
+        assert_eq!(read_frame(&mut reader).unwrap(), Some(second));
+        assert_eq!(read_frame(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn stream_helpers_reject_invalid_frame_sizes() {
+        let mut too_short = std::io::Cursor::new(3_u32.to_le_bytes());
+        assert_eq!(
+            read_frame(&mut too_short).unwrap_err().kind(),
+            ErrorKind::Invalid
+        );
+
+        let mut mismatched = encode_request(1, &NinePRequest::Flush { oldtag: 1 }).unwrap();
+        let declared_size = mismatched.len() as u32 + 1;
+        mismatched[..4].copy_from_slice(&declared_size.to_le_bytes());
+        assert_eq!(
+            write_frame(&mut Vec::new(), &mismatched)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Invalid
+        );
+    }
+
+    #[test]
+    fn serve_frame_stream_handles_multiple_requests() {
+        let fs = fs_ref(MemFs::from_entries([("file.txt", b"hello".to_vec())]));
+        let server = NinePServer::new(fs);
+        let requests = [
+            encode_request(
+                1,
+                &NinePRequest::Version {
+                    msize: DEFAULT_MSIZE,
+                    version: VERSION.to_string(),
+                },
+            )
+            .unwrap(),
+            encode_request(
+                2,
+                &NinePRequest::Attach {
+                    fid: 1,
+                    afid: NOFID,
+                    uname: "wanix".to_string(),
+                    aname: String::new(),
+                    n_uname: 0,
+                },
+            )
+            .unwrap(),
+            encode_request(3, &NinePRequest::Flush { oldtag: 2 }).unwrap(),
+        ]
+        .concat();
+        let mut reader = std::io::Cursor::new(requests);
+        let mut responses = Vec::new();
+
+        assert_eq!(
+            serve_frame_stream(&server, &mut reader, &mut responses).unwrap(),
+            3
+        );
+
+        let mut response_reader = std::io::Cursor::new(responses);
+        assert!(matches!(
+            read_frame(&mut response_reader)
+                .unwrap()
+                .map(|frame| decode_response(&frame).unwrap()),
+            Some((1, NinePResponse::Version { .. }))
+        ));
+        assert!(matches!(
+            read_frame(&mut response_reader)
+                .unwrap()
+                .map(|frame| decode_response(&frame).unwrap()),
+            Some((2, NinePResponse::Attach { .. }))
+        ));
+        assert_eq!(
+            read_frame(&mut response_reader)
+                .unwrap()
+                .map(|frame| decode_response(&frame).unwrap()),
+            Some((3, NinePResponse::Flush))
+        );
+        assert_eq!(read_frame(&mut response_reader).unwrap(), None);
     }
 
     #[test]
