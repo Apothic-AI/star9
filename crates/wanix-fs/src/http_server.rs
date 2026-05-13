@@ -24,7 +24,7 @@ impl HttpFsHandler {
         let target = parse_request_target(&request.url);
         let response = match request.method {
             Method::GET => self.handle_get(&target.path, &request.headers),
-            Method::HEAD => self.handle_head(&target.path),
+            Method::HEAD => self.handle_head(&target.path, &request.headers),
             Method::PUT => self.handle_put(&target.path, target.had_trailing_slash, &request),
             Method::DELETE => self.handle_delete(&target.path),
             Method::PATCH => self.handle_patch(&target.path, &request),
@@ -40,44 +40,64 @@ impl HttpFsHandler {
     fn handle_get(
         &self,
         name: &str,
-        headers: &BTreeMap<String, String>,
+        request_headers: &BTreeMap<String, String>,
     ) -> std::result::Result<HttpResponse, Error> {
         let metadata = lstat(self.fsys.as_ref(), name)?;
-        if metadata.is_dir() && accepts_multipart(headers) {
+        if metadata.is_dir() && accepts_multipart(request_headers) {
             return self.multipart_directory_response(name);
         }
 
         if metadata.mode.is_symlink() {
             let body = self.fsys.readlink(name)?.into_bytes();
+            let response_headers = metadata_headers(&metadata, body.len() as u64);
+            if conditional_not_modified(request_headers, &response_headers) {
+                return Ok(not_modified_response(&response_headers));
+            }
             return Ok(HttpResponse {
                 status: 200,
-                headers: metadata_headers(&metadata, body.len() as u64),
+                headers: response_headers,
                 body,
             });
         }
 
         if metadata.is_dir() {
             let body = directory_listing(self.fsys.as_ref(), name)?;
+            let response_headers = metadata_headers(&metadata, body.len() as u64);
+            if conditional_not_modified(request_headers, &response_headers) {
+                return Ok(not_modified_response(&response_headers));
+            }
             return Ok(HttpResponse {
                 status: 200,
-                headers: metadata_headers(&metadata, body.len() as u64),
+                headers: response_headers,
                 body,
             });
         }
 
         let body = read_file(self.fsys.as_ref(), name)?;
+        let response_headers = metadata_headers(&metadata, body.len() as u64);
+        if conditional_not_modified(request_headers, &response_headers) {
+            return Ok(not_modified_response(&response_headers));
+        }
         Ok(HttpResponse {
             status: 200,
-            headers: metadata_headers(&metadata, body.len() as u64),
+            headers: response_headers,
             body,
         })
     }
 
-    fn handle_head(&self, name: &str) -> std::result::Result<HttpResponse, Error> {
+    fn handle_head(
+        &self,
+        name: &str,
+        request_headers: &BTreeMap<String, String>,
+    ) -> std::result::Result<HttpResponse, Error> {
         let metadata = lstat(self.fsys.as_ref(), name)?;
+        let response_headers = metadata_headers(&metadata, metadata.size);
+        if conditional_not_modified(request_headers, &response_headers) {
+            return Ok(not_modified_response(&response_headers));
+        }
         Ok(HttpResponse {
             status: 200,
-            headers: metadata_headers(&metadata, metadata.size),
+            headers: response_headers,
             body: Vec::new(),
         })
     }
@@ -297,6 +317,13 @@ fn directory_listing(
 }
 
 fn metadata_headers(metadata: &crate::Metadata, content_length: u64) -> BTreeMap<String, String> {
+    let modified = unix_secs(metadata.modified).to_string();
+    let etag = format!(
+        "\"{}-{}-{}\"",
+        metadata.mode.unix_type_and_perm(),
+        content_length,
+        modified
+    );
     BTreeMap::from([
         (
             "Content-Type".to_string(),
@@ -304,15 +331,44 @@ fn metadata_headers(metadata: &crate::Metadata, content_length: u64) -> BTreeMap
         ),
         ("Content-Length".to_string(), content_length.to_string()),
         ("Content-Mode".to_string(), http_mode(metadata.mode)),
-        (
-            "Content-Modified".to_string(),
-            unix_secs(metadata.modified).to_string(),
-        ),
+        ("Content-Modified".to_string(), modified.clone()),
+        ("Last-Modified".to_string(), modified),
+        ("ETag".to_string(), etag),
         (
             "Content-Ownership".to_string(),
             format!("{}:{}", metadata.uid, metadata.gid),
         ),
     ])
+}
+
+fn conditional_not_modified(
+    request_headers: &BTreeMap<String, String>,
+    response_headers: &BTreeMap<String, String>,
+) -> bool {
+    if let Some(candidate) = header_value(request_headers, "If-None-Match") {
+        let Some(etag) = header_value(response_headers, "ETag") else {
+            return false;
+        };
+        return candidate
+            .split(',')
+            .map(str::trim)
+            .any(|value| value == "*" || value == etag);
+    }
+
+    let Some(since) = header_value(request_headers, "If-Modified-Since") else {
+        return false;
+    };
+    header_value(response_headers, "Last-Modified").is_some_and(|modified| modified == since)
+}
+
+fn not_modified_response(headers: &BTreeMap<String, String>) -> HttpResponse {
+    let mut response = HttpResponse::new(304);
+    for key in ["ETag", "Last-Modified", "Content-Modified"] {
+        if let Some(value) = header_value(headers, key) {
+            response = response.with_header(key, value);
+        }
+    }
+    response
 }
 
 fn content_type(mode: FileMode) -> &'static str {
@@ -568,6 +624,36 @@ mod tests {
             metadata.size.to_string()
         );
         assert_eq!(response.headers["Content-Mode"], http_mode(metadata.mode));
+    }
+
+    #[test]
+    fn httpfs_handler_honors_conditional_get_and_head_validators() {
+        let fs = MemFs::from_entries([("hello.txt", b"hello".to_vec())]);
+        let handler = HttpFsHandler::new(fs_ref(fs));
+
+        let first = handler.handle(request(Method::GET, "hello.txt")).unwrap();
+        let mut conditional_get = request(Method::GET, "hello.txt");
+        conditional_get
+            .headers
+            .insert("If-None-Match".to_string(), first.headers["ETag"].clone());
+        let get_response = handler.handle(conditional_get).unwrap();
+
+        let mut conditional_head = request(Method::HEAD, "hello.txt");
+        conditional_head.headers.insert(
+            "If-Modified-Since".to_string(),
+            first.headers["Last-Modified"].clone(),
+        );
+        let head_response = handler.handle(conditional_head).unwrap();
+
+        assert_eq!(get_response.status, 304);
+        assert!(get_response.body.is_empty());
+        assert_eq!(get_response.headers["ETag"], first.headers["ETag"]);
+        assert_eq!(head_response.status, 304);
+        assert!(head_response.body.is_empty());
+        assert_eq!(
+            head_response.headers["Last-Modified"],
+            first.headers["Last-Modified"]
+        );
     }
 
     #[test]

@@ -21,7 +21,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `HttpFs` opt-in metadata/node caching behavior for success and not-found responses, deterministic TTL expiry, and mutation-driven invalidation after write, mkdir/symlink, remove, rename, and PATCH tar operations.
 - `HttpFs` multipart/mixed directory listing parsing and fake-transport PATCH tar application behavior.
 - `HttpFs` opt-in native blocking transport behavior through loopback `TcpListener` tests for request/response round trips, response header/body preservation, and 404 status mapping without live external services.
-- `HttpFsHandler` server-side protocol behavior over in-memory filesystems for GET/HEAD metadata, plain and multipart directory listings, PUT file/directory/symlink, DELETE, MOVE, metadata PATCH, tar PATCH application through `apply_sync_patch`, and unsupported methods.
+- `HttpFs` cache behavior for TTL reuse, cached not-found responses, validator-driven stale revalidation with `If-None-Match`/`If-Modified-Since`, `304 Not Modified` reuse, and mutation invalidation.
+- `HttpFsHandler` server-side protocol behavior over in-memory filesystems for GET/HEAD metadata, conditional GET/HEAD validators, plain and multipart directory listings, PUT file/directory/symlink, DELETE, MOVE, metadata PATCH, tar PATCH application through `apply_sync_patch`, and unsupported methods.
 - `R2Fs` object key scoping, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates through a Rust object store trait.
 - `R2Fs` parent listing compare-and-swap retry behavior and deterministic conflict exhaustion through Rust in-memory object stores.
 - S3/R2-compatible `S3ObjectStore` adapter behavior over the Rust `HttpTransport` trait, including GET/PUT/DELETE/list-prefix requests, XML key parsing, request-signing hooks, ETag-based compare-and-swap headers, and fake-transport coverage without live cloud services.
@@ -103,7 +104,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:
 
-- HTTP filesystem remote metadata semantics beyond the currently covered cache headers and Wanix metadata fields.
+- HTTP filesystem remote metadata semantics beyond the currently covered cache validators, Wanix metadata fields, and conditional GET/HEAD behavior.
 - `SyncFs` browser timer integration and backend-specific transport scheduling semantics beyond reusable tar patch application.
 - HTTP filesystem broader live-service behavior against real servers.
 - Cloudflare/S3 live-service coverage such as bucket-specific behavior and opt-in live tests over `S3ObjectStore` plus `AwsSigV4Signer`.

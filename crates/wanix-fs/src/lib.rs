@@ -2426,12 +2426,25 @@ struct HttpFsCache {
 struct HttpFsCacheEntry<T> {
     payload: HttpFsCachePayload<T>,
     expires_at: SystemTime,
+    validators: HttpValidators,
 }
 
 #[derive(Clone)]
 enum HttpFsCachePayload<T> {
     Value(T),
     NotFound,
+}
+
+#[derive(Clone, Default)]
+struct HttpValidators {
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+impl HttpValidators {
+    fn is_empty(&self) -> bool {
+        self.etag.is_none() && self.last_modified.is_none()
+    }
 }
 
 pub trait HttpTransport: Send + Sync {
@@ -2554,8 +2567,16 @@ impl HttpFs {
                 return Some(entry.payload.clone());
             }
         }
-        entries.remove(name);
         None
+    }
+
+    fn cache_stale_value<T: Clone>(
+        entries: &BTreeMap<String, HttpFsCacheEntry<T>>,
+        name: &str,
+    ) -> Option<HttpFsCacheEntry<T>> {
+        entries.get(name).and_then(|entry| {
+            matches!(entry.payload, HttpFsCachePayload::Value(_)).then(|| entry.clone())
+        })
     }
 
     fn cache_store<T: Clone>(
@@ -2563,6 +2584,7 @@ impl HttpFs {
         ttl: Duration,
         name: &str,
         payload: HttpFsCachePayload<T>,
+        validators: HttpValidators,
     ) {
         if ttl.is_zero() {
             return;
@@ -2572,6 +2594,7 @@ impl HttpFs {
             HttpFsCacheEntry {
                 payload,
                 expires_at: current_time() + ttl,
+                validators,
             },
         );
     }
@@ -2584,7 +2607,12 @@ impl HttpFs {
         })
     }
 
-    fn cache_stat_result(&self, name: &str, result: &Result<Metadata>) {
+    fn cache_stat_http_result(
+        &self,
+        name: &str,
+        result: &Result<Metadata>,
+        validators: HttpValidators,
+    ) {
         let mut cache = self.inner.cache.lock().unwrap();
         let ttl = cache.ttl;
         match result {
@@ -2593,12 +2621,24 @@ impl HttpFs {
                 ttl,
                 name,
                 HttpFsCachePayload::Value(metadata.clone()),
+                validators,
             ),
             Err(err) if err.kind() == ErrorKind::NotFound => {
-                Self::cache_store(&mut cache.stat, ttl, name, HttpFsCachePayload::NotFound);
+                Self::cache_store(
+                    &mut cache.stat,
+                    ttl,
+                    name,
+                    HttpFsCachePayload::NotFound,
+                    HttpValidators::default(),
+                );
             }
             Err(_) => {}
         }
+    }
+
+    fn stale_stat_entry(&self, name: &str) -> Option<HttpFsCacheEntry<Metadata>> {
+        let cache = self.inner.cache.lock().unwrap();
+        Self::cache_stale_value(&cache.stat, name)
     }
 
     fn cached_node(&self, name: &str) -> Option<Result<HttpNode>> {
@@ -2609,7 +2649,12 @@ impl HttpFs {
         })
     }
 
-    fn cache_node_result(&self, name: &str, result: &Result<HttpNode>) {
+    fn cache_node_http_result(
+        &self,
+        name: &str,
+        result: &Result<HttpNode>,
+        validators: HttpValidators,
+    ) {
         let mut cache = self.inner.cache.lock().unwrap();
         let ttl = cache.ttl;
         match result {
@@ -2618,12 +2663,24 @@ impl HttpFs {
                 ttl,
                 name,
                 HttpFsCachePayload::Value(node.clone()),
+                validators,
             ),
             Err(err) if err.kind() == ErrorKind::NotFound => {
-                Self::cache_store(&mut cache.node, ttl, name, HttpFsCachePayload::NotFound);
+                Self::cache_store(
+                    &mut cache.node,
+                    ttl,
+                    name,
+                    HttpFsCachePayload::NotFound,
+                    HttpValidators::default(),
+                );
             }
             Err(_) => {}
         }
+    }
+
+    fn stale_node_entry(&self, name: &str) -> Option<HttpFsCacheEntry<HttpNode>> {
+        let cache = self.inner.cache.lock().unwrap();
+        Self::cache_stale_value(&cache.node, name)
     }
 
     fn invalidate_exact(cache: &mut HttpFsCache, name: &str) {
@@ -2688,12 +2745,26 @@ impl HttpFs {
         headers: BTreeMap<String, String>,
         body: Vec<u8>,
     ) -> Result<HttpResponse> {
-        let response = self.inner.transport.request(HttpRequest {
+        let response = self.raw_request(method, name, headers, body)?;
+        Self::response_status_result(name, response)
+    }
+
+    fn raw_request(
+        &self,
+        method: Method,
+        name: &str,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> Result<HttpResponse> {
+        self.inner.transport.request(HttpRequest {
             method,
             url: self.build_url(name),
             headers,
             body,
-        })?;
+        })
+    }
+
+    fn response_status_result(name: &str, response: HttpResponse) -> Result<HttpResponse> {
         match response.status {
             200..=299 => Ok(response),
             404 => Err(Error::path("httpfs", name, ErrorKind::NotFound)),
@@ -2704,28 +2775,42 @@ impl HttpFs {
         }
     }
 
-    fn get(&self, name: &str) -> Result<HttpResponse> {
-        if self.should_ignore(name) {
-            return Err(Error::path("open", name, ErrorKind::NotFound));
-        }
-        self.request(Method::GET, name, BTreeMap::new(), Vec::new())
-    }
-
-    fn head(&self, name: &str) -> Result<HttpResponse> {
-        if self.should_ignore(name) {
-            return Err(Error::path("stat", name, ErrorKind::NotFound));
-        }
-        self.request(Method::HEAD, name, BTreeMap::new(), Vec::new())
-    }
-
     fn load_node(&self, name: &str) -> Result<HttpNode> {
+        self.load_node_with_headers(name, BTreeMap::new())
+    }
+
+    fn load_node_with_headers(
+        &self,
+        name: &str,
+        mut headers: BTreeMap<String, String>,
+    ) -> Result<HttpNode> {
         if let Some(result) = self.cached_node(name) {
             return result;
         }
-        let result = self
-            .get(name)
-            .and_then(|response| self.parse_node(name, response));
-        self.cache_node_result(name, &result);
+        if self.should_ignore(name) {
+            return Err(Error::path("open", name, ErrorKind::NotFound));
+        }
+        let stale = self.stale_node_entry(name);
+        if let Some(entry) = &stale {
+            add_validator_headers(&mut headers, &entry.validators);
+        }
+        let response = self.raw_request(Method::GET, name, headers, Vec::new())?;
+        let validators = response_validators(&response.headers, stale.as_ref());
+        let result = match response.status {
+            304 => stale
+                .and_then(|entry| match entry.payload {
+                    HttpFsCachePayload::Value(node) => Some(Ok(node)),
+                    HttpFsCachePayload::NotFound => None,
+                })
+                .unwrap_or_else(|| {
+                    Err(Error::Message(format!(
+                        "httpfs {name} returned HTTP 304 without a cached node"
+                    )))
+                }),
+            _ => Self::response_status_result(name, response)
+                .and_then(|response| self.parse_node(name, response)),
+        };
+        self.cache_node_http_result(name, &result, validators);
         result
     }
 
@@ -2733,10 +2818,32 @@ impl HttpFs {
         if let Some(result) = self.cached_stat(name) {
             return result;
         }
-        let result = self.head(name).map(|response| {
-            parse_http_metadata(name, &response.headers, response.body.len() as u64)
-        });
-        self.cache_stat_result(name, &result);
+        if self.should_ignore(name) {
+            return Err(Error::path("stat", name, ErrorKind::NotFound));
+        }
+        let stale = self.stale_stat_entry(name);
+        let mut headers = BTreeMap::new();
+        if let Some(entry) = &stale {
+            add_validator_headers(&mut headers, &entry.validators);
+        }
+        let response = self.raw_request(Method::HEAD, name, headers, Vec::new())?;
+        let validators = response_validators(&response.headers, stale.as_ref());
+        let result = match response.status {
+            304 => stale
+                .and_then(|entry| match entry.payload {
+                    HttpFsCachePayload::Value(metadata) => Some(Ok(metadata)),
+                    HttpFsCachePayload::NotFound => None,
+                })
+                .unwrap_or_else(|| {
+                    Err(Error::Message(format!(
+                        "httpfs {name} returned HTTP 304 without cached metadata"
+                    )))
+                }),
+            _ => Self::response_status_result(name, response).map(|response| {
+                parse_http_metadata(name, &response.headers, response.body.len() as u64)
+            }),
+        };
+        self.cache_stat_http_result(name, &result, validators);
         result
     }
 
@@ -2907,11 +3014,7 @@ impl FileSystem for HttpFs {
         } else {
             let mut headers = BTreeMap::new();
             headers.insert("Accept".to_string(), "multipart/mixed".to_string());
-            let result = self
-                .request(Method::GET, &name, headers, Vec::new())
-                .and_then(|response| self.parse_node(&name, response));
-            self.cache_node_result(&name, &result);
-            result?
+            self.load_node_with_headers(&name, headers)?
         };
         if !node.metadata.is_dir() {
             return Err(Error::path("readdir", &name, ErrorKind::Invalid));
@@ -3257,6 +3360,36 @@ fn header_value(headers: &BTreeMap<String, String>, name: &str) -> Option<String
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case(name))
         .map(|(_, value)| value.clone())
+}
+
+fn validators_from_headers(headers: &BTreeMap<String, String>) -> HttpValidators {
+    HttpValidators {
+        etag: header_value(headers, "ETag"),
+        last_modified: header_value(headers, "Last-Modified"),
+    }
+}
+
+fn response_validators<T: Clone>(
+    headers: &BTreeMap<String, String>,
+    stale: Option<&HttpFsCacheEntry<T>>,
+) -> HttpValidators {
+    let validators = validators_from_headers(headers);
+    if validators.is_empty() {
+        stale
+            .map(|entry| entry.validators.clone())
+            .unwrap_or(validators)
+    } else {
+        validators
+    }
+}
+
+fn add_validator_headers(headers: &mut BTreeMap<String, String>, validators: &HttpValidators) {
+    if let Some(etag) = &validators.etag {
+        headers.insert("If-None-Match".to_string(), etag.clone());
+    }
+    if let Some(last_modified) = &validators.last_modified {
+        headers.insert("If-Modified-Since".to_string(), last_modified.clone());
+    }
 }
 
 fn multipart_boundary(headers: &BTreeMap<String, String>) -> Option<String> {
@@ -4379,6 +4512,48 @@ mod tests {
         assert_eq!(requests[1].method, Method::GET);
         assert_eq!(requests[2].method, Method::HEAD);
         assert_eq!(requests[3].method, Method::GET);
+    }
+
+    #[test]
+    fn httpfs_cache_revalidates_stale_head_and_get_with_validators() {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let transport = Arc::new(RecordingTransport::default());
+        transport.push(
+            http_head_response("application/octet-stream", "33188", 5)
+                .with_header("ETag", "\"stat-v1\"")
+                .with_header("Last-Modified", "1700000000"),
+        );
+        transport.push(
+            http_file_response(b"hello")
+                .with_header("ETag", "\"node-v1\"")
+                .with_header("Last-Modified", "1700000000"),
+        );
+        transport.push(HttpResponse::new(304));
+        transport.push(HttpResponse::new(304));
+        let fs = HttpFs::with_cache_ttl(
+            "https://example.invalid/cache",
+            transport.clone(),
+            Duration::from_secs(10),
+        );
+
+        with_test_current_time(base, || {
+            assert_eq!(stat(&fs, "file").unwrap().size, 5);
+            assert_eq!(read_file(&fs, "file").unwrap(), b"hello");
+        });
+
+        with_test_current_time(base + Duration::from_secs(11), || {
+            assert_eq!(stat(&fs, "file").unwrap().size, 5);
+            assert_eq!(read_file(&fs, "file").unwrap(), b"hello");
+        });
+
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[2].method, Method::HEAD);
+        assert_eq!(requests[2].headers["If-None-Match"], "\"stat-v1\"");
+        assert_eq!(requests[2].headers["If-Modified-Since"], "1700000000");
+        assert_eq!(requests[3].method, Method::GET);
+        assert_eq!(requests[3].headers["If-None-Match"], "\"node-v1\"");
+        assert_eq!(requests[3].headers["If-Modified-Since"], "1700000000");
     }
 
     #[test]

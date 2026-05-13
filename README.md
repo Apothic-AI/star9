@@ -10,8 +10,8 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Filesystem traits, helpers, metadata, paths, file handles, and open flags.
 - In-memory, local, map, union, pipe, signal, tar-compatible, metadata-cache, and local-first sync filesystem surfaces.
 - HTTP filesystem protocol semantics through Rust client/server transport abstractions, with an opt-in native blocking transport.
-- Multipart HTTP directory listing parsing, PATCH tar behavior, and server-side request handling tested through fake transports.
-- Opt-in HTTP filesystem caching with deterministic TTL tests and mutation invalidation.
+- Multipart HTTP directory listing parsing, PATCH tar behavior, conditional GET/HEAD validators, and server-side request handling tested through fake transports.
+- Opt-in HTTP filesystem caching with deterministic TTL tests, validator-driven stale revalidation, `304 Not Modified` reuse, and mutation invalidation.
 - R2-style object storage semantics through a Rust object-store abstraction plus an S3/R2-compatible HTTP object-store adapter and deterministic SigV4 signer with fake-transport tests.
 - Explicit metadata caching through `MetaCacheFs` and local-first sync orchestration through `SyncFs`, including reusable tar patch application and a native background debounce scheduler.
 - Task/resource filesystem with per-task namespaces, aliases, drivers, and file descriptors.
