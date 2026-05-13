@@ -2,6 +2,7 @@
 
 ## 2026-05-13
 
+- Extended the Wasmi WASI preview1 handler with positional fd syscalls `fd_pread`, `fd_pwrite`, `fd_tell`, and `fd_allocate`, preserving file offsets across positional I/O/allocation, syncing successful positional writes, validating invalid offsets, and covering the behavior with WAT fixtures over MemFs-backed task namespaces.
 - Added deterministic S3/R2 SigV4 request signing through `AwsSigV4Signer`, including host/date/payload-hash/authorization headers, canonical path/query/header handling, configurable service/region, fixed signing time for tests, and stable AWS reference-vector coverage without live credentials.
 - Extended the Wasmi WASI preview1 handler with fd-level `fd_sync`, `fd_datasync`, `fd_filestat_set_size`, and `fd_readdir`, including directory entry encoding with cookies, `.`/`..` entries, namespace file truncation, and WAT tests for directory reads and fd sync/truncate behavior.
 - Added a persistent `WanixSystem` 9P export server plus `handle9pFrame` wasm/native facade methods so browser-side helpers can process complete sequential 9P request frames without resetting fid state between calls.

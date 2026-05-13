@@ -9,7 +9,7 @@ Immediate protocol/runtime tranche:
 - Continue browser system and binding parity beyond the component-driven `wanix-system`/`wanix-bind`/`wanix-task` baseline, especially cross-document imports and richer task element behavior.
 - Keep the browser-side 9P import/export tranche at whole-frame `MessagePort` serving boundaries until a Rust-owned async client mount transport is designed and validated.
 - Attach the browser host storage adapters to namespace mounts where the synchronous Rust `FileSystem` boundary can be satisfied, and continue import/execution glue on top of the custom elements, Worker/MessagePort helpers, JS-WASM worker bootstrap host, and host-neutral registries.
-- Continue expanding the Wasmi-backed WASI preview1 syscall handler beyond the current fd directory, fd sync/truncate, path mutation, args/env, clock, and random baseline, and implement real browser/native JS-WASM execution drivers on top of the typed worker host and execution-worker bootstrap surfaces.
+- Continue expanding the Wasmi-backed WASI preview1 syscall handler beyond the current fd directory, fd positional I/O/allocation, fd sync/truncate, path mutation, args/env, clock, and random baseline, and implement real browser/native JS-WASM execution drivers on top of the typed worker host and execution-worker bootstrap surfaces.
 - Continue backend hardening with HTTP remote metadata details, opt-in live transport coverage, browser SyncFs timer integration, backend-specific patch application, and live S3/R2 service coverage over the Rust object-store adapter and SigV4 signer boundaries.
 - Deepen remaining host-specific device behavior, especially real terminal screen protocol, VM execution, worker integration, and native/browser TCP adapters.
 - Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
@@ -100,7 +100,7 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 - Port worker startup, task worker messaging, port opening, 9P import/export, namespace setup from `<wanix-bind>`, and mount integration for browser filesystem bindings. Keep the JS Worker host facade covered by deterministic fake-worker tests while real browser execution is integrated.
 
 10. WASI and Go-compatible JS execution
-- Extend the Rust Wasmi WASI preview1 handler and port or replace the current worker shims for Go-compatible JS/WASM workloads.
+- Extend the Rust Wasmi WASI preview1 handler, including fd positional I/O/allocation and remaining preview1 syscall coverage, and port or replace the current worker shims for Go-compatible JS/WASM workloads.
     - Keep execution adapters isolated behind task drivers.
     - Validate with Rust-backed WASI and Go-compatible JS/WASM tests/examples.
 

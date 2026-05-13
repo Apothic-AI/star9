@@ -6,7 +6,7 @@ use std::{
 };
 
 use wanix_core::{clean_path, Error, ErrorKind, FileMode, FsContext, OpenFlags, Result};
-use wanix_fs::{read_file, FileSystem};
+use wanix_fs::{read_file, FileHandle, FileSystem};
 use wanix_protocol::runtime::{EnvironmentEntry, ExecutionSpec, ExitStatus};
 use wanix_task::Task;
 use wasmi::{Caller, Engine, Extern, Linker, Memory, Module, Store};
@@ -132,10 +132,22 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .func_wrap(WASI, "fd_read", fd_read)
         .map_err(wasmi_error)?;
     linker
+        .func_wrap(WASI, "fd_pwrite", fd_pwrite)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "fd_pread", fd_pread)
+        .map_err(wasmi_error)?;
+    linker
         .func_wrap(WASI, "fd_close", fd_close)
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "fd_seek", fd_seek)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "fd_tell", fd_tell)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "fd_allocate", fd_allocate)
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "fd_fdstat_get", fd_fdstat_get)
@@ -299,6 +311,85 @@ fn fd_read(
     write_u32(&mut caller, nread_ptr, total).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
+fn fd_pwrite(
+    mut caller: Caller<'_, WasiState>,
+    fd: i32,
+    iovs_ptr: i32,
+    iovs_len: i32,
+    offset: i64,
+    nwritten_ptr: i32,
+) -> i32 {
+    if offset < 0 {
+        return ERRNO_INVAL;
+    }
+    let buffers = match read_iovs(&mut caller, iovs_ptr, iovs_len) {
+        Ok(buffers) => buffers,
+        Err(errno) => return errno,
+    };
+    let task = caller.data().task.clone();
+    let mut written = 0_u32;
+    let mut current_offset = offset as u64;
+    for data in buffers {
+        let result = task.with_fd_mut(fd as u32, |file| {
+            with_preserved_offset(file, |file| {
+                let n = file.write_at(&data, current_offset)?;
+                sync_ignoring_unsupported(file)?;
+                Ok(n)
+            })
+        });
+        match result {
+            Ok(n) => {
+                written = written.saturating_add(n as u32);
+                current_offset = current_offset.saturating_add(n as u64);
+                if n < data.len() {
+                    break;
+                }
+            }
+            Err(err) => return errno_from_error(&err),
+        }
+    }
+    write_u32(&mut caller, nwritten_ptr, written).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
+fn fd_pread(
+    mut caller: Caller<'_, WasiState>,
+    fd: i32,
+    iovs_ptr: i32,
+    iovs_len: i32,
+    offset: i64,
+    nread_ptr: i32,
+) -> i32 {
+    if offset < 0 {
+        return ERRNO_INVAL;
+    }
+    let iovs = match read_iov_descriptors(&mut caller, iovs_ptr, iovs_len) {
+        Ok(iovs) => iovs,
+        Err(errno) => return errno,
+    };
+    let task = caller.data().task.clone();
+    let mut total = 0_u32;
+    let mut current_offset = offset as u64;
+    for (ptr, len) in iovs {
+        let mut buf = vec![0_u8; len as usize];
+        let result = task.with_fd_mut(fd as u32, |file| {
+            with_preserved_offset(file, |file| file.read_at(&mut buf, current_offset))
+        });
+        let n = match result {
+            Ok(n) => n,
+            Err(err) => return errno_from_error(&err),
+        };
+        if write_bytes(&mut caller, ptr, &buf[..n]).is_err() {
+            return ERRNO_INVAL;
+        }
+        total = total.saturating_add(n as u32);
+        current_offset = current_offset.saturating_add(n as u64);
+        if n < len as usize {
+            break;
+        }
+    }
+    write_u32(&mut caller, nread_ptr, total).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
 fn fd_close(caller: Caller<'_, WasiState>, fd: i32) -> i32 {
     caller
         .data()
@@ -326,6 +417,37 @@ fn fd_seek(
         Err(err) => return errno_from_error(&err),
     };
     write_u64(&mut caller, new_offset_ptr, new_offset).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
+fn fd_tell(mut caller: Caller<'_, WasiState>, fd: i32, offset_ptr: i32) -> i32 {
+    let task = caller.data().task.clone();
+    let offset = match task.with_fd_mut(fd as u32, |file| file.seek(SeekFrom::Current(0))) {
+        Ok(offset) => offset,
+        Err(err) => return errno_from_error(&err),
+    };
+    write_u64(&mut caller, offset_ptr, offset).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
+fn fd_allocate(caller: Caller<'_, WasiState>, fd: i32, offset: i64, len: i64) -> i32 {
+    if offset < 0 || len < 0 {
+        return ERRNO_INVAL;
+    }
+    let end = match (offset as u64).checked_add(len as u64) {
+        Some(end) => end,
+        None => return ERRNO_INVAL,
+    };
+    let task = caller.data().task.clone();
+    task.with_fd_mut(fd as u32, |file| {
+        let size = file.stat()?.size;
+        if end > size {
+            with_preserved_offset(file, |file| {
+                file.write_at(&[0], end - 1)?;
+                sync_ignoring_unsupported(file)
+            })?;
+        }
+        Ok(())
+    })
+    .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
 }
 
 fn fd_fdstat_get(mut caller: Caller<'_, WasiState>, fd: i32, stat_ptr: i32) -> i32 {
@@ -740,12 +862,32 @@ fn parent_wasi_path(path: &str) -> String {
 }
 
 fn sync_task_fd(task: &Task, fd: i32) -> i32 {
-    task.with_fd_mut(fd as u32, |file| match file.sync() {
+    task.with_fd_mut(fd as u32, |file| sync_ignoring_unsupported(file))
+        .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
+fn sync_ignoring_unsupported(file: &mut dyn FileHandle) -> Result<()> {
+    match file.sync() {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::NotSupported => Ok(()),
         Err(err) => Err(err),
-    })
-    .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+    }
+}
+
+fn with_preserved_offset<T>(
+    file: &mut dyn FileHandle,
+    op: impl FnOnce(&mut dyn FileHandle) -> Result<T>,
+) -> Result<T> {
+    let original = file.seek(SeekFrom::Current(0)).ok();
+    let result = op(file);
+    if let Some(original) = original {
+        match file.seek(SeekFrom::Start(original)) {
+            Ok(_) => {}
+            Err(err) if result.is_ok() => return Err(err),
+            Err(_) => {}
+        }
+    }
+    result
 }
 
 fn wasi_readdir_entries(task: &Task, fd: u32) -> Result<Vec<WasiDirentRecord>> {
@@ -1903,6 +2045,395 @@ mod tests {
         assert_eq!(
             read_file(task.namespace().as_ref(), "workspace/data.txt").unwrap(),
             b"trun"
+        );
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_supports_positional_fd_io_and_allocate() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "path_open"
+                (func $path_open
+                  (param i32 i32 i32 i32 i32 i64 i64 i32 i32)
+                  (result i32)))
+              (import "wasi_snapshot_preview1" "fd_pwrite"
+                (func $fd_pwrite (param i32 i32 i32 i64 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_pread"
+                (func $fd_pread (param i32 i32 i32 i64 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_tell"
+                (func $fd_tell (param i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_seek"
+                (func $fd_seek (param i32 i64 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_allocate"
+                (func $fd_allocate (param i32 i64 i64) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_write"
+                (func $fd_write (param i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_close"
+                (func $fd_close (param i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+              (data (i32.const 100) "data.txt")
+              (data (i32.const 120) "out.bin")
+              (data (i32.const 200) "XY")
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_i32 (param $actual i32) (param $want i32) (param $code i32)
+                local.get $actual
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_i64 (param $actual i64) (param $want i64) (param $code i32)
+                local.get $actual
+                local.get $want
+                i64.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 100)
+                    (i32.const 8)
+                    (i32.const 0)
+                    (i64.const 66)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 10))
+
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 120)
+                    (i32.const 7)
+                    (i32.const 9)
+                    (i64.const 64)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 4))
+                  (i32.const 11))
+
+                (call $assert_ok
+                  (call $fd_tell
+                    (i32.load (i32.const 0))
+                    (i32.const 16))
+                  (i32.const 12))
+                (call $assert_i64
+                  (i64.load (i32.const 16))
+                  (i64.const 0)
+                  (i32.const 13))
+
+                (i32.store (i32.const 40) (i32.const 200))
+                (i32.store (i32.const 44) (i32.const 2))
+                (call $assert_ok
+                  (call $fd_pwrite
+                    (i32.load (i32.const 0))
+                    (i32.const 40)
+                    (i32.const 1)
+                    (i64.const 2)
+                    (i32.const 24))
+                  (i32.const 14))
+                (call $assert_i32
+                  (i32.load (i32.const 24))
+                  (i32.const 2)
+                  (i32.const 15))
+                (call $assert_ok
+                  (call $fd_tell
+                    (i32.load (i32.const 0))
+                    (i32.const 16))
+                  (i32.const 16))
+                (call $assert_i64
+                  (i64.load (i32.const 16))
+                  (i64.const 0)
+                  (i32.const 17))
+
+                (call $assert_ok
+                  (call $fd_seek
+                    (i32.load (i32.const 0))
+                    (i64.const 5)
+                    (i32.const 0)
+                    (i32.const 16))
+                  (i32.const 18))
+                (call $assert_ok
+                  (call $fd_allocate
+                    (i32.load (i32.const 0))
+                    (i64.const 10)
+                    (i64.const 3))
+                  (i32.const 19))
+                (call $assert_ok
+                  (call $fd_tell
+                    (i32.load (i32.const 0))
+                    (i32.const 16))
+                  (i32.const 20))
+                (call $assert_i64
+                  (i64.load (i32.const 16))
+                  (i64.const 5)
+                  (i32.const 21))
+
+                (i32.store (i32.const 48) (i32.const 256))
+                (i32.store (i32.const 52) (i32.const 13))
+                (call $assert_ok
+                  (call $fd_pread
+                    (i32.load (i32.const 0))
+                    (i32.const 48)
+                    (i32.const 1)
+                    (i64.const 0)
+                    (i32.const 28))
+                  (i32.const 22))
+                (call $assert_i32
+                  (i32.load (i32.const 28))
+                  (i32.const 13)
+                  (i32.const 23))
+                (call $assert_ok
+                  (call $fd_tell
+                    (i32.load (i32.const 0))
+                    (i32.const 16))
+                  (i32.const 24))
+                (call $assert_i64
+                  (i64.load (i32.const 16))
+                  (i64.const 5)
+                  (i32.const 25))
+
+                (i32.store (i32.const 56) (i32.const 256))
+                (i32.store (i32.const 60) (i32.load (i32.const 28)))
+                (call $assert_ok
+                  (call $fd_write
+                    (i32.load (i32.const 4))
+                    (i32.const 56)
+                    (i32.const 1)
+                    (i32.const 32))
+                  (i32.const 26))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 0)))
+                  (i32.const 27))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 4)))
+                  (i32.const 28)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("program.wasm", program),
+                    ("data.txt", b"abcdef".to_vec()),
+                    ("out.bin", Vec::new()),
+                ])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        let expected = b"abXYef\0\0\0\0\0\0\0";
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/data.txt").unwrap(),
+            expected
+        );
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/out.bin").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_positional_fd_ops_reject_invalid_offsets() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "path_open"
+                (func $path_open
+                  (param i32 i32 i32 i32 i32 i64 i64 i32 i32)
+                  (result i32)))
+              (import "wasi_snapshot_preview1" "fd_pwrite"
+                (func $fd_pwrite (param i32 i32 i32 i64 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_pread"
+                (func $fd_pread (param i32 i32 i32 i64 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_allocate"
+                (func $fd_allocate (param i32 i64 i64) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_close"
+                (func $fd_close (param i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+              (data (i32.const 100) "data.txt")
+              (data (i32.const 200) "Z")
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_errno (param $errno i32) (param $want i32) (param $code i32)
+                local.get $errno
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 100)
+                    (i32.const 8)
+                    (i32.const 0)
+                    (i64.const 66)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 10))
+
+                (i32.store (i32.const 40) (i32.const 200))
+                (i32.store (i32.const 44) (i32.const 1))
+                (i32.store (i32.const 48) (i32.const 256))
+                (i32.store (i32.const 52) (i32.const 1))
+
+                (call $assert_errno
+                  (call $fd_pwrite
+                    (i32.load (i32.const 0))
+                    (i32.const 40)
+                    (i32.const 1)
+                    (i64.const -1)
+                    (i32.const 16))
+                  (i32.const 28)
+                  (i32.const 11))
+                (call $assert_errno
+                  (call $fd_pread
+                    (i32.load (i32.const 0))
+                    (i32.const 48)
+                    (i32.const 1)
+                    (i64.const -1)
+                    (i32.const 20))
+                  (i32.const 28)
+                  (i32.const 12))
+                (call $assert_errno
+                  (call $fd_allocate
+                    (i32.load (i32.const 0))
+                    (i64.const -1)
+                    (i64.const 1))
+                  (i32.const 28)
+                  (i32.const 13))
+                (call $assert_errno
+                  (call $fd_allocate
+                    (i32.load (i32.const 0))
+                    (i64.const 1)
+                    (i64.const -1))
+                  (i32.const 28)
+                  (i32.const 14))
+                (call $assert_errno
+                  (call $fd_allocate
+                    (i32.const 999)
+                    (i64.const 0)
+                    (i64.const 0))
+                  (i32.const 28)
+                  (i32.const 15))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 0)))
+                  (i32.const 16)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("program.wasm", program),
+                    ("data.txt", b"abc".to_vec()),
+                ])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/data.txt").unwrap(),
+            b"abc"
         );
     }
 
