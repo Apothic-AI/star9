@@ -9,5 +9,6 @@ rust-version.workspace = true
 [dependencies]
 wanix-core = { path = "../wanix-core" }
 wanix-fs = { path = "../wanix-fs" }
+wanix-protocol = { path = "../wanix-protocol" }
 wanix-task = { path = "../wanix-task" }
 wanix-vfs = { path = "../wanix-vfs" }

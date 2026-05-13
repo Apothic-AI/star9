@@ -14,18 +14,21 @@
     const version = system.readText("#wanix/version").trim();
     system.bindRamFs("tmp");
     system.writeText("tmp/hello", "browser-ok");
+    system.mountSelf9p("remote");
     const text = system.readText("tmp/hello");
+    const remoteText = system.readText("remote/tmp/hello");
     const entries = system.readDir("tmp");
     const wasiTask = system.startWasi("repl.wasm");
     const goTask = system.startGoJs("repl-gojs.wasm");
 
     if (version !== "0.1.0") throw new Error(`bad version ${version}`);
     if (text !== "browser-ok") throw new Error(`bad text ${text}`);
+    if (remoteText !== "browser-ok") throw new Error(`bad remote text ${remoteText}`);
     if (!entries.includes("hello")) throw new Error(`missing tmp entry: ${entries}`);
     if (!wasiTask || !goTask || wasiTask === goTask) throw new Error("bad task ids");
 
     document.body.dataset.status = "ok";
-    status.textContent = JSON.stringify({ version, entries, wasiTask, goTask });
+    status.textContent = JSON.stringify({ version, entries, remoteText, wasiTask, goTask });
   } catch (err) {
     document.body.dataset.status = "error";
     status.textContent = err && err.stack ? err.stack : String(err);

@@ -1,5 +1,7 @@
 //! Browser/WASM entry points for the Rust Wanix runtime.
 
+pub mod p9_transport;
+
 use serde::{Deserialize, Serialize};
 use wanix_core::Result;
 use wanix_protocol::WanixApi;
@@ -58,6 +60,13 @@ impl WanixSystem {
             dst,
             BindMode::Replace,
         )
+    }
+
+    pub fn mount_self_9p_native(&self, dst: &str) -> Result<()> {
+        let server = self.runtime.export_9p();
+        self.runtime
+            .import_9p_loopback(dst, server, BindMode::Replace)?;
+        Ok(())
     }
 
     pub fn setup_namespace_native(&self, task_id: &str, bindings: &[WebBinding]) -> Result<()> {
@@ -151,6 +160,11 @@ mod wasm {
             self.bind_ramfs_native(dst).map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = mountSelf9p)]
+        pub fn mount_self_9p(&self, dst: &str) -> std::result::Result<(), JsValue> {
+            self.mount_self_9p_native(dst).map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = setupNamespace)]
         pub fn setup_namespace(
             &self,
@@ -189,6 +203,8 @@ mod tests {
         let system = WanixSystem::new().unwrap();
         system.bind_ramfs_native("tmp").unwrap();
         system.write_text_native("tmp/hello", "ok").unwrap();
+        system.mount_self_9p_native("remote").unwrap();
+        assert_eq!(system.read_text_native("remote/tmp/hello").unwrap(), "ok");
         assert!(system
             .read_text_native("#wanix/version")
             .unwrap()
@@ -211,6 +227,11 @@ mod wasm_tests {
         let system = WanixSystem::build().unwrap();
         system.bind_ramfs_native("tmp").unwrap();
         system.write_text_native("tmp/hello", "browser-ok").unwrap();
+        system.mount_self_9p_native("remote").unwrap();
+        assert_eq!(
+            system.read_text_native("remote/tmp/hello").unwrap(),
+            "browser-ok"
+        );
         assert!(system
             .read_text_native("#wanix/version")
             .unwrap()

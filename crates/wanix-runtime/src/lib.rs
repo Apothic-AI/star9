@@ -10,6 +10,7 @@ use wanix_fs::{
     directory_file, fs_ref, read_file, write_file, BoxFile, ControlFile, FileHandle, FileSystem,
     FsRef, MapFs, MemFs, Node, PipeFs, SignalFs,
 };
+use wanix_protocol::p9::{LoopbackTransport, NinePClientFs, NinePServer, NinePTransport};
 use wanix_task::{Task, TaskFs};
 use wanix_vfs::{BindMode, Namespace};
 
@@ -40,6 +41,44 @@ impl Runtime {
 
     pub fn namespace(&self) -> Arc<Namespace> {
         self.root.namespace()
+    }
+
+    pub fn export_9p(&self) -> Arc<NinePServer> {
+        self.export_task_9p(&self.root.id())
+            .expect("root task exists for runtime")
+    }
+
+    pub fn export_task_9p(&self, task_id: &str) -> Result<Arc<NinePServer>> {
+        let task = self.task_fs.lookup(task_id)?;
+        Ok(Arc::new(NinePServer::new(fs_ref(
+            (*task.namespace()).clone(),
+        ))))
+    }
+
+    pub fn import_9p(
+        &self,
+        dst: &str,
+        transport: Arc<dyn NinePTransport>,
+        mode: BindMode,
+    ) -> Result<NinePClientFs> {
+        let client = NinePClientFs::connect(transport)?;
+        self.root
+            .namespace()
+            .bind(fs_ref(client.clone()), ".", dst, mode)?;
+        Ok(client)
+    }
+
+    pub fn import_9p_loopback(
+        &self,
+        dst: &str,
+        server: Arc<NinePServer>,
+        mode: BindMode,
+    ) -> Result<NinePClientFs> {
+        self.import_9p(dst, Arc::new(LoopbackTransport::new(server)), mode)
+    }
+
+    pub fn loopback_9p_client(&self) -> Result<NinePClientFs> {
+        NinePClientFs::connect(Arc::new(LoopbackTransport::new(self.export_9p())))
     }
 }
 
@@ -371,5 +410,32 @@ mod tests {
             .unwrap();
         ExecutionAdapter::wasi("repl.wasm").start(&task).unwrap();
         assert_eq!(task.worker(), Some("Wasi:repl.wasm".to_string()));
+    }
+
+    #[test]
+    fn runtime_exports_and_imports_namespace_over_9p_loopback() {
+        let runtime = Runtime::new().unwrap();
+        runtime
+            .namespace()
+            .bind(
+                wanix_fs::fs_ref(wanix_fs::MemFs::from_entries([(
+                    "file",
+                    b"over-9p".to_vec(),
+                )])),
+                ".",
+                "tmp",
+                BindMode::Replace,
+            )
+            .unwrap();
+
+        let server = runtime.export_9p();
+        runtime
+            .import_9p_loopback("remote", server, BindMode::Replace)
+            .unwrap();
+
+        assert_eq!(
+            read_file(runtime.namespace().as_ref(), "remote/tmp/file").unwrap(),
+            b"over-9p"
+        );
     }
 }

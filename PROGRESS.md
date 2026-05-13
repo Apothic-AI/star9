@@ -2,6 +2,10 @@
 
 ## 2026-05-13
 
+- Added runtime 9P import/export hooks: a `Runtime` can export a task namespace through `NinePServer`, import any `NinePTransport` as `NinePClientFs`, and mount a loopback 9P export into its namespace.
+- Added a browser-facing 9P frame buffer helper plus a `WanixSystem::mountSelf9p` smoke path that mounts the current system through the Rust 9P bridge.
+- Extended the browser smoke fixture to verify 9P import/export by reading `remote/tmp/hello` through the imported mount.
+- Verified `cargo fmt`, `cargo test -p wanix-runtime`, `cargo test -p wanix-web`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
 - Added a Rust-native `wanix_protocol::p9` module implementing a 9P2000.L-style frame codec for version, attach, walk, open/create, getattr/setattr, read/write, clunk/remove, mkdir/readdir, renameat/unlinkat, fsync, symlink, and readlink messages.
 - Added `NinePServer` over `wanix_fs::FileSystem`, with fid tracking, stable FNV-1a qids, Wanix metadata-to-9P attribute mapping, directory-entry encoding, and errno-based `Rlerror` responses.
 - Added `NinePClientFs` over a synchronous frame transport trait plus `LoopbackTransport`, allowing Rust callers to mount a 9P export as a normal `FileSystem` without Go dependencies.

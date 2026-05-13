@@ -765,6 +765,7 @@ version = "0.1.0"
 dependencies = [
  "wanix-core",
  "wanix-fs",
+ "wanix-protocol",
  "wanix-task",
  "wanix-vfs",
 ]

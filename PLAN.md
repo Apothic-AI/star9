@@ -6,9 +6,9 @@ Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the re
 
 Immediate protocol/runtime tranche:
 
-- Wire the Rust-native 9P bridge into runtime/browser import-export surfaces once transport adapters are in place.
-- Add browser-safe MessagePort/WebSocket framing around the Rust-owned 9P frame codec.
-- Keep expanding Rust-owned conformance fixtures for 9P edge cases, browser bindings, storage backends, and worker execution.
+- Expand browser system and binding parity on top of the Rust-native runtime and 9P loopback hooks.
+- Add cross-document MessagePort/WebSocket transport wiring for real remote 9P imports.
+- Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
 
 ## Planning Constraints
 

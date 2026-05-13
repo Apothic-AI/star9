@@ -68,6 +68,8 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 
 `wanix-protocol::p9` provides the Rust-native 9P bridge baseline. It owns a 9P2000.L-style frame codec, a `NinePServer` that exports any `wanix-fs::FileSystem`, a synchronous `NinePTransport` trait, and a `NinePClientFs` that imports a remote 9P export back into the normal filesystem trait surface. Browser MessagePort/WebSocket adapters can wrap the frame transport without changing the core protocol implementation.
 
+`wanix-runtime` exposes helpers to export a task namespace as 9P and import a `NinePTransport` into the root namespace. `wanix-web` layers browser-facing frame helpers and smoke facade methods over those hooks while keeping the core bridge host-neutral.
+
 ## Runtime And Web
 
 `wanix-runtime` builds the root task and binds the built-in surfaces:
