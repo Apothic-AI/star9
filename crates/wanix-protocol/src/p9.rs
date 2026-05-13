@@ -995,15 +995,28 @@ impl NinePServer {
     }
 
     fn walk(&self, fid: u32, newfid: u32, names: Vec<String>) -> Result<NinePResponse> {
-        let base = self.fid_path(fid)?;
+        let base = {
+            let state = self.state.lock().unwrap();
+            if newfid != fid && state.fids.contains_key(&newfid) {
+                return Err(ErrorKind::Invalid.into());
+            }
+            state.fids.get(&fid).ok_or(ErrorKind::Invalid)?.path.clone()
+        };
         let mut path = base;
         let mut qids = Vec::with_capacity(names.len());
         for name in names {
             if name.contains('/') || name.is_empty() {
                 return Err(ErrorKind::Invalid.into());
             }
-            path = walk_join(&path, &name);
-            qids.push(qid_for(self.fsys.as_ref(), &path)?);
+            let next_path = walk_join(&path, &name);
+            match qid_for(self.fsys.as_ref(), &next_path) {
+                Ok(qid) => {
+                    path = next_path;
+                    qids.push(qid);
+                }
+                Err(err) if qids.is_empty() => return Err(err),
+                Err(_) => break,
+            }
         }
         self.state
             .lock()
@@ -1350,12 +1363,17 @@ impl NinePClientFs {
         } else {
             name.split('/').map(ToString::to_string).collect()
         };
+        let expected_qids = names.len();
         match self.call(NinePRequest::Walk {
             fid: self.inner.root_fid,
             newfid: fid,
             names,
         })? {
-            NinePResponse::Walk { .. } => Ok(fid),
+            NinePResponse::Walk { qids } if qids.len() == expected_qids => Ok(fid),
+            NinePResponse::Walk { .. } => {
+                let _ = self.clunk_fid(fid);
+                Err(Error::path("walk", name, ErrorKind::NotFound))
+            }
             _ => Err(ErrorKind::Invalid.into()),
         }
     }
@@ -2197,6 +2215,116 @@ mod tests {
     }
 
     #[test]
+    fn raw_server_partial_walk_returns_successful_prefix_only() {
+        let mem = MemFs::from_entries([("dir/file.txt", b"hello".as_slice())]);
+        let server = NinePServer::new(fs_ref(mem));
+        server
+            .handle_frame(
+                &encode_request(
+                    1,
+                    &NinePRequest::Attach {
+                        fid: 1,
+                        afid: NOFID,
+                        uname: "u".into(),
+                        aname: String::new(),
+                        n_uname: 0,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let walk = server
+            .handle_frame(
+                &encode_request(
+                    2,
+                    &NinePRequest::Walk {
+                        fid: 1,
+                        newfid: 2,
+                        names: vec!["dir".into(), "missing.txt".into()],
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let (_, response) = decode_response(&walk).unwrap();
+        match response {
+            NinePResponse::Walk { qids } => assert_eq!(qids.len(), 1),
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let getattr = server
+            .handle_frame(
+                &encode_request(
+                    3,
+                    &NinePRequest::GetAttr {
+                        fid: 2,
+                        request_mask: ATTR_BASIC,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let (_, response) = decode_response(&getattr).unwrap();
+        match response {
+            NinePResponse::GetAttr { attr } => assert_ne!(attr.mode & 0o040000, 0),
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn raw_server_rejects_walk_over_existing_newfid() {
+        let mem = MemFs::from_entries([("dir/file.txt", b"hello".as_slice())]);
+        let server = NinePServer::new(fs_ref(mem));
+        server
+            .handle_frame(
+                &encode_request(
+                    1,
+                    &NinePRequest::Attach {
+                        fid: 1,
+                        afid: NOFID,
+                        uname: "u".into(),
+                        aname: String::new(),
+                        n_uname: 0,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        server
+            .handle_frame(
+                &encode_request(
+                    2,
+                    &NinePRequest::Walk {
+                        fid: 1,
+                        newfid: 2,
+                        names: vec!["dir".into()],
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let walk = server
+            .handle_frame(
+                &encode_request(
+                    3,
+                    &NinePRequest::Walk {
+                        fid: 1,
+                        newfid: 2,
+                        names: vec!["dir".into()],
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_response(&walk).unwrap().1,
+            NinePResponse::Lerror { ecode: EINVAL }
+        );
+    }
+
+    #[test]
     fn client_filesystem_reads_writes_and_lists_memfs() {
         let (_mem, client) = client_with_memfs();
 
@@ -2262,5 +2390,17 @@ mod tests {
             fs::stat(&client, "empty").unwrap_err().kind(),
             ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn client_treats_partial_walk_as_not_found() {
+        let (_mem, client) = client_with_memfs();
+
+        assert_eq!(
+            fs::stat(&client, "dir/missing.txt").unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
+
+        assert_eq!(fs::read_file(&client, "dir/file.txt").unwrap(), b"hello");
     }
 }

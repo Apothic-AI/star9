@@ -34,6 +34,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
 - 9P server attach, walk, and getattr behavior against a `MemFs` export.
 - 9P client filesystem behavior over loopback transport for read, write, create, readdir, rename, remove, mkdir, and rmdir operations.
+- 9P partial-walk edge behavior, duplicate `newfid` rejection, and client not-found mapping for partial remote walks.
 - Runtime 9P namespace export and loopback import behavior.
 - Browser smoke coverage for reading files through a Rust 9P imported mount.
 - Typed browser binding/storage descriptor validation for namespace, file, archive, import, OPFS, File System Access, Cache API, JS value, download, worker, and DOM plans.
@@ -58,7 +59,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - HTTP filesystem caching, multipart parsing, PATCH archive updates, and real network transport.
 - R2 compare-and-swap conflict handling and Cloudflare/S3 adapter wiring.
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export beyond loopback smoke.
-- Additional 9P edge cases such as partial walks, flush cancellation, xattr messages, and remote conflict/error parity.
+- Additional 9P edge cases such as flush cancellation, xattr messages, and remote conflict/error parity.
 - Browser storage backends such as OPFS and file-system-access handles.
 - Browser worker adapter wiring for the typed runtime protocol.
 - Terminal screen protocol details.
