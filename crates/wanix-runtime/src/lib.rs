@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 mod devices;
 mod execution;
+mod wasi;
 mod worker;
 
 use wanix_core::{FileMode, FsContext, Result};
@@ -13,6 +14,7 @@ use wanix_task::{Task, TaskFs};
 use wanix_vfs::{BindMode, Namespace};
 
 pub use execution::{ExecutionRegistry, FnExecutionHandler, NativeExecutionHandler};
+pub use wasi::WasmiWasiHandler;
 pub use worker::{RuntimeProtocolHost, WorkerHost};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

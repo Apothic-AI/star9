@@ -7,8 +7,8 @@ Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the re
 Immediate protocol/runtime tranche:
 
 - Continue browser system and binding parity beyond the component-driven `wanix-system`/`wanix-bind`/`wanix-task` baseline, especially cross-document imports and richer task element behavior.
-- Attach the browser host storage adapters to namespace mounts where the synchronous Rust `FileSystem` boundary can be satisfied, and continue import/execution glue on top of the custom elements, Worker/MessagePort helpers, and host-neutral registries.
-- Replace deterministic execution handlers with real WASI syscall execution and browser/native JS-WASM execution drivers.
+- Attach the browser host storage adapters to namespace mounts where the synchronous Rust `FileSystem` boundary can be satisfied, and continue import/execution glue on top of the custom elements, Worker/MessagePort helpers, worker host facade, and host-neutral registries.
+- Expand the Wasmi-backed WASI preview1 syscall handler beyond the current task namespace/fd baseline, and implement browser/native JS-WASM execution drivers.
 - Continue backend hardening with HTTP remote metadata details, live transport adapters, and cloud object-store adapter boundaries.
 - Deepen remaining host-specific device behavior, especially real terminal screen protocol, VM execution, worker integration, and native/browser TCP adapters.
 - Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
@@ -96,10 +96,10 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 9. WASM and browser runtime
    - Port root runtime initialization and built-in bindings from the current `wasm` package.
    - Recreate `wanix-system` behavior with Rust-backed WASM exports and minimal JS glue.
-   - Port worker startup, task worker messaging, port opening, 9P import/export, namespace setup from `<wanix-bind>`, and mount integration for browser filesystem bindings.
+- Port worker startup, task worker messaging, port opening, 9P import/export, namespace setup from `<wanix-bind>`, and mount integration for browser filesystem bindings. Keep the JS Worker host facade covered by deterministic fake-worker tests while real browser execution is integrated.
 
 10. WASI and Go-compatible JS execution
-    - Port or replace the current worker shims for WASI and Go-compatible JS/WASM workloads.
+- Extend the Rust Wasmi WASI preview1 handler and port or replace the current worker shims for Go-compatible JS/WASM workloads.
     - Keep execution adapters isolated behind task drivers.
     - Validate with Rust-backed WASI and Go-compatible JS/WASM tests/examples.
 
@@ -126,6 +126,7 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 
 - `cargo test --workspace` passes.
 - Rust conformance tests cover the core filesystem, namespace, task, and API semantics.
+- Native CLI acceptance commands cover 9P loopback, deterministic devices, and runtime worker protocol smoke paths.
 - Browser smoke tests prove that `wanix-system` can initialize, bind filesystems, open a handle, run file API operations, and start representative WASI/Go-compatible JS tasks.
 - Existing examples have Rust-backed equivalents or explicit replacement tests.
 - The public Rust API is documented enough to guide continued development from this repository alone.

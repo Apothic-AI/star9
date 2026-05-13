@@ -35,11 +35,14 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - CBOR request/response round-tripping for the typed protocol boundary.
 - CBOR round-tripping for typed runtime worker spawn/start, execution, port handoff, task messages, stdio/fd descriptors, and exit status.
 - Runtime protocol host handling for worker spawn/start, stdio/fd setup, port open/handoff, task messages, and exit-state updates.
+- Runtime protocol immutable snapshot APIs for workers, ports, handoff targets, and task messages.
 - Browser worker/message-port adapter coverage for typed runtime request/response dispatch, task message delivery, and lossless 9P frame transfer through a host-neutral port.
 - Browser Worker/MessagePort JS glue for tagged binary runtime envelopes, endpoint wrappers, port transfer helpers, system facade resolution, and import-port requests.
+- Browser Worker host facade coverage for fake Worker-like startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
 - Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
+- Wasmi-backed WASI preview1 execution coverage for task namespace module loading, args/env/cwd propagation, preopened cwd, fd read/write/seek/close/stat behavior, path open/stat behavior, stdio fd writes, deterministic random/clock imports, and proc-exit mapping.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
@@ -61,6 +64,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Network deterministic Plan 9-style connection resources for dial, bind, announce, listen accept, hangup/reset, status/local/remote, data flow, and invalid transitions.
 - WASI and Go-compatible JS execution adapter task starts.
 - Native `WanixSystem` smoke operations.
+- Native CLI acceptance smoke for 9P loopback, deterministic device surfaces, and runtime worker protocol flows.
 - Browser wasm smoke operations through `tests/browser-smoke.html`.
 
 ## Explicit Replacement Fixtures
@@ -75,6 +79,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/browser-storage-adapters.test.mjs` exercises browser storage adapter behavior with fake host APIs so OPFS/File System Access, Cache API, DOM, download, JS value, and worker request/response semantics are tested without live browser storage.
 
+`tests/browser-worker-host.test.mjs` exercises the browser Worker host facade with fake Worker and MessagePort targets so runtime port transfer and tagged binary message routing are covered without a live browser worker.
+
 ## Remaining Oracle Areas
 
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:
@@ -86,8 +92,8 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export using the JS port helpers beyond loopback smoke.
 - Additional 9P edge cases such as flush cancellation and remote conflict/error parity.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters where async browser APIs meet the synchronous Rust filesystem trait boundary.
-- Browser Worker startup and runtime request handling on top of the JS Worker/MessagePort glue and host-neutral typed runtime adapter.
+- Broader browser Worker startup and execution orchestration on top of the JS Worker host facade and host-neutral typed runtime adapter.
 - Terminal screen protocol details beyond the host-neutral file protocol.
 - Real VM execution and native/browser TCP transport adapters beyond deterministic state-machine resources.
-- Full WASI syscall execution.
+- WASI syscall coverage beyond the current preview1 fd/path/args/env/clock/random baseline.
 - Full Go-compatible JS/WASM worker execution.

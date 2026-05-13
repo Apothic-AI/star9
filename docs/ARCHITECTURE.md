@@ -75,7 +75,7 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 
 `wanix-runtime` exposes helpers to export a task namespace as 9P and import a `NinePTransport` into the root namespace. `wanix-web` layers browser-facing frame helpers and smoke facade methods over those hooks while keeping the core bridge host-neutral.
 
-`wanix-runtime::RuntimeProtocolHost` handles the typed runtime protocol in a host-neutral way. It allocates worker tasks, applies execution specs to task state and descriptors, tracks in-memory port open/handoff records, records task messages, and updates task exit state from exit messages. Real browser/native execution drivers attach beyond that contract.
+`wanix-runtime::RuntimeProtocolHost` handles the typed runtime protocol in a host-neutral way. It allocates worker tasks, applies execution specs to task state and descriptors, tracks in-memory port open/handoff records, records task messages, and updates task exit state from exit messages. It exposes immutable snapshots for workers, ports, handoff targets, and task messages so browser glue, CLI acceptance, and tests can inspect lifecycle state without reaching into locks. Real browser/native execution drivers attach beyond that contract.
 
 ## Runtime And Web
 
@@ -95,11 +95,11 @@ Browser binding and storage setup is represented by typed descriptors in `wanix-
 
 The JS storage modules under `crates/wanix-web/js/` provide browser-native host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed storage. They are async host adapters with deterministic fake-host tests; mounting them into Rust namespaces is a separate integration layer because the core `FileSystem` trait is synchronous.
 
-`wanix-web` also provides a host-neutral `MessagePort` trait, an in-memory port for native tests, and worker-runtime adapters that move typed runtime requests, responses, and task messages over complete message payloads. The JS `worker-runtime.js` module adds browser-native Worker/MessagePort helpers for tagged binary envelopes, endpoint listeners, transferred ports, system facade resolution, and import-port requests without changing protocol encoding.
+`wanix-web` also provides a host-neutral `MessagePort` trait, an in-memory port for native tests, and worker-runtime adapters that move typed runtime requests, responses, and task messages over complete message payloads. The JS `worker-runtime.js` module adds browser-native Worker/MessagePort helpers for tagged binary envelopes, endpoint listeners, transferred ports, system facade resolution, and import-port requests without changing protocol encoding. The JS `worker-host.js` module builds on that layer to spawn or attach Worker-like targets, transfer a runtime port, surface request/response/task-message listeners, and manage stop/restart/cleanup with fake-host coverage.
 
 `BrowserBindingRegistry` is the host-neutral source registry for `<wanix-bind>`-style file, archive, and import bindings. It maps source identifiers to bytes or 9P transports so native tests can validate file writes, tar mounts, and 9P imports. Browser custom elements register fetched file/archive bytes through the wasm facade before applying typed namespace descriptors.
 
-`wanix-runtime::ExecutionRegistry` is the host-neutral execution contract for WASI and JS-WASM modules. Callers register native handlers by execution kind and module name; the registry applies the typed execution spec to task state and descriptors, invokes the handler, and records the returned exit status.
+`wanix-runtime::ExecutionRegistry` is the host-neutral execution contract for WASI and JS-WASM modules. Callers register native handlers by execution kind or module name; the registry applies the typed execution spec to task state and descriptors, invokes the handler, and records the returned exit status. `WasmiWasiHandler` is the first real engine-backed handler: it loads a WASI module from the task namespace, preopens the task cwd, maps args/env and fd descriptors into a preview1 syscall subset, and returns `proc_exit` status through the normal task lifecycle.
 
 ## Generated And Vendored Code
 

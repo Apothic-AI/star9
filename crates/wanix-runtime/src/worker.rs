@@ -27,6 +27,37 @@ struct RuntimeProtocolState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeProtocolSnapshot {
+    pub workers: Vec<WorkerSnapshot>,
+    pub ports: Vec<PortSnapshot>,
+    pub task_messages: Vec<TaskMessageSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkerSnapshot {
+    pub handle: WorkerHandle,
+    pub parent_task_id: Option<String>,
+    pub command: String,
+    pub env: Vec<String>,
+    pub cwd: String,
+    pub lifecycle: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortSnapshot {
+    pub descriptor: PortDescriptor,
+    pub owner_task_id: String,
+    pub worker_id: Option<String>,
+    pub handoff_targets: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskMessageSnapshot {
+    pub task_id: String,
+    pub messages: Vec<TaskMessage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PortRecord {
     descriptor: PortDescriptor,
     owner_task_id: String,
@@ -59,6 +90,52 @@ impl RuntimeProtocolHost {
             runtime: self.clone(),
             worker,
         })
+    }
+
+    pub fn snapshot(&self) -> Result<RuntimeProtocolSnapshot> {
+        let state = self.cloned_state();
+        let mut workers = Vec::with_capacity(state.workers.len());
+        for (worker_id, task_id) in state.workers {
+            workers.push(self.snapshot_worker_handle(WorkerHandle { worker_id, task_id })?);
+        }
+
+        Ok(RuntimeProtocolSnapshot {
+            workers,
+            ports: state.ports.into_values().map(PortSnapshot::from).collect(),
+            task_messages: state
+                .messages
+                .into_iter()
+                .map(|(task_id, messages)| TaskMessageSnapshot { task_id, messages })
+                .collect(),
+        })
+    }
+
+    pub fn worker_snapshot(&self, worker_id: &str) -> Result<Option<WorkerSnapshot>> {
+        let Some(task_id) = self.cloned_state().workers.get(worker_id).cloned() else {
+            return Ok(None);
+        };
+        self.snapshot_worker_handle(WorkerHandle {
+            worker_id: worker_id.to_string(),
+            task_id,
+        })
+        .map(Some)
+    }
+
+    pub fn port_snapshot(&self, port_id: &str) -> Option<PortSnapshot> {
+        self.cloned_state()
+            .ports
+            .remove(port_id)
+            .map(PortSnapshot::from)
+    }
+
+    pub fn task_messages_snapshot(&self, task_id: &str) -> Option<TaskMessageSnapshot> {
+        self.cloned_state()
+            .messages
+            .remove(task_id)
+            .map(|messages| TaskMessageSnapshot {
+                task_id: task_id.to_string(),
+                messages,
+            })
     }
 
     pub fn handle_request(&self, request: RuntimeRequest) -> Result<RuntimeResponse> {
@@ -223,26 +300,30 @@ impl RuntimeProtocolHost {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn port_record(&self, port_id: &str) -> Option<PortRecord> {
-        self.state.lock().unwrap().ports.get(port_id).cloned()
+    fn cloned_state(&self) -> RuntimeProtocolState {
+        self.state.lock().unwrap().clone()
     }
 
-    #[cfg(test)]
-    fn messages_for(&self, task_id: &str) -> Vec<TaskMessage> {
-        self.state
-            .lock()
-            .unwrap()
-            .messages
-            .get(task_id)
-            .cloned()
-            .unwrap_or_default()
+    fn snapshot_worker_handle(&self, handle: WorkerHandle) -> Result<WorkerSnapshot> {
+        let task = self.task_fs.lookup(&handle.task_id)?;
+        Ok(WorkerSnapshot {
+            handle,
+            parent_task_id: task.parent().map(|parent| parent.id()),
+            command: task.cmd(),
+            env: task.env(),
+            cwd: task.dir(),
+            lifecycle: task.exit(),
+        })
     }
 }
 
 impl WorkerHost {
     pub fn worker(&self) -> &WorkerHandle {
         &self.worker
+    }
+
+    pub fn snapshot(&self) -> Result<WorkerSnapshot> {
+        self.runtime.snapshot_worker_handle(self.worker.clone())
     }
 
     pub fn start(&self, execution: ExecutionSpec) -> Result<()> {
@@ -273,6 +354,27 @@ impl WorkerHost {
 
     pub fn post_message(&self, message: TaskMessage) -> Result<()> {
         self.runtime.post_message(message)
+    }
+}
+
+impl Clone for RuntimeProtocolState {
+    fn clone(&self) -> Self {
+        Self {
+            workers: self.workers.clone(),
+            ports: self.ports.clone(),
+            messages: self.messages.clone(),
+        }
+    }
+}
+
+impl From<PortRecord> for PortSnapshot {
+    fn from(record: PortRecord) -> Self {
+        Self {
+            descriptor: record.descriptor,
+            owner_task_id: record.owner_task_id,
+            worker_id: record.worker_id,
+            handoff_targets: record.handoff_targets,
+        }
     }
 }
 
@@ -397,6 +499,36 @@ mod tests {
         }
     }
 
+    fn snapshot_worker<'a>(
+        snapshot: &'a RuntimeProtocolSnapshot,
+        worker_id: &str,
+    ) -> &'a WorkerSnapshot {
+        snapshot
+            .workers
+            .iter()
+            .find(|worker| worker.handle.worker_id == worker_id)
+            .unwrap()
+    }
+
+    fn snapshot_port<'a>(snapshot: &'a RuntimeProtocolSnapshot, port_id: &str) -> &'a PortSnapshot {
+        snapshot
+            .ports
+            .iter()
+            .find(|port| port.descriptor.port_id == port_id)
+            .unwrap()
+    }
+
+    fn snapshot_messages<'a>(
+        snapshot: &'a RuntimeProtocolSnapshot,
+        task_id: &str,
+    ) -> &'a TaskMessageSnapshot {
+        snapshot
+            .task_messages
+            .iter()
+            .find(|entry| entry.task_id == task_id)
+            .unwrap()
+    }
+
     #[test]
     fn spawns_workers_and_starts_tasks_from_runtime_requests() {
         let runtime = Runtime::new().unwrap();
@@ -447,6 +579,18 @@ mod tests {
                 (2, "stderr".to_string())
             ]
         );
+
+        let snapshot = runtime
+            .protocol_host()
+            .worker_snapshot(&handle.worker_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.handle, handle);
+        assert_eq!(snapshot.parent_task_id, Some(parent.id()));
+        assert_eq!(snapshot.command, "repl.wasm --interactive");
+        assert_eq!(snapshot.env, vec!["TERM=xterm-256color".to_string()]);
+        assert_eq!(snapshot.cwd, "/work");
+        assert_eq!(snapshot.lifecycle, "started");
     }
 
     #[test]
@@ -562,7 +706,7 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(
-            host.port_record("events").unwrap().owner_task_id,
+            host.port_snapshot("events").unwrap().owner_task_id,
             source.task_id
         );
 
@@ -573,7 +717,7 @@ mod tests {
                 port,
             }))
             .unwrap();
-        let record = host.port_record("events").unwrap();
+        let record = host.port_snapshot("events").unwrap();
         assert_eq!(record.owner_task_id, target.task_id);
         assert_eq!(record.handoff_targets, vec![record.owner_task_id.clone()]);
     }
@@ -603,7 +747,13 @@ mod tests {
 
         let task = runtime.task_fs().lookup(&handle.task_id).unwrap();
         assert_eq!(task.exit(), "23");
-        assert_eq!(host.messages_for(&handle.task_id).len(), 1);
+        assert_eq!(
+            host.task_messages_snapshot(&handle.task_id)
+                .unwrap()
+                .messages
+                .len(),
+            1
+        );
 
         runtime
             .handle_runtime_request(RuntimeRequest::PostMessage(TaskMessage {
@@ -617,7 +767,198 @@ mod tests {
                 }),
             }))
             .unwrap();
-        assert_eq!(host.messages_for(&handle.task_id).len(), 2);
+        assert_eq!(
+            host.task_messages_snapshot(&handle.task_id)
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn runtime_snapshots_are_cloned_and_cover_workers_ports_and_messages() {
+        let runtime = Runtime::new().unwrap();
+        let host = runtime.protocol_host();
+
+        let RuntimeResponse::Worker(source) = runtime
+            .handle_runtime_request(RuntimeRequest::SpawnWorker(WorkerSpawnRequest {
+                worker: worker_request("worker-g", "ignored"),
+                parent_task_id: None,
+            }))
+            .unwrap()
+        else {
+            panic!("expected worker response");
+        };
+        let RuntimeResponse::Worker(target) = runtime
+            .handle_runtime_request(RuntimeRequest::SpawnWorker(WorkerSpawnRequest {
+                worker: worker_request("worker-h", "ignored"),
+                parent_task_id: None,
+            }))
+            .unwrap()
+        else {
+            panic!("expected worker response");
+        };
+
+        runtime
+            .handle_runtime_request(RuntimeRequest::StartWorker(WorkerStartRequest {
+                worker: source.clone(),
+                execution: ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "worker.wasm".into(),
+                    args: vec!["serve".into()],
+                    env: vec![EnvironmentEntry {
+                        name: "MODE".into(),
+                        value: "test".into(),
+                    }],
+                    cwd: Some("/srv".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            }))
+            .unwrap();
+        runtime
+            .handle_runtime_request(RuntimeRequest::OpenPort(PortOpenRequest {
+                worker: source.clone(),
+                port: PortDescriptor {
+                    port_id: "events".into(),
+                    name: "event-bus".into(),
+                },
+            }))
+            .unwrap();
+        runtime
+            .handle_runtime_request(RuntimeRequest::PostMessage(TaskMessage {
+                task_id: source.task_id.clone(),
+                worker_id: Some(source.worker_id.clone()),
+                sequence: 1,
+                payload: TaskMessagePayload::Ready,
+            }))
+            .unwrap();
+
+        let mut snapshot = host.snapshot().unwrap();
+        assert_eq!(snapshot.workers.len(), 2);
+        assert_eq!(
+            snapshot_worker(&snapshot, &source.worker_id).command,
+            "worker.wasm serve"
+        );
+        assert_eq!(
+            snapshot_worker(&snapshot, &source.worker_id).env,
+            vec!["MODE=test".to_string()]
+        );
+        assert_eq!(snapshot_worker(&snapshot, &source.worker_id).cwd, "/srv");
+        assert_eq!(
+            snapshot_worker(&snapshot, &source.worker_id).lifecycle,
+            "started"
+        );
+        assert_eq!(
+            snapshot_port(&snapshot, "events").owner_task_id,
+            source.task_id
+        );
+        assert!(snapshot_port(&snapshot, "events")
+            .handoff_targets
+            .is_empty());
+        assert_eq!(
+            snapshot_messages(&snapshot, &source.task_id).messages.len(),
+            1
+        );
+
+        snapshot.workers[0].lifecycle = "mutated".into();
+        snapshot.ports[0].handoff_targets.push("mutated".into());
+        snapshot.task_messages[0].messages.clear();
+
+        let fresh = host.snapshot().unwrap();
+        assert_eq!(
+            snapshot_worker(&fresh, &source.worker_id).lifecycle,
+            "started"
+        );
+        assert!(snapshot_port(&fresh, "events").handoff_targets.is_empty());
+        assert_eq!(snapshot_messages(&fresh, &source.task_id).messages.len(), 1);
+
+        runtime
+            .handle_runtime_request(RuntimeRequest::HandoffPort(PortHandoff {
+                worker: source.clone(),
+                target_task_id: target.task_id.clone(),
+                port: PortDescriptor {
+                    port_id: "events".into(),
+                    name: "event-bus".into(),
+                },
+            }))
+            .unwrap();
+        runtime
+            .handle_runtime_request(RuntimeRequest::PostMessage(TaskMessage {
+                task_id: source.task_id.clone(),
+                worker_id: Some(source.worker_id.clone()),
+                sequence: 2,
+                payload: TaskMessagePayload::Exit(ExitStatus::ExitCode(7)),
+            }))
+            .unwrap();
+
+        assert_eq!(
+            snapshot_worker(&snapshot, &source.worker_id).lifecycle,
+            "mutated"
+        );
+        assert_eq!(
+            snapshot_port(&snapshot, "events").handoff_targets,
+            vec!["mutated".to_string()]
+        );
+        assert!(snapshot_messages(&snapshot, &source.task_id)
+            .messages
+            .is_empty());
+
+        let updated = host.snapshot().unwrap();
+        assert_eq!(snapshot_worker(&updated, &source.worker_id).lifecycle, "7");
+        assert_eq!(
+            snapshot_port(&updated, "events").owner_task_id,
+            target.task_id
+        );
+        assert_eq!(
+            snapshot_port(&updated, "events").handoff_targets,
+            vec![target.task_id]
+        );
+        assert_eq!(
+            snapshot_messages(&updated, &source.task_id).messages.len(),
+            2
+        );
+    }
+
+    #[test]
+    fn worker_task_conflicts_still_error_without_mutating_snapshots() {
+        let runtime = Runtime::new().unwrap();
+        let host = runtime.protocol_host();
+        let RuntimeResponse::Worker(handle) = runtime
+            .handle_runtime_request(RuntimeRequest::SpawnWorker(WorkerSpawnRequest {
+                worker: worker_request("worker-i", "ignored"),
+                parent_task_id: None,
+            }))
+            .unwrap()
+        else {
+            panic!("expected worker response");
+        };
+        let other_task = runtime.task_fs().alloc("auto", None).unwrap();
+
+        let err = runtime
+            .handle_runtime_request(RuntimeRequest::StartWorker(WorkerStartRequest {
+                worker: WorkerHandle {
+                    worker_id: handle.worker_id.clone(),
+                    task_id: other_task.id(),
+                },
+                execution: ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "conflict.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: None,
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            }))
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::AlreadyExists);
+
+        let snapshot = host.snapshot().unwrap();
+        assert_eq!(snapshot.workers.len(), 1);
+        assert_eq!(snapshot_worker(&snapshot, &handle.worker_id).handle, handle);
+        assert!(host.worker_snapshot("missing").unwrap().is_none());
     }
 
     #[test]
@@ -658,5 +999,6 @@ mod tests {
             .unwrap();
         let task = runtime.task_fs().lookup(&handle.task_id).unwrap();
         assert_eq!(task.cmd(), "echo.wasm hello");
+        assert_eq!(worker.snapshot().unwrap().lifecycle, "started");
     }
 }

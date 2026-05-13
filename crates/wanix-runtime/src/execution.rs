@@ -39,6 +39,7 @@ impl NativeExecutionHandler for FnExecutionHandler {
 #[derive(Clone, Default)]
 pub struct ExecutionRegistry {
     handlers: Arc<RwLock<BTreeMap<ExecutionKey, Arc<dyn NativeExecutionHandler>>>>,
+    kind_handlers: Arc<RwLock<BTreeMap<&'static str, Arc<dyn NativeExecutionHandler>>>>,
 }
 
 impl ExecutionRegistry {
@@ -64,6 +65,22 @@ impl ExecutionRegistry {
         self.register(kind, module, FnExecutionHandler::new(handler));
     }
 
+    pub fn register_kind(
+        &self,
+        kind: ExecutionKind,
+        handler: impl NativeExecutionHandler + 'static,
+    ) {
+        self.register_kind_arc(kind, Arc::new(handler));
+    }
+
+    pub fn register_kind_fn(
+        &self,
+        kind: ExecutionKind,
+        handler: impl Fn(&Task, &ExecutionSpec) -> Result<ExitStatus> + Send + Sync + 'static,
+    ) {
+        self.register_kind(kind, FnExecutionHandler::new(handler));
+    }
+
     pub fn execute(&self, task: &Task, spec: &ExecutionSpec) -> Result<ExitStatus> {
         apply_execution_spec(task, spec)?;
         let handler = self
@@ -86,6 +103,13 @@ impl ExecutionRegistry {
             .insert(ExecutionKey::new(kind, module), handler);
     }
 
+    fn register_kind_arc(&self, kind: ExecutionKind, handler: Arc<dyn NativeExecutionHandler>) {
+        self.kind_handlers
+            .write()
+            .unwrap()
+            .insert(execution_kind_name(kind), handler);
+    }
+
     fn handler(
         &self,
         kind: ExecutionKind,
@@ -96,6 +120,13 @@ impl ExecutionRegistry {
             .unwrap()
             .get(&ExecutionKey::new(kind, module))
             .cloned()
+            .or_else(|| {
+                self.kind_handlers
+                    .read()
+                    .unwrap()
+                    .get(execution_kind_name(kind))
+                    .cloned()
+            })
     }
 }
 

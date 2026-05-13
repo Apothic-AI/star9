@@ -22,7 +22,10 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Rust-native 9P import/export with xattr read/list/write support.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
 - Browser Worker/MessagePort JS glue for runtime message envelopes and transferred ports.
+- Browser Worker host facade for Worker-like startup, runtime port transfer, message routing, and cleanup.
 - Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests.
+- Wasmi-backed WASI preview1 execution over Wanix task namespaces and fd tables.
+- Native CLI acceptance commands for 9P loopback, deterministic devices, and runtime worker protocol flows.
 
 ## Workspace
 
@@ -40,7 +43,8 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 ```sh
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-node --test tests/browser-storage-adapters.test.mjs
+node --test tests/browser-storage-adapters.test.mjs tests/browser-worker-host.test.mjs
+cargo run -p wanix-cli -- accept all
 cargo build -p wanix-web --target wasm32-unknown-unknown
 wasm-pack build crates/wanix-web --target web --out-dir ../../target/wanix-web-pkg --dev
 python3 -m http.server 4177 --bind 127.0.0.1

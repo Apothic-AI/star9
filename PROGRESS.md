@@ -2,6 +2,12 @@
 
 ## 2026-05-13
 
+- Added a Wasmi-backed `WasmiWasiHandler` for WASI preview1 execution through the Rust `ExecutionRegistry`, including kind-wide execution handler registration, task namespace module loading, args/env/cwd propagation, preopened cwd, fd read/write/seek/close/stat behavior, path open/stat behavior, deterministic random/clock imports, and proc-exit mapping.
+- Added WAT-based runtime tests proving WASI modules can read and write Wanix namespace files, write through task stdio fds, observe args/env counts, and return exit status without Go or browser shims.
+- Replaced test-only runtime protocol inspection helpers with public immutable snapshot APIs for workers, ports, handoff targets, and task messages.
+- Added a browser-side `BrowserWorkerHost` facade in `crates/wanix-web/js/worker-host.js`, with deterministic Node coverage for Worker-like target startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
+- Added native CLI acceptance subcommands `accept p9`, `accept devices`, `accept worker`, and `accept all` for Rust-owned smoke coverage over 9P loopback, deterministic terminal/VM/network devices, and typed runtime worker protocol flows.
+- Verified focused coverage with `cargo test -p wanix-runtime`, `cargo test -p wanix-cli`, `node --test tests/browser-worker-host.test.mjs tests/browser-storage-adapters.test.mjs`, and `cargo run -p wanix-cli -- accept all`.
 - Added `wanix_protocol::runtime`, a focused typed protocol module for worker spawn/start, execution specs, port open/handoff, task message payloads, stdio/fd descriptors, and exit status messages.
 - Added CBOR encode/decode helpers plus round-trip tests for runtime requests, runtime responses, and task messages in `wanix-protocol`.
 - Added a typed `wanix-web` descriptor module for browser binding planning with explicit `ns`, `file`, `archive`, and `import` binding kinds plus host-neutral storage backend descriptors for `opfs`, `file-system-access`, `cache`, `js-value`, `download`, `worker`, and `dom`.
