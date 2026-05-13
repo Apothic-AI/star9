@@ -14,6 +14,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `TarFs` archive reads, directory listings, symlink lstat/readlink/follow behavior, archive round-tripping, and read-only mutation failures.
 - `MapFs` mount exposure and synthetic parent directories.
 - `HttpFs` GET/HEAD reads, directory listing parsing, PUT writes, mkdir, symlink, MOVE rename, DELETE remove, metadata parsing, and protocol header formatting through a Rust recording transport.
+- `HttpFs` PATCH tar payload transport behavior and mutating request `Change-Timestamp` headers through a Rust recording transport.
 - `R2Fs` object key scoping, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates through a Rust object store trait.
 - `R2Fs` parent listing compare-and-swap retry behavior and deterministic conflict exhaustion through Rust in-memory object stores.
 - Pipe bidirectional reads and writes with file close preserving the underlying pipe.
@@ -63,7 +64,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 
 - HTTP filesystem caching and remote metadata semantics.
 - `SyncFs` background/debounced scheduling and backend-specific patch/application semantics beyond the in-memory test backend.
-- HTTP filesystem caching, multipart parsing, PATCH archive updates, and real network transport.
+- HTTP filesystem caching, multipart parsing, PATCH archive application semantics, and real network transport.
 - Cloudflare/S3 adapter wiring for the Rust `ObjectStore` contract.
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export beyond loopback smoke.
 - Additional 9P edge cases such as flush cancellation, xattr messages, and remote conflict/error parity.

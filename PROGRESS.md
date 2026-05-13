@@ -19,6 +19,8 @@
 - Added a `RuntimeProtocolHost` and `WorkerHost` in `wanix-runtime` that handle typed runtime worker requests for spawn, start, port open/handoff, task messages, stdio/fd setup, and exit-state updates without browser or Go dependencies.
 - Hardened `R2Fs` parent directory listings with an `ObjectStore::compare_and_swap` contract, bounded retry behavior, deterministic conflict errors, and in-memory object-store tests for retry success and conflict exhaustion.
 - Added Rust-owned conformance fixtures for runtime protocol method coverage and representative browser binding/storage descriptor plans.
+- Added `HttpFs::patch_tar` for Rust-native HTTP PATCH tar payloads, with deterministic transport-boundary tests for method, URL, headers, body, and error mapping.
+- Added `Change-Timestamp` mutation headers to HTTP PUT, MOVE, DELETE, and PATCH requests.
 - Verified `cargo fmt`, `cargo test -p wanix-runtime`, `cargo test -p wanix-web`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
 - Added a Rust-native `wanix_protocol::p9` module implementing a 9P2000.L-style frame codec for version, attach, walk, open/create, getattr/setattr, read/write, clunk/remove, mkdir/readdir, renameat/unlinkat, fsync, symlink, and readlink messages.
 - Added `NinePServer` over `wanix_fs::FileSystem`, with fid tracking, stable FNV-1a qids, Wanix metadata-to-9P attribute mapping, directory-entry encoding, and errno-based `Rlerror` responses.

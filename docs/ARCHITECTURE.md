@@ -34,6 +34,8 @@ The crate also ports the key `fskit` building blocks:
 
 `R2Fs` is implemented over a Rust `ObjectStore` trait. The trait includes compare-and-swap for parent directory listing updates, allowing deterministic retry and conflict behavior to be tested with `InMemoryObjectStore` while keeping remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
 
+`HttpFs` is implemented over a Rust `HttpTransport` trait. Mutating requests carry Wanix metadata headers plus a `Change-Timestamp`, and `patch_tar` sends complete tar patch payloads through `PATCH` without requiring a live network transport in tests.
+
 ## Namespace
 
 `wanix-vfs::Namespace` stores ordered bind targets keyed by destination path. It supports:
