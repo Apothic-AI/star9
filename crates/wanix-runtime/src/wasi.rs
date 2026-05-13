@@ -1918,6 +1918,53 @@ mod tests {
     }
 
     #[test]
+    fn wasmi_wasi_handler_runs_compiled_fixture() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = include_bytes!("../../../tests/fixtures/wasi-hard-link.wasm").to_vec();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("program.wasm", program),
+                    ("source.txt", b"source".to_vec()),
+                ])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/linked.txt").unwrap(),
+            b"source"
+        );
+    }
+
+    #[test]
     fn wasmi_wasi_handler_runs_preview1_against_task_namespace() {
         let runtime = crate::Runtime::new().unwrap();
         let task = runtime

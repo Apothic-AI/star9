@@ -51,7 +51,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
-- Wasmi-backed WASI preview1 execution coverage for task namespace module loading, args/env/cwd propagation, preopened cwd, fd read/write/pread/pwrite/seek/tell/allocate/renumber/close/stat/advice/flags/rights/timestamps/sync/datasync/truncate/readdir behavior, path open/stat/timestamps/create-directory/unlink/remove-directory/rename/link/symlink/readlink behavior, stdio fd writes, deterministic random/clock imports, poll/yield/signal imports, unsupported socket imports, preview1 errno mapping, and proc-exit mapping.
+- Wasmi-backed WASI preview1 execution coverage for task namespace module loading from inline WAT and checked-in compiled WASM fixtures, args/env/cwd propagation, preopened cwd, fd read/write/pread/pwrite/seek/tell/allocate/renumber/close/stat/advice/flags/rights/timestamps/sync/datasync/truncate/readdir behavior, path open/stat/timestamps/create-directory/unlink/remove-directory/rename/link/symlink/readlink behavior, stdio fd writes, deterministic random/clock imports, poll/yield/signal imports, unsupported socket imports, preview1 errno mapping, and proc-exit mapping.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
@@ -84,6 +84,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 `tests/fixtures/api-operations.json` lists the public operation names used by the typed protocol boundary.
 
 `tests/fixtures/runtime-requests.json` lists the typed runtime protocol method names for worker and port dispatch.
+
+`tests/fixtures/wasi-hard-link.wasm` is a checked-in compiled WASI preview1 module, with source in `tests/fixtures/wasi-hard-link.wat`, used to prove `WasmiWasiHandler` executes precompiled fixture bytes loaded from the Wanix namespace.
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 
