@@ -21,6 +21,8 @@
 - Added Rust-owned conformance fixtures for runtime protocol method coverage and representative browser binding/storage descriptor plans.
 - Added `HttpFs::patch_tar` for Rust-native HTTP PATCH tar payloads, with deterministic transport-boundary tests for method, URL, headers, body, and error mapping.
 - Added `Change-Timestamp` mutation headers to HTTP PUT, MOVE, DELETE, and PATCH requests.
+- Added a host-neutral `MessagePort` trait and in-memory message-port channel in `wanix-web`, with tests for message-boundary preservation and lossless 9P frame transfer.
+- Added `WebWorkerAdapter` and `BrowserWorkerRuntime` scaffolding for typed runtime worker requests, responses, and task messages over the message-port abstraction.
 - Verified `cargo fmt`, `cargo test -p wanix-runtime`, `cargo test -p wanix-web`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
 - Added a Rust-native `wanix_protocol::p9` module implementing a 9P2000.L-style frame codec for version, attach, walk, open/create, getattr/setattr, read/write, clunk/remove, mkdir/readdir, renameat/unlinkat, fsync, symlink, and readlink messages.
 - Added `NinePServer` over `wanix_fs::FileSystem`, with fid tracking, stable FNV-1a qids, Wanix metadata-to-9P attribute mapping, directory-entry encoding, and errno-based `Rlerror` responses.

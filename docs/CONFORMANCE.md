@@ -32,6 +32,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - CBOR request/response round-tripping for the typed protocol boundary.
 - CBOR round-tripping for typed runtime worker spawn/start, execution, port handoff, task messages, stdio/fd descriptors, and exit status.
 - Runtime protocol host handling for worker spawn/start, stdio/fd setup, port open/handoff, task messages, and exit-state updates.
+- Browser worker/message-port adapter coverage for typed runtime request/response dispatch, task message delivery, and lossless 9P frame transfer through a host-neutral port.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
@@ -69,7 +70,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export beyond loopback smoke.
 - Additional 9P edge cases such as flush cancellation, xattr messages, and remote conflict/error parity.
 - Browser JS glue for OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage handles.
-- Browser worker adapter wiring for the typed runtime protocol.
+- Browser JS glue for real Worker and MessagePort objects on top of the host-neutral typed runtime adapter.
 - Terminal screen protocol details.
 - VM/network device behavior.
 - Full WASI syscall execution.
