@@ -2,6 +2,7 @@
 
 ## 2026-05-13
 
+- Extended the Wasmi WASI preview1 handler with `fd_advise`, `fd_fdstat_set_flags`, `fd_fdstat_set_rights`, `fd_filestat_set_times`, and `path_filestat_set_times`, including valid-fd no-op behavior where the reference surface is advisory, conservative unsupported append flag updates, mtime mapping through `chtimes`, invalid timestamp-flag validation, and WAT coverage.
 - Extended the Wasmi WASI preview1 handler with positional fd syscalls `fd_pread`, `fd_pwrite`, `fd_tell`, and `fd_allocate`, preserving file offsets across positional I/O/allocation, syncing successful positional writes, validating invalid offsets, and covering the behavior with WAT fixtures over MemFs-backed task namespaces.
 - Added deterministic S3/R2 SigV4 request signing through `AwsSigV4Signer`, including host/date/payload-hash/authorization headers, canonical path/query/header handling, configurable service/region, fixed signing time for tests, and stable AWS reference-vector coverage without live credentials.
 - Extended the Wasmi WASI preview1 handler with fd-level `fd_sync`, `fd_datasync`, `fd_filestat_set_size`, and `fd_readdir`, including directory entry encoding with cookies, `.`/`..` entries, namespace file truncation, and WAT tests for directory reads and fd sync/truncate behavior.

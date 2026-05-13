@@ -1,5 +1,5 @@
 use std::io::SeekFrom;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -38,6 +38,13 @@ const OFLAGS_DIRECTORY: i32 = 2;
 const OFLAGS_TRUNCATE: i32 = 8;
 
 const FDFLAGS_APPEND: i32 = 1;
+const FDFLAGS_SUPPORTED_SET: i32 = 0;
+
+const FSTFLAGS_ATIM: i32 = 1;
+const FSTFLAGS_ATIM_NOW: i32 = 2;
+const FSTFLAGS_MTIM: i32 = 4;
+const FSTFLAGS_MTIM_NOW: i32 = 8;
+const FSTFLAGS_ALL: i32 = FSTFLAGS_ATIM | FSTFLAGS_ATIM_NOW | FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW;
 
 const RIGHTS_FD_READ: i64 = 1 << 1;
 const RIGHTS_FD_WRITE: i64 = 1 << 6;
@@ -132,6 +139,9 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .func_wrap(WASI, "fd_read", fd_read)
         .map_err(wasmi_error)?;
     linker
+        .func_wrap(WASI, "fd_advise", fd_advise)
+        .map_err(wasmi_error)?;
+    linker
         .func_wrap(WASI, "fd_pwrite", fd_pwrite)
         .map_err(wasmi_error)?;
     linker
@@ -153,10 +163,19 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .func_wrap(WASI, "fd_fdstat_get", fd_fdstat_get)
         .map_err(wasmi_error)?;
     linker
+        .func_wrap(WASI, "fd_fdstat_set_flags", fd_fdstat_set_flags)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "fd_fdstat_set_rights", fd_fdstat_set_rights)
+        .map_err(wasmi_error)?;
+    linker
         .func_wrap(WASI, "fd_filestat_get", fd_filestat_get)
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "fd_filestat_set_size", fd_filestat_set_size)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "fd_filestat_set_times", fd_filestat_set_times)
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "fd_prestat_get", fd_prestat_get)
@@ -181,6 +200,9 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "path_filestat_get", path_filestat_get)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "path_filestat_set_times", path_filestat_set_times)
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "path_unlink_file", path_unlink_file)
@@ -309,6 +331,16 @@ fn fd_read(
         }
     }
     write_u32(&mut caller, nread_ptr, total).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
+fn fd_advise(caller: Caller<'_, WasiState>, fd: i32, offset: i64, len: i64, _advice: i32) -> i32 {
+    if offset < 0 || len < 0 {
+        return ERRNO_INVAL;
+    }
+    match caller.data().task.fd_path(fd as u32) {
+        Ok(_) => ERRNO_SUCCESS,
+        Err(err) => errno_from_error(&err),
+    }
 }
 
 fn fd_pwrite(
@@ -459,6 +491,26 @@ fn fd_fdstat_get(mut caller: Caller<'_, WasiState>, fd: i32, stat_ptr: i32) -> i
     write_fdstat(&mut caller, stat_ptr, meta.mode).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
+fn fd_fdstat_set_flags(caller: Caller<'_, WasiState>, fd: i32, flags: i32) -> i32 {
+    match caller.data().task.fd_path(fd as u32) {
+        Ok(_) if flags == FDFLAGS_SUPPORTED_SET => ERRNO_SUCCESS,
+        Ok(_) => ERRNO_NOTSUP,
+        Err(err) => errno_from_error(&err),
+    }
+}
+
+fn fd_fdstat_set_rights(
+    caller: Caller<'_, WasiState>,
+    fd: i32,
+    _rights_base: i64,
+    _rights_inheriting: i64,
+) -> i32 {
+    match caller.data().task.fd_path(fd as u32) {
+        Ok(_) => ERRNO_SUCCESS,
+        Err(err) => errno_from_error(&err),
+    }
+}
+
 fn fd_filestat_get(mut caller: Caller<'_, WasiState>, fd: i32, stat_ptr: i32) -> i32 {
     let task = caller.data().task.clone();
     let meta = match task.with_fd_mut(fd as u32, |file| file.stat()) {
@@ -481,6 +533,31 @@ fn fd_filestat_set_size(caller: Caller<'_, WasiState>, fd: i32, size: i64) -> i3
     task.namespace()
         .truncate(&path, size as u64)
         .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
+fn fd_filestat_set_times(
+    caller: Caller<'_, WasiState>,
+    fd: i32,
+    atim: i64,
+    mtim: i64,
+    flags: i32,
+) -> i32 {
+    let mtime = match wasi_mtime_from_flags(atim, mtim, flags) {
+        Ok(mtime) => mtime,
+        Err(errno) => return errno,
+    };
+    let task = caller.data().task.clone();
+    let path = match task.fd_path(fd as u32) {
+        Ok(path) => path,
+        Err(err) => return errno_from_error(&err),
+    };
+    match mtime {
+        Some(mtime) => task
+            .namespace()
+            .chtimes(&path, mtime)
+            .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS),
+        None => ERRNO_SUCCESS,
+    }
 }
 
 fn fd_sync(caller: Caller<'_, WasiState>, fd: i32) -> i32 {
@@ -637,6 +714,38 @@ fn path_filestat_get(
     };
     write_filestat(&mut caller, stat_ptr, meta.mode, meta.size)
         .map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn path_filestat_set_times(
+    mut caller: Caller<'_, WasiState>,
+    fd: i32,
+    _flags: i32,
+    path_ptr: i32,
+    path_len: i32,
+    atim: i64,
+    mtim: i64,
+    fst_flags: i32,
+) -> i32 {
+    let mtime = match wasi_mtime_from_flags(atim, mtim, fst_flags) {
+        Ok(mtime) => mtime,
+        Err(errno) => return errno,
+    };
+    let task = caller.data().task.clone();
+    let path = match read_wasi_path(&mut caller, &task, fd, path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    match mtime {
+        Some(mtime) => task
+            .namespace()
+            .chtimes(&path, mtime)
+            .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS),
+        None => task
+            .namespace()
+            .stat(&FsContext::new(), &path)
+            .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS),
+    }
 }
 
 fn path_unlink_file(
@@ -864,6 +973,38 @@ fn parent_wasi_path(path: &str) -> String {
 fn sync_task_fd(task: &Task, fd: i32) -> i32 {
     task.with_fd_mut(fd as u32, |file| sync_ignoring_unsupported(file))
         .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
+}
+
+fn wasi_mtime_from_flags(
+    atim: i64,
+    mtim: i64,
+    flags: i32,
+) -> std::result::Result<Option<SystemTime>, i32> {
+    if flags & !FSTFLAGS_ALL != 0 {
+        return Err(ERRNO_INVAL);
+    }
+    if flags & FSTFLAGS_ATIM != 0 && flags & FSTFLAGS_ATIM_NOW != 0 {
+        return Err(ERRNO_INVAL);
+    }
+    if flags & FSTFLAGS_MTIM != 0 && flags & FSTFLAGS_MTIM_NOW != 0 {
+        return Err(ERRNO_INVAL);
+    }
+    if flags & FSTFLAGS_ATIM != 0 && atim < 0 {
+        return Err(ERRNO_INVAL);
+    }
+    if flags & FSTFLAGS_MTIM_NOW != 0 {
+        return Ok(Some(SystemTime::now()));
+    }
+    if flags & FSTFLAGS_MTIM != 0 {
+        if mtim < 0 {
+            return Err(ERRNO_INVAL);
+        }
+        return UNIX_EPOCH
+            .checked_add(Duration::from_nanos(mtim as u64))
+            .map(Some)
+            .ok_or(ERRNO_INVAL);
+    }
+    Ok(None)
 }
 
 fn sync_ignoring_unsupported(file: &mut dyn FileHandle) -> Result<()> {
@@ -2434,6 +2575,185 @@ mod tests {
         assert_eq!(
             read_file(task.namespace().as_ref(), "workspace/data.txt").unwrap(),
             b"abc"
+        );
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_supports_fd_advice_flags_and_times() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "path_open"
+                (func $path_open
+                  (param i32 i32 i32 i32 i32 i64 i64 i32 i32)
+                  (result i32)))
+              (import "wasi_snapshot_preview1" "fd_advise"
+                (func $fd_advise (param i32 i64 i64 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_fdstat_set_flags"
+                (func $fd_fdstat_set_flags (param i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_fdstat_set_rights"
+                (func $fd_fdstat_set_rights (param i32 i64 i64) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_filestat_set_times"
+                (func $fd_filestat_set_times (param i32 i64 i64 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_filestat_set_times"
+                (func $path_filestat_set_times
+                  (param i32 i32 i32 i32 i64 i64 i32)
+                  (result i32)))
+              (import "wasi_snapshot_preview1" "fd_close"
+                (func $fd_close (param i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+              (data (i32.const 100) "data.txt")
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_errno (param $errno i32) (param $want i32) (param $code i32)
+                local.get $errno
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (call $assert_ok
+                  (call $path_open
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 100)
+                    (i32.const 8)
+                    (i32.const 0)
+                    (i64.const 66)
+                    (i64.const 0)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 10))
+
+                (call $assert_ok
+                  (call $fd_advise
+                    (i32.load (i32.const 0))
+                    (i64.const 0)
+                    (i64.const 3)
+                    (i32.const 0))
+                  (i32.const 11))
+                (call $assert_ok
+                  (call $fd_fdstat_set_flags
+                    (i32.load (i32.const 0))
+                    (i32.const 0))
+                  (i32.const 12))
+                (call $assert_ok
+                  (call $fd_fdstat_set_rights
+                    (i32.load (i32.const 0))
+                    (i64.const 2)
+                    (i64.const 64))
+                  (i32.const 13))
+                (call $assert_errno
+                  (call $fd_fdstat_set_flags
+                    (i32.load (i32.const 0))
+                    (i32.const 1))
+                  (i32.const 58)
+                  (i32.const 14))
+
+                (call $assert_ok
+                  (call $fd_filestat_set_times
+                    (i32.load (i32.const 0))
+                    (i64.const 0)
+                    (i64.const 1700000000123000000)
+                    (i32.const 4))
+                  (i32.const 15))
+                (call $assert_ok
+                  (call $path_filestat_set_times
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 100)
+                    (i32.const 8)
+                    (i64.const 0)
+                    (i64.const 1700000000456000000)
+                    (i32.const 4))
+                  (i32.const 16))
+                (call $assert_errno
+                  (call $path_filestat_set_times
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 100)
+                    (i32.const 8)
+                    (i64.const 0)
+                    (i64.const 1700000000456000000)
+                    (i32.const 12))
+                  (i32.const 28)
+                  (i32.const 17))
+                (call $assert_errno
+                  (call $fd_filestat_set_times
+                    (i32.load (i32.const 0))
+                    (i64.const 0)
+                    (i64.const -1)
+                    (i32.const 4))
+                  (i32.const 28)
+                  (i32.const 18))
+                (call $assert_ok
+                  (call $fd_close (i32.load (i32.const 0)))
+                  (i32.const 19)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("program.wasm", program),
+                    ("data.txt", b"abc".to_vec()),
+                ])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        let modified = task
+            .namespace()
+            .stat(&FsContext::new(), "workspace/data.txt")
+            .unwrap()
+            .modified;
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(
+            modified.duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+            1_700_000_000_456_000_000
         );
     }
 
