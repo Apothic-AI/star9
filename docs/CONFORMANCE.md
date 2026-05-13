@@ -56,11 +56,11 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
 - 9P server attach, walk, and getattr behavior against a `MemFs` export.
-- 9P client filesystem behavior over loopback transport for read, write, create, readdir, rename, remove, mkdir, and rmdir operations.
+- 9P client filesystem behavior over loopback transport for read, write, create, hard link, readdir, rename, remove, mkdir, and rmdir operations.
 - 9P partial-walk edge behavior, duplicate `newfid` rejection, and client not-found mapping for partial remote walks.
 - 9P flush acknowledgement behavior and fid-state preservation for synchronous server handling.
 - 9P native stream framing helpers for consecutive length-prefixed frames, invalid frame size rejection, and multi-request server dispatch over `Read`/`Write` boundaries.
-- 9P xattr walk/create message codec coverage plus server/client xattr read, list, and write commit behavior over MemFs xattrs.
+- 9P hard-link and xattr walk/create message codec coverage plus server/client xattr read, list, and write commit behavior over MemFs xattrs.
 - 9P client invalid path rejection before normalization for empty, absolute, and parent-traversal inputs.
 - Runtime 9P namespace export and loopback import behavior.
 - Browser smoke coverage for reading files through a Rust 9P imported mount.

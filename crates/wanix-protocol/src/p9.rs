@@ -95,6 +95,8 @@ mod msg {
     pub const RREADDIR: u8 = 41;
     pub const TFSYNC: u8 = 50;
     pub const RFSYNC: u8 = 51;
+    pub const TLINK: u8 = 70;
+    pub const RLINK: u8 = 71;
     pub const TMKDIR: u8 = 72;
     pub const RMKDIR: u8 = 73;
     pub const TRENAMEAT: u8 = 74;
@@ -241,6 +243,11 @@ pub enum NinePRequest {
         mode: u32,
         gid: u32,
     },
+    Link {
+        fid: u32,
+        newdirfid: u32,
+        name: String,
+    },
     Readdir {
         fid: u32,
         offset: u64,
@@ -291,6 +298,7 @@ pub enum NinePResponse {
     Clunk,
     Remove,
     Mkdir { qid: Qid },
+    Link,
     Readdir { data: Vec<u8> },
     RenameAt,
     UnlinkAt,
@@ -412,6 +420,16 @@ pub fn encode_request(tag: u16, request: &NinePRequest) -> Result<Vec<u8>> {
             put_u32(&mut body, *mode);
             put_u32(&mut body, *gid);
             msg::TMKDIR
+        }
+        NinePRequest::Link {
+            fid,
+            newdirfid,
+            name,
+        } => {
+            put_u32(&mut body, *fid);
+            put_u32(&mut body, *newdirfid);
+            put_string(&mut body, name)?;
+            msg::TLINK
         }
         NinePRequest::Readdir { fid, offset, count } => {
             put_u32(&mut body, *fid);
@@ -541,6 +559,11 @@ pub fn decode_request(frame: &[u8]) -> Result<(u16, NinePRequest)> {
             mode: d.u32()?,
             gid: d.u32()?,
         },
+        msg::TLINK => NinePRequest::Link {
+            fid: d.u32()?,
+            newdirfid: d.u32()?,
+            name: d.string()?,
+        },
         msg::TREADDIR => NinePRequest::Readdir {
             fid: d.u32()?,
             offset: d.u64()?,
@@ -632,6 +655,7 @@ pub fn encode_response(tag: u16, response: &NinePResponse) -> Result<Vec<u8>> {
             encode_qid(&mut body, qid);
             msg::RMKDIR
         }
+        NinePResponse::Link => msg::RLINK,
         NinePResponse::Readdir { data } => {
             put_counted_data(&mut body, data)?;
             msg::RREADDIR
@@ -688,6 +712,7 @@ pub fn decode_response(frame: &[u8]) -> Result<(u16, NinePResponse)> {
         msg::RCLUNK => NinePResponse::Clunk,
         msg::RREMOVE => NinePResponse::Remove,
         msg::RMKDIR => NinePResponse::Mkdir { qid: d.qid()? },
+        msg::RLINK => NinePResponse::Link,
         msg::RREADDIR => NinePResponse::Readdir {
             data: d.counted_data()?,
         },
@@ -1115,6 +1140,11 @@ impl NinePServer {
             NinePRequest::Mkdir {
                 fid, name, mode, ..
             } => self.mkdir(fid, &name, mode),
+            NinePRequest::Link {
+                fid,
+                newdirfid,
+                name,
+            } => self.link(fid, newdirfid, &name),
             NinePRequest::Readdir { fid, offset, count } => self.readdir(fid, offset, count),
             NinePRequest::RenameAt {
                 olddirfid,
@@ -1366,6 +1396,13 @@ impl NinePServer {
         Ok(NinePResponse::Mkdir {
             qid: qid_for(self.fsys.as_ref(), &path)?,
         })
+    }
+
+    fn link(&self, fid: u32, newdirfid: u32, name: &str) -> Result<NinePResponse> {
+        let old = self.fid_path(fid)?;
+        let new = checked_join(&self.fid_path(newdirfid)?, name)?;
+        self.fsys.link(&old, &new)?;
+        Ok(NinePResponse::Link)
     }
 
     fn readdir(&self, fid: u32, offset: u64, count: u32) -> Result<NinePResponse> {
@@ -1948,6 +1985,28 @@ impl FileSystem for NinePClientFs {
             Err(err) => Err(err),
         };
         let old_clunk = self.clunk_fid(old_parent);
+        let new_clunk = self.clunk_fid(new_parent);
+        result.and(old_clunk).and(new_clunk)
+    }
+
+    fn link(&self, old: &str, new: &str) -> Result<()> {
+        let old = validated_client_path("link", old)?;
+        let new = validated_client_path("link", new)?;
+        if old == "." || new == "." {
+            return Err(Error::path("link", new, ErrorKind::Invalid));
+        }
+        let old_fid = self.walk_fid(&old)?;
+        let new_parent = self.walk_fid(&parent_path(&new))?;
+        let result = match self.call(NinePRequest::Link {
+            fid: old_fid,
+            newdirfid: new_parent,
+            name: base_name(&new).to_string(),
+        }) {
+            Ok(NinePResponse::Link) => Ok(()),
+            Ok(_) => Err(ErrorKind::Invalid.into()),
+            Err(err) => Err(err),
+        };
+        let old_clunk = self.clunk_fid(old_fid);
         let new_clunk = self.clunk_fid(new_parent);
         result.and(old_clunk).and(new_clunk)
     }
@@ -2556,6 +2615,11 @@ mod tests {
             size: 5,
             flags: 0,
         });
+        round_trip_request(NinePRequest::Link {
+            fid: 2,
+            newdirfid: 3,
+            name: "linked".to_string(),
+        });
         round_trip_request(NinePRequest::RenameAt {
             olddirfid: 1,
             oldname: "a".to_string(),
@@ -2575,6 +2639,7 @@ mod tests {
         });
         round_trip_response(NinePResponse::XattrWalk { size: 12 });
         round_trip_response(NinePResponse::XattrCreate);
+        round_trip_response(NinePResponse::Link);
         round_trip_response(NinePResponse::GetAttr {
             attr: NinePAttr {
                 valid: ATTR_BASIC,
@@ -3002,6 +3067,23 @@ mod tests {
             fs::stat(&client, "dir/moved.txt").unwrap_err().kind(),
             ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn client_filesystem_creates_hard_links() {
+        let (mem, client) = client_with_memfs();
+
+        client.link("dir/file.txt", "dir/linked.txt").unwrap();
+        let mut linked = client
+            .open_file("dir/linked.txt", OpenFlags::RDWR, FileMode::empty())
+            .unwrap();
+        linked.write(b"HELLO").unwrap();
+        linked.close().unwrap();
+
+        assert_eq!(fs::read_file(&client, "dir/file.txt").unwrap(), b"HELLO");
+        client.remove("dir/file.txt").unwrap();
+        assert_eq!(fs::read_file(&client, "dir/linked.txt").unwrap(), b"HELLO");
+        assert_eq!(fs::read_file(&mem, "dir/linked.txt").unwrap(), b"HELLO");
     }
 
     #[test]
