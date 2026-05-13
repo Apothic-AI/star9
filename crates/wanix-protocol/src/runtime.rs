@@ -367,4 +367,56 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn request_method_fixture_covers_all_runtime_variants() {
+        let fixture: Vec<String> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/runtime-requests.json"
+        ))
+        .unwrap();
+        let requests = [
+            RuntimeRequest::SpawnWorker(WorkerSpawnRequest {
+                worker: worker(),
+                parent_task_id: Some("1".into()),
+            }),
+            RuntimeRequest::StartWorker(WorkerStartRequest {
+                worker: worker(),
+                execution: ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "/bin/repl.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: None,
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            }),
+            RuntimeRequest::OpenPort(PortOpenRequest {
+                worker: worker(),
+                port: PortDescriptor {
+                    port_id: "events".into(),
+                    name: "event-bus".into(),
+                },
+            }),
+            RuntimeRequest::HandoffPort(PortHandoff {
+                worker: worker(),
+                target_task_id: "2".into(),
+                port: PortDescriptor {
+                    port_id: "events".into(),
+                    name: "event-bus".into(),
+                },
+            }),
+            RuntimeRequest::PostMessage(TaskMessage {
+                task_id: "42".into(),
+                worker_id: Some("worker-1".into()),
+                sequence: 1,
+                payload: TaskMessagePayload::Ready,
+            }),
+        ];
+        let methods: Vec<_> = requests
+            .iter()
+            .map(|request| request.method_name().to_string())
+            .collect();
+        assert_eq!(methods, fixture);
+    }
 }

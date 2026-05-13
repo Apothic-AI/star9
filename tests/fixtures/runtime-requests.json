@@ -1,0 +1,7 @@
+[
+  "SpawnWorker",
+  "StartWorker",
+  "OpenPort",
+  "HandoffPort",
+  "PostMessage"
+]

@@ -53,6 +53,10 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/fixtures/api-operations.json` lists the public operation names used by the typed protocol boundary.
 
+`tests/fixtures/runtime-requests.json` lists the typed runtime protocol method names for worker and port dispatch.
+
+`tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
+
 ## Remaining Oracle Areas
 
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:

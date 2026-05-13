@@ -413,4 +413,17 @@ mod tests {
 
         descriptor.validate().unwrap();
     }
+
+    #[test]
+    fn browser_binding_fixture_validates_representative_plans() {
+        let bindings: Vec<WebBinding> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/browser-bindings.json"
+        ))
+        .unwrap();
+
+        assert_eq!(bindings.len(), 10);
+        for binding in bindings {
+            binding.validate().unwrap();
+        }
+    }
 }

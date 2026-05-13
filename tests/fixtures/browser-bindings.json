@@ -1,0 +1,81 @@
+[
+  {
+    "dst": "root",
+    "src": ".",
+    "kind": "ns"
+  },
+  {
+    "dst": "bin/app.wasm",
+    "src": "https://example.invalid/app.wasm",
+    "kind": "file"
+  },
+  {
+    "dst": "assets",
+    "src": "https://example.invalid/assets.tar.gz",
+    "kind": "archive"
+  },
+  {
+    "dst": "remote",
+    "src": "https://example.invalid/export.html#system",
+    "kind": "import",
+    "storage": {
+      "backend": "worker",
+      "worker": "import-worker",
+      "path": "mounts/remote"
+    }
+  },
+  {
+    "dst": "opfs",
+    "kind": "ns",
+    "storage": {
+      "backend": "opfs",
+      "root": "workspace"
+    }
+  },
+  {
+    "dst": "handles",
+    "kind": "ns",
+    "storage": {
+      "backend": "file-system-access",
+      "handle": "project-dir",
+      "path": "src",
+      "writable": true
+    }
+  },
+  {
+    "dst": "cache",
+    "kind": "ns",
+    "storage": {
+      "backend": "cache",
+      "cache": "wanix-shell",
+      "path": "responses"
+    }
+  },
+  {
+    "dst": "js",
+    "kind": "ns",
+    "storage": {
+      "backend": "js-value",
+      "value": "window.wanixRoot",
+      "path": "children"
+    }
+  },
+  {
+    "dst": "downloads",
+    "kind": "ns",
+    "storage": {
+      "backend": "download",
+      "name": "wanix-output.tar",
+      "media_type": "application/x-tar"
+    }
+  },
+  {
+    "dst": "dom",
+    "kind": "ns",
+    "storage": {
+      "backend": "dom",
+      "node": "#workspace",
+      "property": "files"
+    }
+  }
+]

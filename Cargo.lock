@@ -794,6 +794,7 @@ dependencies = [
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
+ "serde_json",
  "wanix-core",
  "wanix-fs",
  "wanix-protocol",
