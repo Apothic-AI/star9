@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{Cursor, SeekFrom};
+use std::io::{Cursor, Read, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 #[cfg(not(target_arch = "wasm32"))]
@@ -19,6 +19,63 @@ pub type RemoteSyncRef = Arc<dyn RemoteSyncBackend>;
 pub trait RemoteSyncBackend: Send + Sync {
     fn index(&self) -> Result<FsRef>;
     fn apply_patch(&self, patch: &[u8]) -> Result<()>;
+}
+
+pub fn apply_sync_patch(fsys: &dyn FileSystem, patch: &[u8]) -> Result<()> {
+    let mut archive = tar::Archive::new(Cursor::new(patch));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let mut is_delete = false;
+        let mut recursive = false;
+        if let Some(records) = entry.pax_extensions()? {
+            for record in records {
+                let record = record?;
+                if record.key_bytes() == b"delete" {
+                    is_delete = true;
+                } else if record.key_bytes() == b"recursive" {
+                    recursive = record.value_bytes() == b"1";
+                }
+            }
+        }
+
+        let header = entry.header().clone();
+        let path = clean_path(&header.path()?.to_string_lossy());
+        if is_delete {
+            apply_sync_patch_delete(fsys, &path, recursive)?;
+            continue;
+        }
+
+        if header.entry_type().is_dir() {
+            apply_sync_patch_dir(
+                fsys,
+                &path,
+                FileMode::from_perm(header.mode().unwrap_or(0o755)),
+            )?;
+            continue;
+        }
+
+        if header.entry_type().is_symlink() {
+            let target = header
+                .link_name()?
+                .ok_or_else(|| {
+                    crate::Error::Message(format!("symlink entry missing target: {path}"))
+                })?
+                .to_string_lossy()
+                .into_owned();
+            apply_sync_patch_symlink(fsys, &path, &target)?;
+            continue;
+        }
+
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data)?;
+        apply_sync_patch_file(
+            fsys,
+            &path,
+            &data,
+            FileMode::from_perm(header.mode().unwrap_or(0o644)),
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -951,10 +1008,114 @@ fn append_delete_marker<W: std::io::Write>(
     Ok(())
 }
 
+fn apply_sync_patch_delete(fsys: &dyn FileSystem, path: &str, recursive: bool) -> Result<()> {
+    if !sync_patch_path_exists(fsys, path)? {
+        return Ok(());
+    }
+
+    let meta = lstat(fsys, path)?;
+    if recursive && meta.is_dir() {
+        remove_all(fsys, path)
+    } else {
+        fsys.remove(path)
+    }
+}
+
+fn apply_sync_patch_dir(fsys: &dyn FileSystem, path: &str, mode: FileMode) -> Result<()> {
+    ensure_sync_patch_parent_dirs(fsys, path)?;
+    if sync_patch_path_exists(fsys, path)? && !lstat(fsys, path)?.is_dir() {
+        remove_sync_patch_path(fsys, path)?;
+    }
+
+    match fsys.mkdir(path, mode) {
+        Ok(()) => {}
+        Err(err) if err.kind() == crate::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+
+    match fsys.chmod(path, mode) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == crate::ErrorKind::NotSupported => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn apply_sync_patch_symlink(fsys: &dyn FileSystem, path: &str, target: &str) -> Result<()> {
+    ensure_sync_patch_parent_dirs(fsys, path)?;
+    remove_sync_patch_path(fsys, path)?;
+    fsys.symlink(target, path)
+}
+
+fn apply_sync_patch_file(
+    fsys: &dyn FileSystem,
+    path: &str,
+    data: &[u8],
+    mode: FileMode,
+) -> Result<()> {
+    ensure_sync_patch_parent_dirs(fsys, path)?;
+    if sync_patch_path_exists(fsys, path)? {
+        let meta = lstat(fsys, path)?;
+        if meta.is_dir() || meta.mode.is_symlink() {
+            remove_sync_patch_path(fsys, path)?;
+        }
+    }
+    write_file(fsys, path, data, mode)
+}
+
+fn ensure_sync_patch_parent_dirs(fsys: &dyn FileSystem, path: &str) -> Result<()> {
+    let parent = parent_path(path);
+    if parent == "." {
+        return Ok(());
+    }
+
+    let mut current = String::new();
+    for part in clean_path(&parent).split('/') {
+        if !current.is_empty() {
+            current.push('/');
+        }
+        current.push_str(part);
+
+        match lstat(fsys, &current) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                remove_sync_patch_path(fsys, &current)?;
+                fsys.mkdir(&current, FileMode::from_perm(0o755))?;
+            }
+            Err(err) if err.kind() == crate::ErrorKind::NotFound => {
+                fsys.mkdir(&current, FileMode::from_perm(0o755))?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(())
+}
+
+fn remove_sync_patch_path(fsys: &dyn FileSystem, path: &str) -> Result<()> {
+    if !sync_patch_path_exists(fsys, path)? {
+        return Ok(());
+    }
+
+    let meta = lstat(fsys, path)?;
+    if meta.is_dir() {
+        remove_all(fsys, path)
+    } else {
+        fsys.remove(path)
+    }
+}
+
+fn sync_patch_path_exists(fsys: &dyn FileSystem, path: &str) -> Result<bool> {
+    match lstat(fsys, path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == crate::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::io::{Cursor, Read};
+    use std::io::Cursor;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
@@ -965,10 +1126,13 @@ mod tests {
         time::Instant,
     };
 
-    use super::{DirtyChange, PullConflictPolicy, RemoteSyncBackend, SyncFs};
+    use super::{
+        append_delete_marker, append_patch_path, apply_sync_patch, DirtyChange, PullConflictPolicy,
+        RemoteSyncBackend, SyncFs,
+    };
     use crate::{
-        clean_path, fs_ref, parent_path, read_dir, read_file, write_file, Error, FileMode,
-        FileSystem, MemFs, Result, TarFs,
+        fs_ref, lstat, mkdir_all, read_dir, read_file, write_file, Error, FileMode, FileSystem,
+        MemFs, Result, TarFs,
     };
 
     #[derive(Default)]
@@ -994,65 +1158,7 @@ mod tests {
 
         fn apply_patch(&self, patch: &[u8]) -> Result<()> {
             self.patch_calls.fetch_add(1, Ordering::SeqCst);
-            let mut archive = tar::Archive::new(Cursor::new(patch.to_vec()));
-            for entry in archive.entries()? {
-                let mut entry = entry?;
-                let mut is_delete = false;
-                let mut recursive = false;
-                if let Some(records) = entry.pax_extensions()? {
-                    for record in records {
-                        let record = record?;
-                        if record.key_bytes() == b"delete" {
-                            is_delete = true;
-                        } else if record.key_bytes() == b"recursive" {
-                            recursive = record.value_bytes() == b"1";
-                        }
-                    }
-                }
-                let header = entry.header().clone();
-                let path = clean_path(&header.path()?.to_string_lossy());
-                if is_delete {
-                    if recursive {
-                        if crate::exists(&self.fs, &path)? {
-                            crate::remove_all(&self.fs, &path)?;
-                        }
-                    } else if crate::exists(&self.fs, &path)? {
-                        self.fs.remove(&path)?;
-                    }
-                    continue;
-                }
-
-                if header.entry_type().is_dir() {
-                    crate::mkdir_all(&self.fs, &path, FileMode::from_perm(0o755))?;
-                    continue;
-                }
-
-                if header.entry_type().is_symlink() {
-                    if crate::exists(&self.fs, &path)? {
-                        if crate::lstat(&self.fs, &path)?.is_dir() {
-                            crate::remove_all(&self.fs, &path)?;
-                        } else {
-                            self.fs.remove(&path)?;
-                        }
-                    }
-                    crate::mkdir_all(&self.fs, &parent_path(&path), FileMode::from_perm(0o755))?;
-                    self.fs.symlink(
-                        header.link_name()?.unwrap().to_string_lossy().as_ref(),
-                        &path,
-                    )?;
-                    continue;
-                }
-
-                let mut data = Vec::new();
-                entry.read_to_end(&mut data)?;
-                write_file(
-                    &self.fs,
-                    &path,
-                    &data,
-                    FileMode::from_perm(header.mode().unwrap_or(0o644)),
-                )?;
-            }
-            Ok(())
+            apply_sync_patch(&self.fs, patch)
         }
     }
 
@@ -1218,6 +1324,121 @@ mod tests {
             self.attempts.record();
             self.inner.apply_patch(patch)
         }
+    }
+
+    fn build_sync_patch(f: impl FnOnce(&mut tar::Builder<Vec<u8>>) -> Result<()>) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        f(&mut builder).unwrap();
+        builder.finish().unwrap();
+        builder.into_inner().unwrap()
+    }
+
+    #[test]
+    fn apply_sync_patch_upserts_file_and_creates_parents() {
+        let source = MemFs::new();
+        mkdir_all(&source, "nested", FileMode::from_perm(0o755)).unwrap();
+        write_file(
+            &source,
+            "nested/readme.txt",
+            b"hello",
+            FileMode::from_perm(0o600),
+        )
+        .unwrap();
+
+        let patch =
+            build_sync_patch(|builder| append_patch_path(builder, &source, "nested/readme.txt"));
+        let target = MemFs::new();
+        apply_sync_patch(&target, &patch).unwrap();
+
+        assert_eq!(read_file(&target, "nested/readme.txt").unwrap(), b"hello");
+        assert_eq!(
+            lstat(&target, "nested/readme.txt").unwrap().mode.perm(),
+            0o600
+        );
+        assert!(lstat(&target, "nested").unwrap().is_dir());
+    }
+
+    #[test]
+    fn apply_sync_patch_upserts_directory_and_creates_parents() {
+        let source = MemFs::new();
+        mkdir_all(&source, "nested/dir", FileMode::from_perm(0o700)).unwrap();
+
+        let patch = build_sync_patch(|builder| append_patch_path(builder, &source, "nested/dir"));
+        let target = MemFs::new();
+        apply_sync_patch(&target, &patch).unwrap();
+
+        assert!(lstat(&target, "nested").unwrap().is_dir());
+        let meta = lstat(&target, "nested/dir").unwrap();
+        assert!(meta.is_dir());
+        assert_eq!(meta.mode.perm(), 0o700);
+    }
+
+    #[test]
+    fn apply_sync_patch_upserts_symlink_and_creates_parents() {
+        let source = MemFs::new();
+        mkdir_all(&source, "links", FileMode::from_perm(0o755)).unwrap();
+        source.symlink("config.txt", "links/current.txt").unwrap();
+
+        let patch =
+            build_sync_patch(|builder| append_patch_path(builder, &source, "links/current.txt"));
+        let target = MemFs::new();
+        apply_sync_patch(&target, &patch).unwrap();
+
+        assert!(lstat(&target, "links").unwrap().is_dir());
+        assert_eq!(target.readlink("links/current.txt").unwrap(), "config.txt");
+    }
+
+    #[test]
+    fn apply_sync_patch_honors_non_recursive_delete_markers() {
+        let target = MemFs::new();
+        mkdir_all(&target, "nested", FileMode::from_perm(0o755)).unwrap();
+        write_file(
+            &target,
+            "nested/old.txt",
+            b"stale",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+        write_file(
+            &target,
+            "nested/keep.txt",
+            b"keep",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+
+        let patch =
+            build_sync_patch(|builder| append_delete_marker(builder, "nested/old.txt", false));
+        apply_sync_patch(&target, &patch).unwrap();
+
+        assert!(!crate::exists(&target, "nested/old.txt").unwrap());
+        assert_eq!(read_file(&target, "nested/keep.txt").unwrap(), b"keep");
+    }
+
+    #[test]
+    fn apply_sync_patch_honors_recursive_delete_markers() {
+        let target = MemFs::new();
+        mkdir_all(&target, "nested/tree", FileMode::from_perm(0o755)).unwrap();
+        write_file(
+            &target,
+            "nested/tree/file.txt",
+            b"stale",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+        write_file(
+            &target,
+            "nested/keep.txt",
+            b"keep",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+
+        let patch = build_sync_patch(|builder| append_delete_marker(builder, "nested/tree", true));
+        apply_sync_patch(&target, &patch).unwrap();
+
+        assert!(!crate::exists(&target, "nested/tree").unwrap());
+        assert_eq!(read_file(&target, "nested/keep.txt").unwrap(), b"keep");
     }
 
     #[test]

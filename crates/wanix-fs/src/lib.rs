@@ -7,6 +7,7 @@
 
 #[cfg(all(feature = "native-http", not(target_arch = "wasm32")))]
 mod http_native;
+mod http_server;
 mod metacache;
 mod syncfs;
 
@@ -23,10 +24,11 @@ use http::Method;
 
 #[cfg(all(feature = "native-http", not(target_arch = "wasm32")))]
 pub use http_native::NativeHttpTransport;
+pub use http_server::HttpFsHandler;
 pub use metacache::{CacheFs, MetaCacheFs};
 pub use syncfs::{
-    DebouncedSyncScheduler, DirtyChange, DirtyEntry, RemoteSyncBackend, RemoteSyncRef, SyncFs,
-    SyncScheduleSnapshot,
+    apply_sync_patch, DebouncedSyncScheduler, DirtyChange, DirtyEntry, RemoteSyncBackend,
+    RemoteSyncRef, SyncFs, SyncScheduleSnapshot,
 };
 pub use wanix_core::{
     base_name, clean_path, parent_path, valid_path, DirEntry, Error, ErrorKind, FileMode,
