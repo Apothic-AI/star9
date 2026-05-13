@@ -45,6 +45,9 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Host-neutral browser storage registry resolution for writable registered handles, persistent descriptor identities, and subpath-rooted mounts.
 - Runtime root bindings for core and device surfaces.
 - Device allocator resource creation.
+- Terminal device program/data queues, winch signal path, ctl clear/reset/noop behavior, state, and size files.
+- VM device ctl start/stop/reset behavior, state, alias/config fields, console log, id, and kind files.
+- Network placeholder allocator with per-resource ctl/data/status files and deterministic connect/listen/close/reset behavior.
 - WASI and Go-compatible JS execution adapter task starts.
 - Native `WanixSystem` smoke operations.
 - Browser wasm smoke operations through `tests/browser-smoke.html`.
@@ -71,7 +74,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - Additional 9P edge cases such as flush cancellation, xattr messages, and remote conflict/error parity.
 - Browser JS glue for OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage handles.
 - Browser JS glue for real Worker and MessagePort objects on top of the host-neutral typed runtime adapter.
-- Terminal screen protocol details.
-- VM/network device behavior.
+- Terminal screen protocol details beyond the host-neutral file protocol.
+- Real VM execution and network/TCP transport behavior beyond deterministic placeholder resources.
 - Full WASI syscall execution.
 - Full Go-compatible JS/WASM worker execution.

@@ -83,7 +83,9 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 
 - `#wanix` for version metadata.
 - `#task` for task allocation and lookup.
-- `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, and `#download`.
+- `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net`.
+
+Runtime device implementations live in a focused `devices` module. The terminal surface exposes deterministic program/data queues, winch signaling, ctl, state, and size files. The VM surface exposes ctl-driven state, alias/config, console, id, and kind files. `#net` is currently a deterministic allocator for connection-like resources with ctl/data/status files; it does not open real sockets yet.
 
 `wanix-web` exposes a `wasm-bindgen` `WanixSystem` facade. Browser-specific logic stays in this crate; core runtime state remains Rust-native and host-neutral.
 
