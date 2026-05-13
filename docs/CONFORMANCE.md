@@ -36,6 +36,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Runtime protocol host handling for worker spawn/start, stdio/fd setup, port open/handoff, task messages, and exit-state updates.
 - Browser worker/message-port adapter coverage for typed runtime request/response dispatch, task message delivery, and lossless 9P frame transfer through a host-neutral port.
 - Browser Worker/MessagePort JS glue for tagged binary runtime envelopes, endpoint wrappers, port transfer helpers, system facade resolution, and import-port requests.
+- Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
 - Fixture coverage for all public Wanix file API operation names.
@@ -70,6 +71,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 
+`tests/browser-storage-adapters.test.mjs` exercises browser storage adapter behavior with fake host APIs so OPFS/File System Access, Cache API, DOM, download, JS value, and worker request/response semantics are tested without live browser storage.
+
 ## Remaining Oracle Areas
 
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:
@@ -80,7 +83,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - Cloudflare/S3 adapter wiring for the Rust `ObjectStore` contract.
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export using the JS port helpers beyond loopback smoke.
 - Additional 9P edge cases such as flush cancellation, xattr messages, and remote conflict/error parity.
-- Browser JS glue for archive/import sources and real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage handles.
+- Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters where async browser APIs meet the synchronous Rust filesystem trait boundary.
 - Browser Worker startup and runtime request handling on top of the JS Worker/MessagePort glue and host-neutral typed runtime adapter.
 - Terminal screen protocol details beyond the host-neutral file protocol.
 - Real VM execution and network/TCP transport behavior beyond deterministic placeholder resources.

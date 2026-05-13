@@ -35,6 +35,7 @@
 - Added opt-in deterministic `HttpFs` caching via `with_cache_ttl`, covering stat/node success caching, cached not-found responses, TTL expiry, and invalidation after writes, mkdir/symlink, remove, rename, and PATCH tar calls.
 - Added bounded 9P `Tflush`/`Rflush` parity: codec round trips, server acknowledgement without fid mutation, and stricter client-side invalid path rejection before path normalization.
 - Added browser-native Worker/MessagePort runtime glue in `crates/wanix-web/js/worker-runtime.js`, including binary envelope helpers, endpoint wrappers, port open/handoff helpers, `wanix-system` facade resolution, and import-port request helpers.
+- Added browser-native storage adapter modules for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed storage handles, with deterministic Node tests over fake browser host APIs.
 - Verified `cargo fmt`, `cargo test -p wanix-runtime`, `cargo test -p wanix-web`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
 - Added a Rust-native `wanix_protocol::p9` module implementing a 9P2000.L-style frame codec for version, attach, walk, open/create, getattr/setattr, read/write, clunk/remove, mkdir/readdir, renameat/unlinkat, fsync, symlink, and readlink messages.
 - Added `NinePServer` over `wanix_fs::FileSystem`, with fid tracking, stable FNV-1a qids, Wanix metadata-to-9P attribute mapping, directory-entry encoding, and errno-based `Rlerror` responses.
