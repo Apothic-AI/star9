@@ -71,6 +71,35 @@ test("serveWanixP9FramePort reports non-binary request frames through error list
     assert.match(String(errors[0]), /expected binary runtime message to be binary data/);
 });
 
+test("serveWanixP9FramePort returns Rlerror when the facade throws after a valid request", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const channel = new MessageChannel();
+    const errors = [];
+    const server = await serveWanixP9FramePort(channel.port1, {
+        handle9pFrame() {
+            throw new Error("boom");
+        },
+    });
+    server.onError((error) => errors.push(error));
+    t.after(() => server.close());
+
+    const responses = [];
+    channel.port2.addEventListener("message", (event) => {
+        responses.push(event.data);
+    });
+    channel.port2.start();
+    channel.port2.postMessage(p9Frame(100, 77));
+
+    assert.equal(errors.length, 1);
+    assert.match(String(errors[0]), /boom/);
+    assert.equal(responses.length, 1);
+    assert.deepEqual(responses[0], p9Frame(7, 77, [5, 0, 0, 0]));
+});
+
 test("attachWanixImportResponder transfers a served MessagePort-like 9P endpoint", {
     concurrency: false,
 }, async (t) => {

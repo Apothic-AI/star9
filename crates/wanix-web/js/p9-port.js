@@ -145,8 +145,9 @@ export class WanixP9FramePortServer {
     }
 
     _handleMessage(message) {
+        let request = null;
         try {
-            const request = cloneFrameBytes(message.bytes, "9P request frame");
+            request = cloneFrameBytes(message.bytes, "9P request frame");
             emitListeners(this._requestListeners, {
                 bytes: request,
                 event: message.event,
@@ -166,6 +167,13 @@ export class WanixP9FramePortServer {
                 target: this.target,
             });
         } catch (error) {
+            if (request) {
+                try {
+                    this.endpoint.post(encodeP9ErrorFrame(frameTag(request), ERROR_EIO));
+                } catch (postError) {
+                    emitListeners(this._errorListeners, postError);
+                }
+            }
             emitListeners(this._errorListeners, error);
         }
     }
@@ -806,6 +814,7 @@ const DEFAULT_MSIZE = 64 * 1024;
 const NOFID = 0xffffffff;
 const AT_REMOVEDIR = 0x200;
 const ATTR_BASIC = 0x67f;
+const ERROR_EIO = 5;
 const OPEN_RDONLY = 0;
 const OPEN_RDWR = 2;
 const OPEN_TRUNC = 0o1000;
@@ -1201,6 +1210,12 @@ function validateFrameShape(frame, label) {
     if (declared !== frame.byteLength) {
         throw new TypeError(`expected ${label} length prefix to match frame size`);
     }
+}
+
+function encodeP9ErrorFrame(tag, ecode) {
+    const writer = new P9Writer();
+    writer.u32(ecode);
+    return encodeP9Frame(MSG.RLERROR, tag, writer.finish());
 }
 
 function abortReason(signal) {

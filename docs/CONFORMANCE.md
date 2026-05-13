@@ -101,7 +101,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, and explicit direct-WASM rejection without a real browser worker or Go shim.
 
-`tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, tag-matched async client requests, AbortSignal-to-`Tflush` cancellation, import responder port handoff, and error reporting for unknown tags and non-binary requests.
+`tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, tag-matched async client requests, AbortSignal-to-`Tflush` cancellation, facade-error-to-`Rlerror` replies, import responder port handoff, and error reporting for unknown tags and non-binary requests.
 
 ## Remaining Oracle Areas
 
