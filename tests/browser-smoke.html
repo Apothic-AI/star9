@@ -12,6 +12,7 @@
   const entriesOf = (path, system) => Array.from(system.readDir(path));
   const numericTaskIds = (entries) =>
     entries
+      .map((entry) => entry.replace(/\/$/, ""))
       .filter((entry) => /^\d+$/.test(entry))
       .map((entry) => Number(entry))
       .sort((left, right) => left - right);
