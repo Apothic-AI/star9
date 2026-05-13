@@ -49,6 +49,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Browser Worker host facade coverage for fake Worker-like startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
 - Browser JS/WASM Worker host bootstrap coverage for normalized execution messages, runtime descriptor transfer, task-message observation, existing-host wrapping, and cleanup.
 - Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, default dynamic JS runner import, explicit direct-WASM unsupported errors, task-message emission, exit/error reporting, and cleanup.
+- Browser async mount resolution and debounced sync scheduling over async storage/sync targets with deterministic fake timers.
 - Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs, plus browser-side async mount routing for real host adapters through `wanix-system`.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
@@ -90,6 +91,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 
+`tests/browser-mounts.test.mjs` exercises browser async mount resolution and debounced sync scheduling with fake adapters and fake timers.
+
 `tests/browser-storage-adapters.test.mjs` exercises browser storage adapter behavior with fake host APIs so OPFS/File System Access, Cache API, DOM, download, JS value, and worker request/response semantics are tested without live browser storage.
 
 `tests/browser-worker-host.test.mjs` exercises the browser Worker host facade with fake Worker and MessagePort targets so runtime port transfer and tagged binary message routing are covered without a live browser worker.
@@ -105,7 +108,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:
 
 - HTTP filesystem remote metadata semantics beyond the currently covered cache validators, Wanix metadata fields, and conditional GET/HEAD behavior.
-- `SyncFs` browser timer integration and backend-specific transport scheduling semantics beyond reusable tar patch application.
+- `SyncFs` backend-specific transport scheduling semantics beyond reusable tar patch application and the browser async-target debounce scheduler.
 - HTTP filesystem broader live-service behavior against real servers.
 - Cloudflare/S3 live-service coverage such as bucket-specific behavior and opt-in live tests over `S3ObjectStore` plus `AwsSigV4Signer`.
 - Cross-document/browser MessagePort namespace mounting for remote 9P imports beyond the current async browser read/write/list mount baseline, especially richer mutation/error parity under browser smoke.

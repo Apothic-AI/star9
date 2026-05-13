@@ -73,6 +73,93 @@ export class AsyncMountTable {
     }
 }
 
+export class BrowserDebouncedSyncScheduler {
+    constructor(target, options = {}) {
+        this.target = requireSyncTarget(target);
+        this.debounceMs = Math.max(0, Number(options.debounceMs ?? options.debounce ?? 0));
+        this.clock = options.clock || globalThis;
+        this.now = typeof options.now === "function" ? options.now : () => Date.now();
+        this.pending = false;
+        this.running = false;
+        this.dueAt = null;
+        this.lastSyncedAt = null;
+        this.lastError = null;
+        this.requests = 0;
+        this._timer = null;
+        this._closed = false;
+    }
+
+    request() {
+        this._assertOpen();
+        this.requests += 1;
+        this.pending = true;
+        this.dueAt = this.now() + this.debounceMs;
+        this._schedule();
+        return this.snapshot();
+    }
+
+    async flush() {
+        this._assertOpen();
+        this._clearTimer();
+        if (!this.pending || this.running) {
+            return this.snapshot();
+        }
+
+        this.running = true;
+        try {
+            await runSyncTarget(this.target);
+            this.pending = false;
+            this.lastError = null;
+            this.lastSyncedAt = this.now();
+        } catch (error) {
+            this.pending = true;
+            this.lastError = error instanceof Error ? error.message : String(error);
+        } finally {
+            this.running = false;
+            this.dueAt = null;
+        }
+        return this.snapshot();
+    }
+
+    snapshot() {
+        return {
+            pending: this.pending,
+            scheduled: this._timer !== null,
+            running: this.running,
+            dueAt: this.dueAt,
+            lastSyncedAt: this.lastSyncedAt,
+            lastError: this.lastError,
+            requests: this.requests,
+        };
+    }
+
+    close() {
+        this._clearTimer();
+        this._closed = true;
+    }
+
+    _schedule() {
+        this._clearTimer();
+        this._timer = this.clock.setTimeout(async () => {
+            this._timer = null;
+            await this.flush();
+        }, this.debounceMs);
+    }
+
+    _clearTimer() {
+        if (this._timer !== null) {
+            this.clock.clearTimeout(this._timer);
+            this._timer = null;
+        }
+    }
+
+    _assertOpen() {
+        if (this._closed) {
+            throw new Error("browser sync scheduler is closed");
+        }
+    }
+}
+
 export async function createBrowserStorageAdapter(descriptor, options = {}) {
     switch (descriptor?.backend) {
     case "opfs":
@@ -136,4 +223,21 @@ function requireMountAdapter(adapter) {
         }
     }
     return adapter;
+}
+
+function requireSyncTarget(target) {
+    if (!target || typeof target !== "object") {
+        throw new TypeError("expected a browser sync target object");
+    }
+    if (typeof target.sync === "function" || typeof target.syncFs === "function") {
+        return target;
+    }
+    throw new TypeError("browser sync target must implement sync() or syncFs()");
+}
+
+function runSyncTarget(target) {
+    if (typeof target.sync === "function") {
+        return target.sync();
+    }
+    return target.syncFs();
 }
