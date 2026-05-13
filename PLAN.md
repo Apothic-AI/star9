@@ -9,7 +9,7 @@ Immediate protocol/runtime tranche:
 - Expand browser system and binding parity on top of the Rust-native runtime, typed binding descriptors, and 9P loopback hooks.
 - Attach real browser `Worker`, `MessagePort`, fetch/archive/import, and storage API glue to the host-neutral registries and adapters.
 - Replace deterministic execution handlers with real WASI syscall execution and browser/native JS-WASM execution drivers.
-- Continue backend hardening with deterministic conflict/error behavior for `HttpFs`, plus real transport boundaries for browser/native adapters.
+- Continue backend hardening with HTTP caching/remote metadata, PATCH application/multipart behavior, and cloud object-store adapter boundaries.
 - Deepen remaining placeholder device behavior, especially real terminal screen protocol, VM execution, worker integration, and network/TCP behavior.
 - Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
 

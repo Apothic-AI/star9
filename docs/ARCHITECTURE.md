@@ -30,7 +30,7 @@ The crate also ports the key `fskit` building blocks:
 
 `MetaCacheFs` wraps any `FileSystem` and caches `stat`, `lstat`, and `read_dir` metadata with TTL expiry, half-TTL refresh-ahead, cached errors, explicit invalidation, and close-time invalidation after writes.
 
-`SyncFs` is currently a contained local-first wrapper over a local `FileSystem` plus a `RemoteSyncBackend` trait. It tracks dirty upserts/removes and exposes explicit `push`, `pull`, and `sync` entry points using tar-based patch payloads. Pull conflict handling is explicit through `PullConflictPolicy`, with keep-local default behavior, prefer-remote overwrite behavior, and optional retained conflict reporting for callers that need to surface skipped dirty paths.
+`SyncFs` is currently a contained local-first wrapper over a local `FileSystem` plus a `RemoteSyncBackend` trait. It tracks dirty upserts/removes and exposes explicit `push`, `pull`, and `sync` entry points using tar-based patch payloads. Pull conflict handling is explicit through `PullConflictPolicy`, with keep-local default behavior, prefer-remote overwrite behavior, and optional retained conflict reporting for callers that need to surface skipped dirty paths. `DebouncedSyncScheduler` adds host-neutral scheduling hooks for pending state, due checks, immediate flush, and retry-after-error behavior without requiring threads or browser timers in the core backend.
 
 `R2Fs` is implemented over a Rust `ObjectStore` trait. The trait includes compare-and-swap for parent directory listing updates, allowing deterministic retry and conflict behavior to be tested with `InMemoryObjectStore` while keeping remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{Cursor, SeekFrom};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::{
     clean_path, exists, lstat, mkdir_all, parent_path, read_dir, read_file, remove_all, write_file,
@@ -48,6 +48,27 @@ pub enum DirtyChange {
 pub enum PullConflictPolicy {
     KeepLocal,
     PreferRemote,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyncScheduleSnapshot {
+    pub pending: bool,
+    pub requested_at: Option<SystemTime>,
+    pub due_at: Option<SystemTime>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct DebouncedSyncScheduler {
+    sync: SyncFs,
+    debounce: Duration,
+    state: Arc<Mutex<DebouncedSyncState>>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DebouncedSyncState {
+    requested_at: Option<SystemTime>,
+    last_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,6 +134,10 @@ impl SyncFs {
 
     pub fn clear_pull_conflicts(&self) {
         self.state.lock().unwrap().pull_conflicts.clear();
+    }
+
+    pub fn scheduler(&self, debounce: Duration) -> DebouncedSyncScheduler {
+        DebouncedSyncScheduler::new(self.clone(), debounce)
     }
 
     pub fn push(&self) -> Result<()> {
@@ -241,6 +266,90 @@ impl SyncFs {
         }
         builder.finish()?;
         Ok(builder.into_inner()?)
+    }
+}
+
+impl DebouncedSyncScheduler {
+    pub fn new(sync: SyncFs, debounce: Duration) -> Self {
+        Self {
+            sync,
+            debounce,
+            state: Arc::new(Mutex::new(DebouncedSyncState::default())),
+        }
+    }
+
+    pub fn sync_fs(&self) -> SyncFs {
+        self.sync.clone()
+    }
+
+    pub fn request(&self, now: SystemTime) {
+        let mut state = self.state.lock().unwrap();
+        state.requested_at = Some(now);
+        state.last_error = None;
+    }
+
+    pub fn pending(&self) -> bool {
+        self.state.lock().unwrap().requested_at.is_some()
+    }
+
+    pub fn is_due(&self, now: SystemTime) -> bool {
+        let state = self.state.lock().unwrap();
+        state
+            .requested_at
+            .map(|requested_at| self.due_at(requested_at))
+            .is_some_and(|due_at| now.duration_since(due_at).is_ok())
+    }
+
+    pub fn snapshot(&self) -> SyncScheduleSnapshot {
+        let state = self.state.lock().unwrap();
+        SyncScheduleSnapshot {
+            pending: state.requested_at.is_some(),
+            requested_at: state.requested_at,
+            due_at: state
+                .requested_at
+                .map(|requested_at| self.due_at(requested_at)),
+            last_error: state.last_error.clone(),
+        }
+    }
+
+    pub fn run_due(&self, now: SystemTime) -> Result<bool> {
+        if !self.is_due(now) {
+            return Ok(false);
+        }
+
+        match self.sync.sync() {
+            Ok(()) => {
+                let mut state = self.state.lock().unwrap();
+                state.requested_at = None;
+                state.last_error = None;
+                Ok(true)
+            }
+            Err(err) => {
+                self.state.lock().unwrap().last_error = Some(err.to_string());
+                Err(err)
+            }
+        }
+    }
+
+    pub fn flush(&self) -> Result<()> {
+        match self.sync.sync() {
+            Ok(()) => {
+                let mut state = self.state.lock().unwrap();
+                state.requested_at = None;
+                state.last_error = None;
+                Ok(())
+            }
+            Err(err) => {
+                self.state.lock().unwrap().last_error = Some(err.to_string());
+                Err(err)
+            }
+        }
+    }
+
+    fn due_at(&self, requested_at: SystemTime) -> SystemTime {
+        requested_at
+            .checked_add(self.debounce)
+            .unwrap_or(requested_at)
     }
 }
 
@@ -689,11 +798,12 @@ mod tests {
     use std::io::{Cursor, Read};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
 
     use super::{DirtyChange, PullConflictPolicy, RemoteSyncBackend, SyncFs};
     use crate::{
-        clean_path, fs_ref, parent_path, read_dir, read_file, write_file, FileMode, FileSystem,
-        MemFs, Result, TarFs,
+        clean_path, fs_ref, parent_path, read_dir, read_file, write_file, Error, FileMode,
+        FileSystem, MemFs, Result, TarFs,
     };
 
     #[derive(Default)]
@@ -778,6 +888,44 @@ mod tests {
                 )?;
             }
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FailOnceRemoteSync {
+        inner: MemoryRemoteSync,
+        remaining_patch_failures: AtomicUsize,
+    }
+
+    impl FailOnceRemoteSync {
+        fn new() -> Self {
+            Self {
+                inner: MemoryRemoteSync::default(),
+                remaining_patch_failures: AtomicUsize::new(1),
+            }
+        }
+
+        fn fs(&self) -> MemFs {
+            self.inner.fs()
+        }
+    }
+
+    impl RemoteSyncBackend for FailOnceRemoteSync {
+        fn index(&self) -> Result<crate::FsRef> {
+            self.inner.index()
+        }
+
+        fn apply_patch(&self, patch: &[u8]) -> Result<()> {
+            if self
+                .remaining_patch_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(Error::Message("injected patch failure".to_string()));
+            }
+            self.inner.apply_patch(patch)
         }
     }
 
@@ -1013,5 +1161,73 @@ mod tests {
 
         assert_eq!(read_file(&remote.fs(), "local.txt").unwrap(), b"mine");
         assert_eq!(read_file(&local, "remote.txt").unwrap(), b"theirs");
+    }
+
+    #[test]
+    fn syncfs_scheduler_debounces_dirty_sync() {
+        let local = MemFs::new();
+        let remote = Arc::new(MemoryRemoteSync::default());
+        let sync = SyncFs::new(fs_ref(local.clone()), remote.clone());
+        let scheduler = sync.scheduler(Duration::from_secs(2));
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+
+        write_file(&sync, "notes.txt", b"local", FileMode::from_perm(0o644)).unwrap();
+        scheduler.request(start);
+
+        assert!(scheduler.pending());
+        assert_eq!(
+            scheduler.snapshot().due_at,
+            Some(start + Duration::from_secs(2))
+        );
+        assert!(!scheduler.run_due(start + Duration::from_secs(1)).unwrap());
+        assert_eq!(remote.patch_calls.load(Ordering::SeqCst), 0);
+
+        assert!(scheduler.run_due(start + Duration::from_secs(2)).unwrap());
+
+        assert!(!scheduler.pending());
+        assert_eq!(read_file(&remote.fs(), "notes.txt").unwrap(), b"local");
+        assert_eq!(remote.patch_calls.load(Ordering::SeqCst), 1);
+        assert!(scheduler.snapshot().last_error.is_none());
+    }
+
+    #[test]
+    fn syncfs_scheduler_flushes_before_due() {
+        let local = MemFs::new();
+        let remote = Arc::new(MemoryRemoteSync::default());
+        let sync = SyncFs::new(fs_ref(local.clone()), remote.clone());
+        let scheduler = sync.scheduler(Duration::from_secs(60));
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(20);
+
+        write_file(&sync, "early.txt", b"now", FileMode::from_perm(0o644)).unwrap();
+        scheduler.request(start);
+        scheduler.flush().unwrap();
+
+        assert!(!scheduler.pending());
+        assert_eq!(read_file(&remote.fs(), "early.txt").unwrap(), b"now");
+        assert_eq!(remote.patch_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn syncfs_scheduler_keeps_pending_after_failed_sync() {
+        let local = MemFs::new();
+        let remote = Arc::new(FailOnceRemoteSync::new());
+        let sync = SyncFs::new(fs_ref(local.clone()), remote.clone());
+        let scheduler = sync.scheduler(Duration::ZERO);
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(30);
+
+        write_file(&sync, "retry.txt", b"later", FileMode::from_perm(0o644)).unwrap();
+        scheduler.request(start);
+
+        let err = scheduler.run_due(start).unwrap_err();
+        assert!(err.to_string().contains("injected patch failure"));
+        assert!(scheduler.pending());
+        assert_eq!(
+            scheduler.snapshot().last_error.as_deref(),
+            Some("injected patch failure")
+        );
+
+        assert!(scheduler.run_due(start + Duration::from_secs(1)).unwrap());
+        assert!(!scheduler.pending());
+        assert_eq!(read_file(&remote.fs(), "retry.txt").unwrap(), b"later");
     }
 }

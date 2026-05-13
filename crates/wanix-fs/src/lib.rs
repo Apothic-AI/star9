@@ -20,7 +20,10 @@ use std::time::{Duration, SystemTime};
 use http::Method;
 
 pub use metacache::{CacheFs, MetaCacheFs};
-pub use syncfs::{DirtyChange, DirtyEntry, RemoteSyncBackend, RemoteSyncRef, SyncFs};
+pub use syncfs::{
+    DebouncedSyncScheduler, DirtyChange, DirtyEntry, RemoteSyncBackend, RemoteSyncRef, SyncFs,
+    SyncScheduleSnapshot,
+};
 pub use wanix_core::{
     base_name, clean_path, parent_path, valid_path, DirEntry, Error, ErrorKind, FileMode,
     FsContext, Metadata, OpenFlags, Result,
