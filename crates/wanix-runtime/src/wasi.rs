@@ -36,6 +36,7 @@ const FILETYPE_SYMBOLIC_LINK: u8 = 7;
 const OFLAGS_CREATE: i32 = 1;
 const OFLAGS_DIRECTORY: i32 = 2;
 const OFLAGS_TRUNCATE: i32 = 8;
+const LOOKUPFLAGS_SYMLINK_FOLLOW: i32 = 1;
 
 const FDFLAGS_APPEND: i32 = 1;
 const FDFLAGS_SUPPORTED_SET: i32 = 0;
@@ -913,16 +914,43 @@ fn path_filestat_set_times(
 
 #[allow(clippy::too_many_arguments)]
 fn path_link(
-    _caller: Caller<'_, WasiState>,
-    _old_fd: i32,
-    _old_flags: i32,
-    _old_path_ptr: i32,
-    _old_path_len: i32,
-    _new_fd: i32,
-    _new_path_ptr: i32,
-    _new_path_len: i32,
+    mut caller: Caller<'_, WasiState>,
+    old_fd: i32,
+    old_flags: i32,
+    old_path_ptr: i32,
+    old_path_len: i32,
+    new_fd: i32,
+    new_path_ptr: i32,
+    new_path_len: i32,
 ) -> i32 {
-    ERRNO_NOTSUP
+    if (old_flags & !LOOKUPFLAGS_SYMLINK_FOLLOW) != 0 {
+        return ERRNO_INVAL;
+    }
+    let task = caller.data().task.clone();
+    let old_path = match read_wasi_path(&mut caller, &task, old_fd, old_path_ptr, old_path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    let new_path = match read_wasi_path(&mut caller, &task, new_fd, new_path_ptr, new_path_len) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    let old_path = if (old_flags & LOOKUPFLAGS_SYMLINK_FOLLOW) != 0 {
+        match task.namespace().lstat(&FsContext::new(), &old_path) {
+            Ok(meta) if meta.mode.is_symlink() => match task.namespace().readlink(&old_path) {
+                Ok(target) if target.starts_with('/') => clean_path(target.trim_start_matches('/')),
+                Ok(target) => clean_path(&format!("{}/{}", parent_wasi_path(&old_path), target)),
+                Err(err) => return errno_from_error(&err),
+            },
+            Ok(_) => old_path,
+            Err(err) => return errno_from_error(&err),
+        }
+    } else {
+        old_path
+    };
+    task.namespace()
+        .link(&old_path, &new_path)
+        .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS)
 }
 
 fn path_unlink_file(
@@ -1723,8 +1751,6 @@ mod tests {
                 (func $sock_send (param i32 i32 i32 i32 i32) (result i32)))
               (import "wasi_snapshot_preview1" "sock_shutdown"
                 (func $sock_shutdown (param i32 i32) (result i32)))
-              (import "wasi_snapshot_preview1" "path_link"
-                (func $path_link (param i32 i32 i32 i32 i32 i32 i32) (result i32)))
               (import "wasi_snapshot_preview1" "proc_exit"
                 (func $proc_exit (param i32)))
 
@@ -1772,18 +1798,7 @@ mod tests {
                     (i32.const 3)
                     (i32.const 0))
                   (i32.const 58)
-                  (i32.const 13))
-                (call $assert_errno
-                  (call $path_link
-                    (i32.const 3)
-                    (i32.const 0)
-                    (i32.const 0)
-                    (i32.const 0)
-                    (i32.const 3)
-                    (i32.const 0)
-                    (i32.const 0))
-                  (i32.const 58)
-                  (i32.const 14)))
+                  (i32.const 13)))
             )
             "#,
         )
@@ -1818,6 +1833,88 @@ mod tests {
             .unwrap();
 
         assert_eq!(status, ExitStatus::ExitCode(0));
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_links_task_namespace_paths() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "path_link"
+                (func $path_link (param i32 i32 i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+              (data (i32.const 64) "source.txt")
+              (data (i32.const 96) "linked.txt")
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (call $assert_ok
+                  (call $path_link
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 64)
+                    (i32.const 10)
+                    (i32.const 3)
+                    (i32.const 96)
+                    (i32.const 10))
+                  (i32.const 10)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("program.wasm", program),
+                    ("source.txt", b"source".to_vec()),
+                ])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/linked.txt").unwrap(),
+            b"source"
+        );
     }
 
     #[test]

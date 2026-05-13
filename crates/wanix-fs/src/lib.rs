@@ -204,6 +204,10 @@ pub trait FileSystem: Send + Sync {
         Err(ErrorKind::NotSupported.into())
     }
 
+    fn link(&self, _old: &str, _new: &str) -> Result<()> {
+        Err(ErrorKind::NotSupported.into())
+    }
+
     fn chmod(&self, _name: &str, _mode: FileMode) -> Result<()> {
         Err(ErrorKind::NotSupported.into())
     }
@@ -1147,6 +1151,30 @@ impl FileSystem for MemFs {
         Ok(())
     }
 
+    fn link(&self, old: &str, new: &str) -> Result<()> {
+        let old = clean_path(old);
+        let new = clean_path(new);
+        if !valid_path(&old) || !valid_path(&new) {
+            return Err(Error::path("link", old, ErrorKind::NotFound));
+        }
+        if self.node(&new).is_some() {
+            return Err(Error::path("link", &new, ErrorKind::AlreadyExists));
+        }
+        let parent = parent_path(&new);
+        if parent != "." && !is_dir(self, &parent).unwrap_or(false) {
+            return Err(Error::path("link", &new, ErrorKind::NotFound));
+        }
+        let node = self
+            .node(&old)
+            .ok_or_else(|| Error::path("link", &old, ErrorKind::NotFound))?;
+        if node.metadata().is_dir() {
+            return Err(Error::path("link", &old, ErrorKind::PermissionDenied));
+        }
+        self.nodes.write().unwrap().insert(new, node);
+        self.recompute_dir_sizes();
+        Ok(())
+    }
+
     fn chmod(&self, name: &str, mode: FileMode) -> Result<()> {
         let name = clean_path(name);
         let node = self
@@ -1370,6 +1398,15 @@ impl FileSystem for LocalFs {
 
     fn rename(&self, old: &str, new: &str) -> Result<()> {
         std::fs::rename(self.full_path(old)?, self.full_path(new)?)?;
+        Ok(())
+    }
+
+    fn link(&self, old: &str, new: &str) -> Result<()> {
+        let old_path = self.full_path(old)?;
+        if std::fs::symlink_metadata(&old_path)?.is_dir() {
+            return Err(Error::path("link", old, ErrorKind::PermissionDenied));
+        }
+        std::fs::hard_link(old_path, self.full_path(new)?)?;
         Ok(())
     }
 
@@ -3698,6 +3735,27 @@ mod tests {
         fs.rename("dir", "newdir").unwrap();
         assert!(stat(&fs, "dir/a.txt").is_err());
         assert_eq!(read_file(&fs, "newdir/sub/c.txt").unwrap(), b"c\n");
+    }
+
+    #[test]
+    fn memfs_hard_links_share_file_data() {
+        let fs = MemFs::from_entries([("file", b"before".to_vec())]);
+        fs.link("file", "linked").unwrap();
+        let mut linked = open(&fs, "linked").unwrap();
+        linked.write(b"shared").unwrap();
+        linked.close().unwrap();
+
+        assert_eq!(read_file(&fs, "file").unwrap(), b"shared");
+        fs.remove("file").unwrap();
+        assert_eq!(read_file(&fs, "linked").unwrap(), b"shared");
+        assert_eq!(
+            fs.link("linked", "linked").unwrap_err().kind(),
+            ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            fs.link(".", "dir-link").unwrap_err().kind(),
+            ErrorKind::PermissionDenied
+        );
     }
 
     #[test]

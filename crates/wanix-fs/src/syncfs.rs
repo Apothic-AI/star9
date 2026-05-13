@@ -627,6 +627,12 @@ impl FileSystem for SyncFs {
         Ok(())
     }
 
+    fn link(&self, old: &str, new: &str) -> Result<()> {
+        self.local.link(old, new)?;
+        self.mark_dirty(new, DirtyChange::Upsert);
+        Ok(())
+    }
+
     fn chmod(&self, name: &str, mode: FileMode) -> Result<()> {
         self.local.chmod(name, mode)?;
         self.mark_dirty(name, DirtyChange::Upsert);

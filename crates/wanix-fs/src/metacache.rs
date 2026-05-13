@@ -333,6 +333,13 @@ impl FileSystem for MetaCacheFs {
         Ok(())
     }
 
+    fn link(&self, old: &str, new: &str) -> Result<()> {
+        self.inner.link(old, new)?;
+        self.invalidate(new);
+        self.invalidate_parent_listing(new);
+        Ok(())
+    }
+
     fn chmod(&self, name: &str, mode: FileMode) -> Result<()> {
         self.inner.chmod(name, mode)?;
         self.invalidate(name);

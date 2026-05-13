@@ -219,6 +219,14 @@ impl Namespace {
         }
         Err(Error::path(op, name, ErrorKind::NotFound))
     }
+
+    fn target_matches(bind_path: &str, name: &str) -> bool {
+        bind_path == "."
+            || bind_path == name
+            || name
+                .strip_prefix(bind_path)
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
 }
 
 impl FileSystem for Namespace {
@@ -364,6 +372,51 @@ impl FileSystem for Namespace {
         })
     }
 
+    fn link(&self, old: &str, new: &str) -> Result<()> {
+        let old = clean_path(old);
+        let new = clean_path(new);
+        if !valid_path(&old) || !valid_path(&new) {
+            return Err(Error::path("link", old, ErrorKind::NotFound));
+        }
+        let old_targets = self.matching_targets(&old);
+        let new_targets = self.matching_targets(&new);
+        let mut last: Error = Error::path("link", &new, ErrorKind::NotFound);
+        for (new_bind_path, new_bind_targets) in &new_targets {
+            if !Self::target_matches(new_bind_path, &new) {
+                continue;
+            }
+            for new_target in new_bind_targets {
+                let new_full = Self::target_path(new_bind_path, &new_target.path, &new);
+                for (old_bind_path, old_bind_targets) in &old_targets {
+                    if !Self::target_matches(old_bind_path, &old) {
+                        continue;
+                    }
+                    for old_target in old_bind_targets {
+                        if !Arc::ptr_eq(&old_target.fs, &new_target.fs) {
+                            continue;
+                        }
+                        let old_full = Self::target_path(old_bind_path, &old_target.path, &old);
+                        match new_target.fs.link(&old_full, &new_full) {
+                            Ok(()) => return Ok(()),
+                            Err(err)
+                                if matches!(
+                                    err.kind(),
+                                    ErrorKind::NotFound
+                                        | ErrorKind::NotSupported
+                                        | ErrorKind::NotDir
+                                ) =>
+                            {
+                                last = err
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    }
+                }
+            }
+        }
+        Err(last)
+    }
+
     fn chmod(&self, name: &str, mode: FileMode) -> Result<()> {
         self.route_write(name, "chmod", |target, full| target.fs.chmod(&full, mode))
     }
@@ -398,7 +451,7 @@ impl FileSystem for Namespace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wanix_fs::{fs_ref, read_dir, read_file, write_file, MemFs};
+    use wanix_fs::{fs_ref, open, read_dir, read_file, write_file, MemFs};
 
     #[test]
     fn binds_file_and_directory() {
@@ -460,5 +513,35 @@ mod tests {
         ns.bind(fs.clone(), ".", "tmp", BindMode::Replace).unwrap();
         write_file(&ns, "tmp/file", b"value", FileMode::from_perm(0o644)).unwrap();
         assert_eq!(read_file(fs.as_ref(), "file").unwrap(), b"value");
+    }
+
+    #[test]
+    fn link_routes_within_same_bound_filesystem() {
+        let fs = fs_ref(MemFs::from_entries([("file", b"before".to_vec())]));
+        let ns = Namespace::new();
+        ns.bind(fs.clone(), ".", "workspace", BindMode::Replace)
+            .unwrap();
+
+        ns.link("workspace/file", "workspace/linked").unwrap();
+        let mut linked = open(&ns, "workspace/linked").unwrap();
+        linked.write(b"shared").unwrap();
+        linked.close().unwrap();
+
+        assert_eq!(read_file(fs.as_ref(), "file").unwrap(), b"shared");
+        assert_eq!(read_file(&ns, "workspace/linked").unwrap(), b"shared");
+    }
+
+    #[test]
+    fn link_rejects_cross_filesystem_targets() {
+        let left = fs_ref(MemFs::from_entries([("file", b"left".to_vec())]));
+        let right = fs_ref(MemFs::new());
+        let ns = Namespace::new();
+        ns.bind(left, ".", "left", BindMode::Replace).unwrap();
+        ns.bind(right, ".", "right", BindMode::Replace).unwrap();
+
+        assert_eq!(
+            ns.link("left/file", "right/linked").unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
     }
 }
