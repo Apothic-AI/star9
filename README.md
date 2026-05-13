@@ -16,7 +16,7 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Typed public file API for the Wanix JS handle operation set.
 - CBOR encode/decode helpers for the typed public API boundary.
 - Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, and `#download` surfaces.
-- Browser/WASM facade and CLI smoke paths.
+- Browser/WASM facade, custom elements, and CLI smoke paths.
 
 ## Workspace
 
@@ -26,7 +26,7 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - `wanix-task`: task/resource filesystem, task fields, aliases, fd table, drivers.
 - `wanix-protocol`: typed request/response API for file operations.
 - `wanix-runtime`: root composition and built-in device/resource surfaces.
-- `wanix-web`: `wasm-bindgen` browser facade.
+- `wanix-web`: `wasm-bindgen` browser facade plus plain JS custom elements.
 - `wanix-cli`: native CLI entry point.
 
 ## Verification
@@ -39,4 +39,4 @@ wasm-pack build crates/wanix-web --target web --out-dir ../../target/wanix-web-p
 python3 -m http.server 4177 --bind 127.0.0.1
 ```
 
-Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build` command. The page sets `document.body.dataset.status` to `ok` after it initializes the Rust wasm runtime, binds a ramfs, performs file API operations, and starts representative WASI and Go-compatible JS adapter tasks.
+Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build` command. The page sets `document.body.dataset.status` to `ok` after it initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, performs file API and 9P loopback operations, and starts representative WASI and Go-compatible JS adapter tasks.

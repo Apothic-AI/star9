@@ -29,6 +29,9 @@
 - Added a host-neutral `ExecutionRegistry` and `NativeExecutionHandler` contract for deterministic WASI and JS-WASM execution handlers over task namespaces, stdio/fd descriptors, args/env/cwd, and exit status.
 - Added `DebouncedSyncScheduler`, a host-neutral scheduling hook over `SyncFs` with deterministic request, due-check, flush, snapshot, and retry-after-error behavior.
 - Added `SyncFs` scheduler tests for debounce timing, immediate flush before the due time, and retaining pending sync state plus last-error reporting after failed remote patch application.
+- Added browser-native custom elements under `crates/wanix-web/js`: `wanix-system`, `wanix-bind`, and `wanix-task` now lazy-load the wasm facade, apply descriptor-backed bindings, fetch file/archive bytes for source registration, expose facade helpers, and drive task setup/start behavior without a bundler.
+- Added wasm exports and native helpers for browser source registration, JSON namespace setup, and generic task starts: `registerFileBytes`, `registerFileText`, `registerArchiveBytes`, `setupNamespaceJson`, and `startTask`.
+- Expanded `tests/browser-smoke.html` to use the component path directly, including a root `#ramfs` bind, inline and fetched file binds, descriptor-backed worker and shared JS-value storage, 9P loopback reads, and WASI/GoJS task startup checks.
 - Verified `cargo fmt`, `cargo test -p wanix-runtime`, `cargo test -p wanix-web`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
 - Added a Rust-native `wanix_protocol::p9` module implementing a 9P2000.L-style frame codec for version, attach, walk, open/create, getattr/setattr, read/write, clunk/remove, mkdir/readdir, renameat/unlinkat, fsync, symlink, and readlink messages.
 - Added `NinePServer` over `wanix_fs::FileSystem`, with fid tracking, stable FNV-1a qids, Wanix metadata-to-9P attribute mapping, directory-entry encoding, and errno-based `Rlerror` responses.

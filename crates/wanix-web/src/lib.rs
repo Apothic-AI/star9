@@ -57,6 +57,18 @@ impl WanixSystem {
         self.storage_registry.clone()
     }
 
+    pub fn register_file_bytes_native(&self, src: &str, bytes: &[u8]) -> Result<()> {
+        self.binding_registry.register_file_bytes(src, bytes)
+    }
+
+    pub fn register_file_text_native(&self, src: &str, text: &str) -> Result<()> {
+        self.register_file_bytes_native(src, text.as_bytes())
+    }
+
+    pub fn register_archive_bytes_native(&self, src: &str, bytes: &[u8]) -> Result<()> {
+        self.binding_registry.register_archive_bytes(src, bytes)
+    }
+
     pub fn read_text_native(&self, path: &str) -> Result<String> {
         Ok(String::from_utf8_lossy(&self.api.read_file(path)?).into_owned())
     }
@@ -143,21 +155,45 @@ impl WanixSystem {
     }
 
     pub fn start_wasi_native(&self, command: &str) -> Result<String> {
-        let task = self
-            .runtime
-            .task_fs()
-            .alloc("auto", Some(self.runtime.root()))?;
-        ExecutionAdapter::wasi(command).start(&task)?;
-        Ok(task.id())
+        self.start_task_native("wasi", command)
     }
 
     pub fn start_gojs_native(&self, command: &str) -> Result<String> {
+        self.start_task_native("gojs", command)
+    }
+
+    pub fn start_task_native(&self, kind: &str, command: &str) -> Result<String> {
         let task = self
             .runtime
             .task_fs()
-            .alloc("auto", Some(self.runtime.root()))?;
-        ExecutionAdapter::go_js(command).start(&task)?;
+            .alloc(task_alloc_kind(kind), Some(self.runtime.root()))?;
+        if let Some(adapter) = execution_adapter(kind, command) {
+            adapter.start(&task)?;
+        } else {
+            task.set_cmd(command);
+            task.start()?;
+        }
         Ok(task.id())
+    }
+}
+
+fn task_alloc_kind(kind: &str) -> &str {
+    if execution_adapter_kind(kind) {
+        "auto"
+    } else {
+        kind
+    }
+}
+
+fn execution_adapter_kind(kind: &str) -> bool {
+    matches!(kind, "wasi" | "gojs" | "go-js")
+}
+
+fn execution_adapter(kind: &str, command: &str) -> Option<ExecutionAdapter> {
+    match kind {
+        "wasi" => Some(ExecutionAdapter::wasi(command)),
+        "gojs" | "go-js" => Some(ExecutionAdapter::go_js(command)),
+        _ => None,
     }
 }
 
@@ -181,11 +217,48 @@ mod wasm {
         JsValue::from_str(&err.to_string())
     }
 
+    fn parse_bindings_json(json: &str) -> std::result::Result<Vec<WebBinding>, JsValue> {
+        let value = js_sys::JSON::parse(json).map_err(|err| {
+            err.as_string()
+                .map(|message| JsValue::from_str(&message))
+                .unwrap_or_else(|| JsValue::from_str("failed to parse bindings JSON"))
+        })?;
+        serde_wasm_bindgen::from_value(value).map_err(js_err)
+    }
+
     #[wasm_bindgen]
     impl WanixSystem {
         #[wasm_bindgen(constructor)]
         pub fn new() -> std::result::Result<WanixSystem, JsValue> {
             WanixSystem::build().map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = registerFileBytes)]
+        pub fn register_file_bytes(
+            &self,
+            src: &str,
+            bytes: &[u8],
+        ) -> std::result::Result<(), JsValue> {
+            self.register_file_bytes_native(src, bytes).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = registerFileText)]
+        pub fn register_file_text(
+            &self,
+            src: &str,
+            text: &str,
+        ) -> std::result::Result<(), JsValue> {
+            self.register_file_text_native(src, text).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = registerArchiveBytes)]
+        pub fn register_archive_bytes(
+            &self,
+            src: &str,
+            bytes: &[u8],
+        ) -> std::result::Result<(), JsValue> {
+            self.register_archive_bytes_native(src, bytes)
+                .map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = readFile)]
@@ -236,6 +309,26 @@ mod wasm {
                 .map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = setupNamespaceJson)]
+        pub fn setup_namespace_json(
+            &self,
+            task_id: &str,
+            json: &str,
+        ) -> std::result::Result<(), JsValue> {
+            let bindings = parse_bindings_json(json)?;
+            self.setup_namespace_native(task_id, &bindings)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = startTask)]
+        pub fn start_task(
+            &self,
+            kind: &str,
+            command: &str,
+        ) -> std::result::Result<String, JsValue> {
+            self.start_task_native(kind, command).map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = startWasi)]
         pub fn start_wasi(&self, command: &str) -> std::result::Result<String, JsValue> {
             self.start_wasi_native(command).map_err(js_err)
@@ -263,11 +356,11 @@ mod tests {
 
     fn alloc_task(system: &WanixSystem) -> String {
         let runtime = system.runtime();
-        runtime
+        let task = runtime
             .task_fs()
             .alloc("auto", Some(runtime.root()))
-            .unwrap()
-            .id()
+            .unwrap();
+        task.id()
     }
 
     #[test]
@@ -284,6 +377,73 @@ mod tests {
         let wasi = system.start_wasi_native("repl.wasm").unwrap();
         let gojs = system.start_gojs_native("repl-gojs.wasm").unwrap();
         assert_ne!(wasi, gojs);
+    }
+
+    #[test]
+    fn native_browser_facade_registers_text_and_archive_bytes() {
+        let system = WanixSystem::new().unwrap();
+        system.bind_ramfs_native("tmp").unwrap();
+        system
+            .register_file_text_native("pkg:text", "hello text")
+            .unwrap();
+
+        let source = fs_ref(MemFs::new());
+        wanix_fs::mkdir_all(source.as_ref(), "nested", FileMode::from_perm(0o755)).unwrap();
+        write_file(
+            source.as_ref(),
+            "nested/data.txt",
+            b"archived",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+        let mut archive = Vec::new();
+        TarFs::archive_to_writer(source.as_ref(), &mut archive).unwrap();
+        system
+            .register_archive_bytes_native("pkg:archive", &archive)
+            .unwrap();
+
+        let task_id = alloc_task(&system);
+        let bindings = [
+            WebBinding {
+                dst: "tmp/payload.txt".to_string(),
+                src: Some("pkg:text".to_string()),
+                kind: WebBindingKind::File,
+                storage: None,
+            },
+            WebBinding {
+                dst: "bundle".to_string(),
+                src: Some("pkg:archive".to_string()),
+                kind: WebBindingKind::Archive,
+                storage: None,
+            },
+        ];
+
+        system.setup_namespace_native(&task_id, &bindings).unwrap();
+        let task = system.runtime().root().lookup(&task_id).unwrap();
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "tmp/payload.txt").unwrap(),
+            b"hello text"
+        );
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "bundle/nested/data.txt").unwrap(),
+            b"archived"
+        );
+    }
+
+    #[test]
+    fn generic_native_task_start_handles_builtin_execution_kinds() {
+        let system = WanixSystem::new().unwrap();
+
+        let wasi_id = system.start_task_native("wasi", "repl.wasm").unwrap();
+        let gojs_id = system.start_task_native("go-js", "repl-gojs.wasm").unwrap();
+
+        let wasi = system.runtime().root().lookup(&wasi_id).unwrap();
+        let gojs = system.runtime().root().lookup(&gojs_id).unwrap();
+
+        assert_eq!(wasi.cmd(), "repl.wasm");
+        assert_eq!(gojs.cmd(), "repl-gojs.wasm");
+        assert_eq!(wasi.exit(), "started");
+        assert_eq!(gojs.exit(), "started");
     }
 
     #[test]

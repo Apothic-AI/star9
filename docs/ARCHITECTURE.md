@@ -87,7 +87,7 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 
 Runtime device implementations live in a focused `devices` module. The terminal surface exposes deterministic program/data queues, winch signaling, ctl, state, and size files. The VM surface exposes ctl-driven state, alias/config, console, id, and kind files. `#net` is currently a deterministic allocator for connection-like resources with ctl/data/status files; it does not open real sockets yet.
 
-`wanix-web` exposes a `wasm-bindgen` `WanixSystem` facade. Browser-specific logic stays in this crate; core runtime state remains Rust-native and host-neutral.
+`wanix-web` exposes a `wasm-bindgen` `WanixSystem` facade. Browser-specific logic stays in this crate; core runtime state remains Rust-native and host-neutral. The plain ES module at `crates/wanix-web/js/wanix-elements.js` defines `wanix-system`, `wanix-bind`, and `wanix-task` without a bundler, lazy-loads the wasm package, and delegates file, namespace, 9P, and task operations to the Rust facade.
 
 Browser binding and storage setup is represented by typed descriptors in `wanix-web` before touching browser APIs. Namespace/file/archive/import binds and OPFS, File System Access, Cache API, JS value, download, worker, and DOM storage plans validate independently of JS host objects so runtime behavior can be tested natively first.
 
@@ -95,7 +95,7 @@ Browser binding and storage setup is represented by typed descriptors in `wanix-
 
 `wanix-web` also provides a host-neutral `MessagePort` trait, an in-memory port for native tests, and worker-runtime adapters that move typed runtime requests, responses, and task messages over complete message payloads. Browser-specific `Worker` and `MessagePort` glue can attach to that surface without changing protocol encoding.
 
-`BrowserBindingRegistry` is the host-neutral source registry for `<wanix-bind>`-style file, archive, and import bindings. It maps source identifiers to bytes or 9P transports so native tests can validate file writes, tar mounts, and 9P imports before browser fetch/iframe glue is attached.
+`BrowserBindingRegistry` is the host-neutral source registry for `<wanix-bind>`-style file, archive, and import bindings. It maps source identifiers to bytes or 9P transports so native tests can validate file writes, tar mounts, and 9P imports. Browser custom elements register fetched file/archive bytes through the wasm facade before applying typed namespace descriptors.
 
 `wanix-runtime::ExecutionRegistry` is the host-neutral execution contract for WASI and JS-WASM modules. Callers register native handlers by execution kind and module name; the registry applies the typed execution spec to task state and descriptors, invokes the handler, and records the returned exit status.
 

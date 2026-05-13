@@ -1,11 +1,46 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>wanix-web smoke</title>
+
+<wanix-system
+  id="smoke-system"
+  pkg="../target/wanix-web-pkg/wanix_web.js"
+>
+  <wanix-bind kind="ns" type="ns" dst="." src="#ramfs"></wanix-bind>
+  <wanix-bind kind="file" type="file" dst="inline.txt">inline-browser-ok</wanix-bind>
+  <wanix-bind
+    kind="file"
+    type="file"
+    dst="fetched.txt"
+    src="./fixtures/browser/registered-file.txt"
+  ></wanix-bind>
+  <wanix-bind
+    kind="ns"
+    type="ns"
+    dst="worker-store"
+    storage='{"backend":"worker","worker":"smoke-worker","path":"nested/root"}'
+  ></wanix-bind>
+  <wanix-bind
+    kind="ns"
+    type="ns"
+    dst="shared-store"
+    storage='{"backend":"js-value","value":"window.__wanixSmokeStore"}'
+  ></wanix-bind>
+  <wanix-bind
+    kind="ns"
+    type="ns"
+    dst="shared-store-2"
+    storage='{"backend":"js-value","value":"window.__wanixSmokeStore"}'
+  ></wanix-bind>
+</wanix-system>
+
 <pre id="status">running</pre>
+
 <script type="module">
-  import init, { WanixSystem } from "../target/wanix-web-pkg/wanix_web.js";
+  import "../crates/wanix-web/js/wanix-elements.js";
 
   const status = document.querySelector("#status");
+  const systemElement = document.querySelector("#smoke-system");
   const assert = (condition, message) => {
     if (!condition) throw new Error(message);
   };
@@ -17,32 +52,61 @@
       .map((entry) => Number(entry))
       .sort((left, right) => left - right);
 
+  const waitForReady = (element, timeoutMs = 10000) =>
+    new Promise((resolve, reject) => {
+      if (element.isReady === true) {
+        resolve({ detail: { system: element.system ?? element } });
+        return;
+      }
+
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error(`timed out waiting for ${element.tagName.toLowerCase()} ready`));
+      }, timeoutMs);
+
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        element.removeEventListener("ready", onReady);
+        element.removeEventListener("error", onError);
+      };
+
+      const onReady = (event) => {
+        cleanup();
+        resolve(event);
+      };
+
+      const onError = (event) => {
+        cleanup();
+        const detail = event && event.detail ? event.detail.error ?? event.detail : event;
+        reject(detail instanceof Error ? detail : new Error(String(detail)));
+      };
+
+      element.addEventListener("ready", onReady, { once: true });
+      element.addEventListener("error", onError, { once: true });
+    });
+
   try {
-    await init("../target/wanix-web-pkg/wanix_web_bg.wasm");
-    const system = new WanixSystem();
+    const readyEvent = await waitForReady(systemElement);
+    const system = readyEvent.detail.system;
 
     const version = system.readText("#wanix/version").trim();
-    system.bindRamFs("tmp");
-    system.writeText("tmp/hello", "browser-ok");
-    system.setupNamespace("1", [
-      {
-        dst: "worker-store",
-        kind: "ns",
-        storage: {
-          backend: "worker",
-          worker: "smoke-worker",
-          path: "nested/root",
-        },
-      },
-    ]);
+    const inlineText = system.readText("inline.txt").trim();
+    const fetchedText = system.readText("fetched.txt").trim();
+
     system.writeText("worker-store/state.txt", "storage-ok");
     const storageText = system.readText("worker-store/state.txt");
     const storageEntries = entriesOf("worker-store", system);
+
+    system.writeText("shared-store/state.txt", "descriptor-ok");
+    const sharedMirrorText = system.readText("shared-store-2/state.txt");
+    const sharedEntries = entriesOf("shared-store-2", system);
+
     system.mountSelf9p("remote");
-    const text = system.readText("tmp/hello");
-    const remoteText = system.readText("remote/tmp/hello");
+    const remoteInlineText = system.readText("remote/inline.txt").trim();
     const remoteStorageText = system.readText("remote/worker-store/state.txt");
-    const entries = entriesOf("tmp", system);
+    const remoteSharedText = system.readText("remote/shared-store-2/state.txt");
+    const remoteFetchedText = system.readText("remote/fetched.txt").trim();
+
     const taskEntriesBefore = entriesOf("#task", system);
     const wasiTask = system.startWasi("repl.wasm");
     const taskEntriesAfterWasi = entriesOf("#task", system);
@@ -54,17 +118,36 @@
     const goExit = system.readText(`#task/${goTask}/exit`).trim();
 
     assert(version === "0.1.0", `bad version ${version}`);
-    assert(text === "browser-ok", `bad text ${text}`);
-    assert(remoteText === "browser-ok", `bad remote text ${remoteText}`);
+    assert(inlineText === "inline-browser-ok", `bad inline text ${inlineText}`);
+    assert(fetchedText === "registered-browser-ok", `bad fetched text ${fetchedText}`);
     assert(storageText === "storage-ok", `bad storage text ${storageText}`);
+    assert(
+      sharedMirrorText === "descriptor-ok",
+      `bad shared storage text ${sharedMirrorText}`,
+    );
+    assert(
+      remoteInlineText === "inline-browser-ok",
+      `bad remote inline text ${remoteInlineText}`,
+    );
+    assert(
+      remoteFetchedText === "registered-browser-ok",
+      `bad remote fetched text ${remoteFetchedText}`,
+    );
     assert(
       remoteStorageText === "storage-ok",
       `bad remote storage text ${remoteStorageText}`,
     );
-    assert(entries.includes("hello"), `missing tmp entry: ${entries}`);
+    assert(
+      remoteSharedText === "descriptor-ok",
+      `bad remote shared text ${remoteSharedText}`,
+    );
     assert(
       storageEntries.includes("state.txt"),
       `missing storage entry: ${storageEntries}`,
+    );
+    assert(
+      sharedEntries.includes("state.txt"),
+      `missing shared entry: ${sharedEntries}`,
     );
     assert(Boolean(wasiTask) && Boolean(goTask) && wasiTask !== goTask, "bad task ids");
     assert(wasiCmd === "repl.wasm", `bad wasi cmd ${wasiCmd}`);
@@ -89,16 +172,22 @@
     );
 
     document.body.dataset.status = "ok";
-    status.textContent = JSON.stringify({
-      version,
-      entries,
-      remoteText,
-      storageEntries,
-      remoteStorageText,
-      wasiTask,
-      goTask,
-      taskEntriesAfterGo,
-    });
+    status.textContent = JSON.stringify(
+      {
+        version,
+        inlineText,
+        fetchedText,
+        storageEntries,
+        sharedEntries,
+        remoteStorageText,
+        remoteSharedText,
+        wasiTask,
+        goTask,
+        taskEntriesAfterGo,
+      },
+      null,
+      2,
+    );
   } catch (err) {
     document.body.dataset.status = "error";
     status.textContent = err && err.stack ? err.stack : String(err);
