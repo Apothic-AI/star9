@@ -25,6 +25,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `R2Fs` object key scoping, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates through a Rust object store trait.
 - `R2Fs` parent listing compare-and-swap retry behavior and deterministic conflict exhaustion through Rust in-memory object stores.
 - S3/R2-compatible `S3ObjectStore` adapter behavior over the Rust `HttpTransport` trait, including GET/PUT/DELETE/list-prefix requests, XML key parsing, request-signing hooks, ETag-based compare-and-swap headers, and fake-transport coverage without live cloud services.
+- AWS SigV4-compatible request signing for S3/R2 transports through deterministic `AwsSigV4Signer` tests covering canonical path/query/header signing, payload hashing, fixed signing timestamps, and stable authorization signatures without live credentials.
 - Pipe bidirectional reads and writes with file close preserving the underlying pipe.
 - Namespace file and directory binds.
 - Namespace root unions and overlapping directory reads.
@@ -43,13 +44,14 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Runtime protocol immutable snapshot APIs for workers, ports, handoff targets, and task messages.
 - Browser worker/message-port adapter coverage for typed runtime request/response dispatch, task message delivery, and lossless 9P frame transfer through a host-neutral port.
 - Browser Worker/MessagePort JS glue for tagged binary runtime envelopes, endpoint wrappers, port transfer helpers, system facade resolution, and import-port requests.
+- Browser 9P `MessagePort` serving helpers for complete binary frame request/response handling, transferable served ports, `wanix-import` responder handoff, and non-binary frame error reporting with deterministic fake-port tests.
 - Browser Worker host facade coverage for fake Worker-like startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
 - Browser JS/WASM Worker host bootstrap coverage for normalized execution messages, runtime descriptor transfer, task-message observation, existing-host wrapping, and cleanup.
 - Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, default dynamic JS runner import, explicit direct-WASM unsupported errors, task-message emission, exit/error reporting, and cleanup.
 - Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
-- Wasmi-backed WASI preview1 execution coverage for task namespace module loading, args/env/cwd propagation, preopened cwd, fd read/write/seek/close/stat behavior, path open/stat/create-directory/unlink/remove-directory/rename/symlink/readlink behavior, stdio fd writes, deterministic random/clock imports, preview1 errno mapping, and proc-exit mapping.
+- Wasmi-backed WASI preview1 execution coverage for task namespace module loading, args/env/cwd propagation, preopened cwd, fd read/write/seek/close/stat/sync/datasync/truncate/readdir behavior, path open/stat/create-directory/unlink/remove-directory/rename/symlink/readlink behavior, stdio fd writes, deterministic random/clock imports, preview1 errno mapping, and proc-exit mapping.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
@@ -92,6 +94,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, and explicit direct-WASM rejection without a real browser worker or Go shim.
 
+`tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, import responder port handoff, and error reporting for non-binary requests.
+
 ## Remaining Oracle Areas
 
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:
@@ -99,12 +103,12 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - HTTP filesystem remote metadata semantics beyond the currently covered cache headers and Wanix metadata fields.
 - `SyncFs` browser timer integration and backend-specific transport scheduling semantics beyond reusable tar patch application.
 - HTTP filesystem broader live-service behavior against real servers.
-- Cloudflare/S3 live-service coverage such as SigV4 signing examples, bucket-specific behavior, and opt-in live tests over `S3ObjectStore`.
-- Cross-document/browser MessagePort transport wiring for remote 9P import/export using the JS port helpers beyond loopback smoke.
+- Cloudflare/S3 live-service coverage such as bucket-specific behavior and opt-in live tests over `S3ObjectStore` plus `AwsSigV4Signer`.
+- Cross-document/browser MessagePort namespace mounting for remote 9P imports using the JS port helpers beyond whole-frame serving and loopback smoke.
 - Additional 9P edge cases such as flush cancellation and remote conflict/error parity.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters where async browser APIs meet the synchronous Rust filesystem trait boundary.
 - Broader browser Worker startup and real execution orchestration on top of the JS Worker host facade, JS/WASM bootstrap host, and host-neutral typed runtime adapter.
 - Terminal screen protocol details beyond the host-neutral file protocol.
 - Real VM execution and native/browser TCP transport adapters beyond deterministic state-machine resources.
-- WASI syscall coverage beyond the current preview1 fd/path mutation/args/env/clock/random baseline.
+- WASI syscall coverage beyond the current preview1 fd directory, fd sync/truncate, path mutation, args/env, clock, and random baseline.
 - Full Go-compatible JS/WASM worker execution.

@@ -11,9 +11,11 @@ default = []
 native-http = ["dep:ureq"]
 
 [dependencies]
+hmac.workspace = true
 http = "1"
 serde.workspace = true
 serde_bytes.workspace = true
+sha2.workspace = true
 tar = "0.4"
 wanix-core = { path = "../wanix-core" }
 

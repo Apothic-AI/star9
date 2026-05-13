@@ -2,6 +2,12 @@
 
 ## 2026-05-13
 
+- Added deterministic S3/R2 SigV4 request signing through `AwsSigV4Signer`, including host/date/payload-hash/authorization headers, canonical path/query/header handling, configurable service/region, fixed signing time for tests, and stable AWS reference-vector coverage without live credentials.
+- Extended the Wasmi WASI preview1 handler with fd-level `fd_sync`, `fd_datasync`, `fd_filestat_set_size`, and `fd_readdir`, including directory entry encoding with cookies, `.`/`..` entries, namespace file truncation, and WAT tests for directory reads and fd sync/truncate behavior.
+- Added a persistent `WanixSystem` 9P export server plus `handle9pFrame` wasm/native facade methods so browser-side helpers can process complete sequential 9P request frames without resetting fid state between calls.
+- Added browser-side `p9-port` helpers in `crates/wanix-web/js/p9-port.js` for serving complete binary 9P frames over `MessagePort`, creating transferable served ports, and answering `wanix-import` requests by transferring a live served port back to the requester.
+- Added deterministic Node coverage for browser-side 9P frame serving, non-binary request rejection through error listeners, transferable served-port creation, and `wanix-import` responder handoff in `tests/browser-p9-port.test.mjs`.
+- Verified the integrated tranche with focused crate tests, native HTTP feature tests, Node browser adapter tests, workspace clippy/tests, wasm build, wasm-pack build, Playwright browser smoke, and `cargo run -p wanix-cli -- accept all`.
 - Added browser-side `BrowserJsWasmWorkerHost` helpers in `crates/wanix-web/js/js-wasm-worker-host.js`, layering stable JS/WASM execution bootstrap messages over the existing Worker host runtime port transfer without Go shims.
 - Added deterministic Node coverage for JS/WASM bootstrap normalization, runtime port transfer, task-message observation, wrapped host startup, and cleanup.
 - Added browser-side `acceptJsWasmExecutionWorker` and `runJsWasmExecutionBootstrap` helpers that accept runtime-port and execution-bootstrap messages in either order, provide a normalized injected-runner context, emit binary/text task messages, and report deterministic exit/error task messages.

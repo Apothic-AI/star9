@@ -8,10 +8,14 @@ mod storage;
 pub mod worker;
 
 use std::io::Cursor;
+use std::sync::Arc;
 
 use wanix_core::{Error, FileMode, Result};
 use wanix_fs::{fs_ref, MemFs, TarFs};
-use wanix_protocol::{p9::NinePClientFs, WanixApi};
+use wanix_protocol::{
+    p9::{NinePClientFs, NinePServer},
+    WanixApi,
+};
 use wanix_runtime::{ExecutionAdapter, Runtime};
 use wanix_vfs::BindMode;
 
@@ -23,6 +27,7 @@ pub use storage::*;
 pub struct WanixSystem {
     runtime: Runtime,
     api: WanixApi,
+    p9_server: Arc<NinePServer>,
     binding_registry: BrowserBindingRegistry,
     storage_registry: BrowserStorageRegistry,
 }
@@ -31,11 +36,13 @@ impl WanixSystem {
     fn build() -> Result<Self> {
         let runtime = Runtime::new()?;
         let api = WanixApi::new(runtime.root());
+        let p9_server = runtime.export_9p();
         let binding_registry = BrowserBindingRegistry::new();
         let storage_registry = BrowserStorageRegistry::new();
         Ok(Self {
             runtime,
             api,
+            p9_server,
             binding_registry,
             storage_registry,
         })
@@ -88,10 +95,13 @@ impl WanixSystem {
     }
 
     pub fn mount_self_9p_native(&self, dst: &str) -> Result<()> {
-        let server = self.runtime.export_9p();
         self.runtime
-            .import_9p_loopback(dst, server, BindMode::Replace)?;
+            .import_9p_loopback(dst, self.p9_server.clone(), BindMode::Replace)?;
         Ok(())
+    }
+
+    pub fn handle_9p_frame_native(&self, frame: &[u8]) -> Result<Vec<u8>> {
+        self.p9_server.handle_frame(frame)
     }
 
     pub fn setup_namespace_native(&self, task_id: &str, bindings: &[WebBinding]) -> Result<()> {
@@ -297,6 +307,11 @@ mod wasm {
             self.mount_self_9p_native(dst).map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = handle9pFrame)]
+        pub fn handle_9p_frame(&self, frame: &[u8]) -> std::result::Result<Vec<u8>, JsValue> {
+            self.handle_9p_frame_native(frame).map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = setupNamespace)]
         pub fn setup_namespace(
             &self,
@@ -352,7 +367,10 @@ mod tests {
     use std::sync::Arc;
 
     use wanix_fs::{fs_ref, read_file, write_file, FileMode, MemFs, TarFs};
-    use wanix_protocol::p9::LoopbackTransport;
+    use wanix_protocol::p9::{
+        decode_response, encode_request, LoopbackTransport, NinePRequest, NinePResponse,
+        DEFAULT_MSIZE, NOFID, VERSION,
+    };
 
     fn alloc_task(system: &WanixSystem) -> String {
         let runtime = system.runtime();
@@ -428,6 +446,68 @@ mod tests {
             read_file(task.namespace().as_ref(), "bundle/nested/data.txt").unwrap(),
             b"archived"
         );
+    }
+
+    #[test]
+    fn native_browser_facade_handles_sequential_9p_frames_with_shared_server_state() {
+        let system = WanixSystem::new().unwrap();
+        system.bind_ramfs_native("tmp").unwrap();
+        system.write_text_native("tmp/hello.txt", "ok").unwrap();
+
+        let version = system
+            .handle_9p_frame_native(
+                &encode_request(
+                    1,
+                    &NinePRequest::Version {
+                        msize: DEFAULT_MSIZE,
+                        version: VERSION.to_string(),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            decode_response(&version).unwrap().1,
+            NinePResponse::Version { .. }
+        ));
+
+        let attach = system
+            .handle_9p_frame_native(
+                &encode_request(
+                    2,
+                    &NinePRequest::Attach {
+                        fid: 1,
+                        afid: NOFID,
+                        uname: "u".into(),
+                        aname: String::new(),
+                        n_uname: 0,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            decode_response(&attach).unwrap().1,
+            NinePResponse::Attach { .. }
+        ));
+
+        let walk = system
+            .handle_9p_frame_native(
+                &encode_request(
+                    3,
+                    &NinePRequest::Walk {
+                        fid: 1,
+                        newfid: 2,
+                        names: vec!["tmp".into(), "hello.txt".into()],
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        match decode_response(&walk).unwrap().1 {
+            NinePResponse::Walk { qids } => assert_eq!(qids.len(), 2),
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 
     #[test]
