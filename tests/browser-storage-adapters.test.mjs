@@ -14,6 +14,7 @@ import {
     createJsValueStorageAdapter,
     createWorkerStorageAdapter,
 } from "../crates/wanix-web/js/storage-js-value.js";
+import { createBrowserStorageAdapter } from "../crates/wanix-web/js/mounts.js";
 
 const encoder = new TextEncoder();
 
@@ -124,6 +125,38 @@ test("JS value and worker adapters expose live host-backed storage", async () =>
         ["hello.txt", "new.txt"],
     );
     worker.close();
+});
+
+test("StarFS storage is an additional mount backend beside raw OPFS", async () => {
+    const root = new FakeDirectoryHandle("root");
+    const options = { getRootDirectory: async () => root };
+    const opfs = await createBrowserStorageAdapter(
+        { backend: "opfs", root: "raw" },
+        options,
+    );
+    const starfs = await createBrowserStorageAdapter(
+        {
+            backend: "starfs",
+            id: "agent-a",
+            storage: { backend: "opfs", root: "starfs/agent-a" },
+        },
+        options,
+    );
+
+    await opfs.writeText("state.txt", "raw-opfs");
+    await starfs.writeText("report.txt", "starfs-file");
+    await starfs.setKv("prefs", { theme: "dark" });
+    const snapshot = await starfs.createSnapshot("initial");
+
+    assert.equal(await opfs.readText("state.txt"), "raw-opfs");
+    assert.equal(await starfs.readText("report.txt"), "starfs-file");
+    assert.deepEqual(await starfs.getKv("prefs"), { theme: "dark" });
+    assert.deepEqual(snapshot.files, [{ path: "report.txt", size: 11 }]);
+    assert.deepEqual(
+        (await starfs.readDir(".")).map((entry) => entry.name),
+        [".starfs", "report.txt"],
+    );
+    await assert.rejects(() => opfs.readText("report.txt"), /Path does not exist|not found/i);
 });
 
 class FakeFileHandle {

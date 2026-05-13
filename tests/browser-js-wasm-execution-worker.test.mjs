@@ -326,6 +326,51 @@ test("runJsWasmExecutionBootstrap runs a direct WASI WASM module and emits stdou
     );
 });
 
+test("runJsWasmExecutionBootstrap runs the Go-compatible JS/WASM runner fixture", async () => {
+    const channel = new FakeMessageChannel();
+    const endpoint = new WorkerRuntimeEndpoint(channel.port1, { autoStart: true });
+    const taskMessages = [];
+    const moduleUrl = new URL("./fixtures/go-compatible-runner.mjs", import.meta.url).href;
+
+    channel.port2.start();
+    channel.port2.addEventListener("message", (event) => {
+        taskMessages.push(decodeWorkerRuntimeEnvelope(event.data));
+    });
+
+    const result = await runJsWasmExecutionBootstrap(
+        {
+            type: DEFAULT_JS_WASM_BOOTSTRAP_MESSAGE_TYPE,
+            task_id: "task-39",
+            worker_id: "worker-39",
+            kind: "gojs",
+            module: moduleUrl,
+            args: ["--go-compatible"],
+            env: { GO_COMPAT_EXIT_CODE: "0" },
+            cwd: "/go-workspace",
+        },
+        {
+            runtimeEndpoint: endpoint,
+        },
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.result.goCompatible.runtime, "wasm_exec-compatible-runner");
+    assert.deepEqual(result.result.goCompatible.args, ["--go-compatible"]);
+    assert.equal(taskMessages.length, 2);
+    assert.equal(new TextDecoder().decode(taskMessages[0].payload), "go-compatible-ok\n");
+    assert.deepEqual(
+        JSON.parse(new TextDecoder().decode(taskMessages[1].payload)),
+        {
+            type: DEFAULT_JS_WASM_EXIT_TASK_MESSAGE_TYPE,
+            task_id: "task-39",
+            worker_id: "worker-39",
+            kind: "gojs",
+            module: moduleUrl,
+            exit_code: 0,
+        },
+    );
+});
+
 test("acceptJsWasmExecutionWorker cleanup removes the listener and stops future handling", async () => {
     const scope = new FakeWorkerScope();
     const channel = new FakeMessageChannel();

@@ -153,6 +153,37 @@
 
     const taskEntriesBefore = await entriesOf("#task", system);
     const wasiTask = system.startWasi("repl.wasm");
+    let taskOpfsText = "skipped";
+    let taskOpfsRemountText = "skipped";
+    let taskStarFsText = "skipped";
+    let taskStarFsKvText = "skipped";
+    let taskStorageEntries = [];
+    let starFsEntries = [];
+    if (navigator.storage && typeof navigator.storage.getDirectory === "function") {
+      await system.mountTaskStorage(wasiTask, "storage/opfs", {
+        backend: "opfs",
+        root: "wanix-smoke-task-opfs",
+      });
+      await system.writeText(`#task/${wasiTask}/ns/storage/opfs/state.txt`, "task-opfs-ok");
+      taskOpfsText = (await system.readText(`#task/${wasiTask}/ns/storage/opfs/state.txt`)).trim();
+      taskStorageEntries = await entriesOf(`#task/${wasiTask}/ns/storage/opfs`, system);
+      system.unmount(`#task/${wasiTask}/ns/storage/opfs`);
+      await system.mountTaskStorage(wasiTask, "storage/opfs", {
+        backend: "opfs",
+        root: "wanix-smoke-task-opfs",
+      });
+      taskOpfsRemountText = (await system.readText(`#task/${wasiTask}/ns/storage/opfs/state.txt`)).trim();
+
+      await system.mountStarFs("starfs-store", {
+        id: "smoke-agent",
+        storage: { backend: "opfs", root: "wanix-smoke-starfs" },
+      });
+      await system.writeText("starfs-store/report.txt", "starfs-ok");
+      await system.writeText("starfs-store/.starfs/kv/prefs.json", "{\"theme\":\"dark\"}");
+      taskStarFsText = (await system.readText("starfs-store/report.txt")).trim();
+      taskStarFsKvText = (await system.readText("starfs-store/.starfs/kv/prefs.json")).trim();
+      starFsEntries = await entriesOf("starfs-store", system);
+    }
     const taskEntriesAfterWasi = await entriesOf("#task", system);
     const goTask = system.startGoJs("repl-gojs.wasm");
     const taskEntriesAfterGo = await entriesOf("#task", system);
@@ -191,6 +222,20 @@
     const directWasmCmd = (await system.readText(`#task/${directWasmTask.taskId}/cmd`)).trim();
     const directWasmStdout = directWasmTask.messages.find((message) => message === "compiled-wasi-ok\n");
     directWasmTask.close();
+
+    const goCompatWorker = await system.startBrowserWorker("./fixtures/browser/execution-worker.mjs", {
+      workerId: "smoke-go-compatible-worker",
+      kind: "gojs",
+      module: "../../../tests/fixtures/go-compatible-runner.mjs",
+      args: ["--browser-go-compatible"],
+      env: [{ name: "GO_COMPAT_EXIT_CODE", value: "0" }],
+      cwd: "go-workspace",
+    });
+    await waitFor(() => goCompatWorker.exitCode === 0, "go-compatible worker exit");
+    const goCompatExit = (await system.readText(`#task/${goCompatWorker.taskId}/exit`)).trim();
+    const goCompatCmd = (await system.readText(`#task/${goCompatWorker.taskId}/cmd`)).trim();
+    const goCompatStdout = goCompatWorker.messages.find((message) => message === "go-compatible-ok\n");
+    goCompatWorker.close();
 
     const vmId = (await system.readText("#vm/new/v86")).trim();
     const exportWorker = await system.startBrowserWorker(`./fixtures/browser/export-worker.mjs?vm=${vmId}`, {
@@ -259,6 +304,12 @@
     assert(goCmd === "repl-gojs.wasm", `bad go cmd ${goCmd}`);
     assert(wasiExit === "started", `bad wasi exit ${wasiExit}`);
     assert(goExit === "started", `bad go exit ${goExit}`);
+    assert(taskOpfsText === "skipped" || taskOpfsText === "task-opfs-ok", `bad task opfs text ${taskOpfsText}`);
+    assert(taskOpfsRemountText === "skipped" || taskOpfsRemountText === "task-opfs-ok", `bad task opfs remount ${taskOpfsRemountText}`);
+    assert(taskStorageEntries.length === 0 || taskStorageEntries.includes("state.txt"), `missing task storage entry: ${taskStorageEntries}`);
+    assert(taskStarFsText === "skipped" || taskStarFsText === "starfs-ok", `bad starfs text ${taskStarFsText}`);
+    assert(taskStarFsKvText === "skipped" || taskStarFsKvText === "{\"theme\":\"dark\"}", `bad starfs kv ${taskStarFsKvText}`);
+    assert(starFsEntries.length === 0 || starFsEntries.includes(".starfs"), `missing starfs control dir: ${starFsEntries}`);
     assert(workerExit === "0", `bad worker exit ${workerExit}`);
     assert(
       workerCmd === "../../../tests/fixtures/js-wasm-execution-runner.mjs --browser-smoke",
@@ -275,6 +326,12 @@
       `bad direct wasm cmd ${directWasmCmd}`,
     );
     assert(directWasmStdout === "compiled-wasi-ok\n", `bad direct wasm stdout ${directWasmStdout}`);
+    assert(goCompatExit === "0", `bad go-compatible exit ${goCompatExit}`);
+    assert(
+      goCompatCmd === "../../../tests/fixtures/go-compatible-runner.mjs --browser-go-compatible",
+      `bad go-compatible cmd ${goCompatCmd}`,
+    );
+    assert(goCompatStdout === "go-compatible-ok\n", `bad go-compatible stdout ${goCompatStdout}`);
     assert(taskExportText === "worker-export-ok", `bad task export text ${taskExportText}`);
     assert(vmGuestText === "worker-export-ok", `bad vm guest text ${vmGuestText}`);
     assert(taskExportCreated === "export-write-ok", `bad task export write ${taskExportCreated}`);
@@ -310,11 +367,18 @@
         remotePortEntries,
         domStorageText,
         wasiTask,
+        taskOpfsText,
+        taskOpfsRemountText,
+        taskStorageEntries,
+        taskStarFsText,
+        starFsEntries,
         goTask,
         workerTask: workerTask.taskId,
         workerExit,
         directWasmTask: directWasmTask.taskId,
         directWasmExit,
+        goCompatTask: goCompatWorker.taskId,
+        goCompatExit,
         exportTask: exportWorker.taskId,
         vmId,
         taskExportEntries,

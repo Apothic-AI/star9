@@ -57,9 +57,30 @@ Required live behaviors: `GET`, `PUT`, `DELETE`, prefix listing, pagination, met
 
 Required browser storage behaviors: read, write, list, stat, mkdir, remove, error reporting, explicit flush/close where available, and cleanup of smoke data.
 
+Raw OPFS is the preferred simple persistent browser filesystem. `wanix-system.mountStorage(...)` mounts OPFS directly into the browser async mount table. `wanix-system.mountStorageExport(...)` and `wanix-system.mountTaskStorage(...)` export the async adapter through a `MessagePort` 9P server, then mount the imported namespace at a normal browser Wanix path such as `#task/<id>/ns/storage/opfs`. This is the real browser storage boundary; synchronous Rust Wasmi task namespaces still use descriptor-backed stand-ins unless a browser worker proxy is mounted over 9P.
+
+StarFS is an additional optional mount backend, not a replacement for raw OPFS or the other browser storage mounts. The current adapter is StarFS-compatible and OPFS-backed by default:
+
+```js
+await system.mountStarFs("workspaces/starfs/agent-a", {
+  id: "agent-a",
+  storage: { backend: "opfs", root: "starfs/agent-a" }
+});
+```
+
+It exposes normal filesystem entries plus `.starfs/kv`, `.starfs/toolcalls`, and `.starfs/snapshots`. Full external StarFS SDK/PrimaDB inode semantics remain an opt-in worker/wasm integration boundary.
+
 ## Native And Browser Network
 
 The default `#net` device is deterministic and offline. Real native TCP and browser transport adapters must be opt-in and should not replace deterministic tests as the default conformance oracle.
+
+Run the native TCP loopback host-capability check with:
+
+```sh
+cargo run -p wanix-cli -- accept native-tcp
+```
+
+This opens a loopback `TcpListener`, connects a `TcpStream`, exchanges request/response bytes, and exits. It is separate from `accept all` so default verification remains deterministic and does not open sockets beyond explicit host opt-in.
 
 ## Native PTY Execution
 

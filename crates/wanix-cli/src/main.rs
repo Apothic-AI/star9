@@ -59,6 +59,7 @@ enum AcceptanceCommand {
     Wasi,
     Worker,
     Native,
+    NativeTcp,
     All,
 }
 
@@ -127,6 +128,7 @@ fn render_acceptance_output(suite: AcceptanceCommand) -> Result<String> {
         AcceptanceCommand::Wasi => render_wasi_acceptance(),
         AcceptanceCommand::Worker => render_worker_acceptance(),
         AcceptanceCommand::Native => render_native_acceptance(),
+        AcceptanceCommand::NativeTcp => render_native_tcp_acceptance(),
         AcceptanceCommand::All => Ok(format!(
             "{}{}{}{}",
             render_p9_acceptance()?,
@@ -289,6 +291,55 @@ fn render_device_acceptance() -> Result<String> {
         escape_text(&payload),
         escape_text(&reply),
         closed,
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_native_tcp_acceptance() -> Result<String> {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|err| wanix_core::Error::Message(format!("native tcp bind failed: {err}")))?;
+    let addr = listener.local_addr().map_err(|err| {
+        wanix_core::Error::Message(format!("native tcp local_addr failed: {err}"))
+    })?;
+
+    let server = thread::spawn(move || -> io::Result<Vec<u8>> {
+        let (mut stream, _) = listener.accept()?;
+        let mut request = [0_u8; 4];
+        stream.read_exact(&mut request)?;
+        stream.write_all(b"pong")?;
+        Ok(request.to_vec())
+    });
+
+    let mut client = TcpStream::connect(addr)
+        .map_err(|err| wanix_core::Error::Message(format!("native tcp connect failed: {err}")))?;
+    client
+        .write_all(b"ping")
+        .map_err(|err| wanix_core::Error::Message(format!("native tcp write failed: {err}")))?;
+    let mut response = [0_u8; 4];
+    client
+        .read_exact(&mut response)
+        .map_err(|err| wanix_core::Error::Message(format!("native tcp read failed: {err}")))?;
+    let request = server
+        .join()
+        .map_err(|_| wanix_core::Error::Message("native tcp server thread panicked".into()))?
+        .map_err(|err| wanix_core::Error::Message(format!("native tcp accept failed: {err}")))?;
+
+    Ok(format!(
+        "native-tcp addr={} request={} response={}\n",
+        addr,
+        String::from_utf8_lossy(&request),
+        String::from_utf8_lossy(&response)
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn render_native_tcp_acceptance() -> Result<String> {
+    Err(wanix_core::Error::Message(
+        "native tcp acceptance requires a non-wasm host".into(),
     ))
 }
 

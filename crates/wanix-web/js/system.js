@@ -7,6 +7,7 @@ import {
     createP9MountFromPort,
     dirEntriesToNames,
 } from "./mounts.js";
+import { createStorageP9FramePort } from "./storage-p9.js";
 import { requestWanixImportPort } from "./worker-runtime.js";
 
 const DEFAULT_FACADE_URL = new URL("../../../target/wanix-web-pkg/wanix_web.js", import.meta.url).href;
@@ -192,6 +193,59 @@ export class SystemElement extends WanixElement {
             source: descriptor?.backend || null,
         });
         return adapter;
+    }
+
+    async createStorageExport(descriptor, options = {}) {
+        this._log("createStorageExport", descriptor?.backend || "");
+        const storageAdapter = options.adapter || await createBrowserStorageAdapter(descriptor, {
+            globals: globalThis,
+            ...options,
+        });
+        const exported = createStorageP9FramePort(storageAdapter, options.p9 || options);
+        const mountAdapter = await createP9MountFromPort(exported.port, options.mount || options);
+        const closeMount = typeof mountAdapter.close === "function" ? mountAdapter.close.bind(mountAdapter) : null;
+        mountAdapter.storageAdapter = storageAdapter;
+        mountAdapter.storageExportServer = exported.server;
+        mountAdapter.close = () => {
+            closeMount?.();
+            exported.server.close();
+            if (typeof storageAdapter.close === "function") {
+                storageAdapter.close();
+            }
+        };
+        return mountAdapter;
+    }
+
+    async mountStorageExport(dst, descriptor, options = {}) {
+        this._log("mountStorageExport", dst);
+        const adapter = await this.createStorageExport(descriptor, options);
+        this.mountAdapter(dst, adapter, {
+            kind: options.kind || "storage-9p",
+            source: descriptor?.backend || options.source || null,
+        });
+        return adapter;
+    }
+
+    async mountTaskStorage(taskId, dst, descriptor, options = {}) {
+        const id = requireNonEmptyString(taskId, "task id");
+        return this.mountStorageExport(normalizeTaskNamespaceMountPath(id, dst), descriptor, {
+            ...options,
+            kind: options.kind || "task-storage-9p",
+        });
+    }
+
+    async mountStarFs(dst, descriptor = {}, options = {}) {
+        return this.mountStorageExport(dst, { ...descriptor, backend: "starfs" }, {
+            ...options,
+            kind: options.kind || "starfs",
+        });
+    }
+
+    async mountTaskStarFs(taskId, dst, descriptor = {}, options = {}) {
+        return this.mountTaskStorage(taskId, dst, { ...descriptor, backend: "starfs" }, {
+            ...options,
+            kind: options.kind || "task-starfs",
+        });
     }
 
     mountAdapter(dst, adapter, options = {}) {
@@ -651,6 +705,17 @@ function requireNonEmptyString(value, label) {
         throw new TypeError(`${label} must not be empty`);
     }
     return normalized;
+}
+
+function normalizeTaskNamespaceMountPath(taskId, dst) {
+    const clean = String(dst ?? "").trim();
+    if (!clean || clean === ".") {
+        throw new TypeError("task storage destination must not be empty");
+    }
+    if (clean.startsWith("/") || clean.includes("\\") || clean.split("/").includes("..")) {
+        throw new TypeError(`task storage destination must be a relative Wanix path: ${JSON.stringify(dst)}`);
+    }
+    return `#task/${taskId}/ns/${clean.split("/").filter(Boolean).join("/")}`;
 }
 
 function toUint8Array(value) {

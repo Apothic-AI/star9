@@ -1,0 +1,76 @@
+{
+  "date": "2026-05-13",
+  "goal": "Classify the real-host depth sprint surfaces while keeping default verification deterministic and offline.",
+  "storage": {
+    "hierarchy": [
+      {
+        "surface": "existing browser storage mounts",
+        "classification": "browser capability-gated implementation",
+        "status": "preserved",
+        "backends": ["OPFS", "File System Access", "Cache API", "JS value", "DOM", "download", "worker"]
+      },
+      {
+        "surface": "raw OPFS",
+        "classification": "browser capability-gated implementation",
+        "status": "preferred simple persistent browser filesystem",
+        "mounts": ["mountStorage", "mountStorageExport", "mountTaskStorage"]
+      },
+      {
+        "surface": "StarFS",
+        "classification": "optional additional mount",
+        "status": "implemented as a StarFS-compatible adapter over an explicit backing adapter",
+        "mounts": ["mountStarFs", "mountTaskStarFs"],
+        "default_backing": "OPFS"
+      }
+    ],
+    "starfs_reference": {
+      "path": "/home/bitnom/Code/apothic-monorepo/libs/rust/starfs",
+      "observed_sdks": ["Rust SDK over PrimaDB/Turso", "TypeScript SDK with browser tests over database-wasm", "CLI/FUSE/NFS mount crates"],
+      "wanix_integration_choice": "Do not vendor the external SDK into default wanix-rs builds. Use a separate browser adapter now and keep a future SDK-backed worker/wasm bridge as an opt-in backend."
+    }
+  },
+  "browser_storage_task_visibility": {
+    "classification": "browser capability-gated implementation with explicit sync/async boundary",
+    "implemented": [
+      "async browser storage export over MessagePort 9P",
+      "task-path async overlay mounts under #task/<id>/ns/<dst>",
+      "browser smoke OPFS persistence across unmount/remount",
+      "StarFS and raw OPFS mounted side by side"
+    ],
+    "boundary": "Rust Wasmi execution still requires synchronous FileSystem handles; real browser OPFS reaches JS/browser task paths through the async mount table and 9P proxy rather than being inserted directly into the synchronous Rust trait."
+  },
+  "cross_document_9p": {
+    "classification": "browser capability-gated implementation",
+    "implemented": [
+      "origin-gated wanix-import responder",
+      "concurrent imported ports from one exporter",
+      "read/write/list through imported namespace",
+      "error, malformed frame, abort/Tflush, late reply, and teardown coverage"
+    ],
+    "evidence": ["tests/browser-p9-port.test.mjs", "tests/browser-smoke.html"]
+  },
+  "live_backends": {
+    "classification": "live-service opt-in implementation",
+    "default": "offline fake transports and native loopback tests",
+    "opt_in_docs": "docs/LIVE_TESTS.md",
+    "requires": ["WANIX_LIVE_HTTP_BASE_URL", "WANIX_LIVE_S3 or WANIX_LIVE_R2 credentials"]
+  },
+  "network": {
+    "default": "deterministic #net Plan 9-style resource model",
+    "native_opt_in": "cargo run -p wanix-cli -- accept native-tcp",
+    "browser_boundary": "WebSocket/WebTransport-style transport remains browser capability-gated; raw TCP is not a browser API."
+  },
+  "vm": {
+    "default": "deterministic VM provider surface",
+    "guest_storage": "raw OPFS, StarFS, or any 9P export can be attached through existing #vm/<id>/guest browser/native handoff paths",
+    "real_provider_boundary": "Firecracker/v86/native hypervisor provider remains opt-in host integration and is not part of default offline verification."
+  },
+  "go_compatible_execution": {
+    "classification": "default offline replacement fixture plus browser worker path",
+    "implemented": [
+      "Go-compatible JS/WASM runner fixture without Go runtime/build dependency",
+      "same runtime-port, stdio, task-message, and exit-state path as JS/WASM workers"
+    ],
+    "boundary": "Full wasm_exec-compatible Go runtime emulation is classified as a host/runtime compatibility layer, not a default Rust port dependency."
+  }
+}

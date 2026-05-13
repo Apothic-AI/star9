@@ -2,24 +2,58 @@
 
 ## Current Focus
 
-Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the reference implementation to clone and port from without wrapping or depending on Go code.
+Finish the real-host-depth sprint while keeping the Rust tree primary, deterministic, and free of Go runtime/build dependencies.
 
-Immediate upstream catch-up tranche:
+Current sprint contract:
 
-- Port accepted upstream changes from `b753801..2feaf3f`: task exports, worker export handoff, VM guest mounts, bind introspection, root-parent task allocation, native PTY execution, raw terminal mode, logger hooks, and Rust-backed replacement examples.
-- Keep Go/TinyGo/Docker/Makefile/`wasm_exec` changes classified as legacy reference build infrastructure, not Rust port work.
-- Keep `docs/audits/upstream-catch-up-matrix.json`, conformance docs, and progress notes current as the catch-up work lands.
+- Preserve the existing browser storage adapters: OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage.
+- Prefer raw OPFS for simple persistent browser workspaces.
+- Add StarFS as a separate optional mount backend, backed by OPFS by default, without replacing raw OPFS or existing storage mounts.
+- Route browser async storage into Wanix task-facing paths through a 9P proxy/mount boundary instead of pretending browser async APIs satisfy the synchronous Rust `FileSystem` trait.
+- Expand browser 9P import/export parity for mutation, errors, large payloads, cancellation, malformed frames, concurrent imports, and teardown.
+- Keep deterministic terminal/VM/network devices as default conformance. Native TCP, native PTY, real VM providers, and live HTTP/S3/R2 checks remain explicit opt-ins.
+- Keep Go-compatible JS/WASM execution represented by Rust/browser worker lifecycle fixtures without reintroducing Go build dependencies.
+- Keep `docs/audits/completion-gap-matrix.json`, `docs/audits/real-host-depth-matrix.json`, conformance docs, live-test docs, and progress notes current as the sprint lands.
 
-Immediate protocol/runtime tranche:
+### Real-Host-Depth Sprint Plan
 
-- Continue browser system and binding parity beyond the component-driven `wanix-system`/`wanix-bind`/`wanix-task` baseline, now including cross-document import responders and browser-side async mount routing for 9P and host storage.
-- Build deeper browser-side 9P namespace coverage on the validated async `MessagePort` mount client, including more mutation/error parity, abort/flush stress coverage, and cross-document coverage, while using Rust-owned length-prefixed stream helpers for native 9P serving/import paths.
-- Continue attaching browser host storage adapters through the JS async mount table where browser APIs cannot satisfy the synchronous Rust `FileSystem` trait directly, while retaining Rust descriptor-backed stand-ins for native tests.
-- Continue browser worker orchestration on top of the runtime `MessagePort` bridge and the real module-worker smoke path, broadening namespace/fd/stdio handoff and representative JS/WASM execution coverage.
-- Continue expanding the Wasmi-backed WASI preview1 syscall handler beyond the current fd directory, fd positional I/O/allocation/renumber, fd advice/flags/timestamps, fd sync/truncate, poll/yield/signal imports, path mutation including hard links, deterministic socket fd send/recv/shutdown, args/env, clock, and random baseline, and implement broader browser/native JS-WASM execution drivers on top of the typed worker host and execution-worker bootstrap surfaces.
-- Continue backend hardening with HTTP remote metadata details, opt-in live transport coverage, browser SyncFs timer integration, backend-specific patch application, and live S3/R2 service coverage over the Rust object-store adapter and SigV4 signer boundaries.
-- Deepen remaining host-specific device behavior, especially real terminal screen protocol, VM execution, worker integration, and native/browser TCP adapters.
-- Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
+1. Evidence refresh and storage direction
+   - Refresh the gap/audit matrix and classify default offline, browser capability-gated, native opt-in, live-service opt-in, and explicit unsupported boundaries.
+   - Evaluate `/home/bitnom/Code/apothic-monorepo/libs/rust/starfs` and document the chosen integration shape.
+   - Gate: docs state the final storage hierarchy and adapter responsibilities.
+
+2. Existing browser storage mount preservation
+   - Keep OPFS, File System Access, Cache API, JS value, DOM, download, and worker storage adapters working independently.
+   - Gate: Node/browser tests prove read/write/list/stat/mkdir/remove behavior where supported.
+
+3. Raw OPFS task-facing namespace mounts
+   - Export async browser storage adapters over MessagePort 9P and mount them into browser task paths such as `#task/<id>/ns/storage/opfs`.
+   - Cover read/write/list/stat/mkdir/remove, large I/O, cancellation, and persistence across remount.
+   - Gate: Playwright smoke covers OPFS when browser capability exists.
+
+4. StarFS optional mount backend
+   - Add a StarFS-compatible adapter over an explicit backing adapter, OPFS by default.
+   - Expose filesystem, `.starfs/kv`, `.starfs/toolcalls`, and `.starfs/snapshots` surfaces.
+   - Gate: raw OPFS and StarFS mount side by side with independent state.
+
+5. Cross-document 9P import parity
+   - Expand mutation, error, large read/write, large directory, concurrent import, cancellation, malformed frame, and teardown coverage.
+   - Gate: browser/Node 9P tests prove success, failure, cancellation, and cleanup behavior.
+
+6. Live backend depth
+   - Keep offline fake transports as default.
+   - Document exact live HTTP/S3/R2/SyncFs environment variables and commands.
+   - Gate: live checks are opt-in and never required by default verification.
+
+7. Network, VM, and execution host depth
+   - Keep deterministic `#net` and `#vm` as default.
+   - Add opt-in native TCP acceptance separate from default `accept all`.
+   - Continue Go-compatible JS/WASM execution through the browser worker lifecycle fixture.
+   - Gate: deterministic defaults pass; opt-in host checks have exact commands.
+
+8. Final cleanup and verification
+   - Re-run unsupported-marker audit, formatting, linting, Rust tests, Node tests, wasm builds, browser smoke, and CLI acceptance.
+   - Gate: default verification passes offline and every remaining real-host boundary is documented.
 
 ## Completion Sprint Plan
 

@@ -59,6 +59,7 @@ pub enum WebStorageDescriptor {
     Download(DownloadStorageDescriptor),
     Worker(WorkerStorageDescriptor),
     Dom(DomStorageDescriptor),
+    Starfs(StarFsStorageDescriptor),
 }
 
 impl WebStorageDescriptor {
@@ -71,6 +72,7 @@ impl WebStorageDescriptor {
             Self::Download(descriptor) => descriptor.validate(),
             Self::Worker(descriptor) => descriptor.validate(),
             Self::Dom(descriptor) => descriptor.validate(),
+            Self::Starfs(descriptor) => descriptor.validate(),
         }
     }
 }
@@ -192,6 +194,34 @@ impl DomStorageDescriptor {
         validate_non_empty("dom node", &self.node)?;
         if let Some(property) = self.property.as_deref() {
             validate_non_empty("dom property", property)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StarFsStorageDescriptor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<Box<WebStorageDescriptor>>,
+}
+
+impl StarFsStorageDescriptor {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(id) = self.id.as_deref() {
+            validate_non_empty("starfs id", id)?;
+        }
+        if let Some(root) = self.root.as_deref() {
+            validate_rel_path("starfs root", root)?;
+        }
+        if let Some(storage) = self.storage.as_deref() {
+            if matches!(storage, WebStorageDescriptor::Starfs(_)) {
+                return Err(invalid("starfs storage", "must not recursively use starfs"));
+            }
+            storage.validate()?;
         }
         Ok(())
     }
@@ -391,6 +421,42 @@ mod tests {
     }
 
     #[test]
+    fn starfs_descriptor_accepts_opfs_backing() {
+        let descriptor = WebStorageDescriptor::Starfs(StarFsStorageDescriptor {
+            id: Some("agent-a".to_string()),
+            root: Some("agents/a".to_string()),
+            storage: Some(Box::new(WebStorageDescriptor::Opfs(
+                OpfsStorageDescriptor {
+                    root: Some("starfs/agent-a".to_string()),
+                },
+            ))),
+        });
+
+        descriptor.validate().unwrap();
+    }
+
+    #[test]
+    fn starfs_descriptor_rejects_recursive_backing() {
+        let descriptor = WebStorageDescriptor::Starfs(StarFsStorageDescriptor {
+            id: Some("agent-a".to_string()),
+            root: None,
+            storage: Some(Box::new(WebStorageDescriptor::Starfs(
+                StarFsStorageDescriptor {
+                    id: Some("inner".to_string()),
+                    root: None,
+                    storage: None,
+                },
+            ))),
+        });
+
+        let err = descriptor.validate().unwrap_err();
+        assert_eq!(
+            err,
+            Error::Message("invalid starfs storage: must not recursively use starfs".to_string())
+        );
+    }
+
+    #[test]
     fn dom_descriptor_requires_node_handle() {
         let descriptor = WebStorageDescriptor::Dom(DomStorageDescriptor {
             node: "".to_string(),
@@ -421,7 +487,7 @@ mod tests {
         ))
         .unwrap();
 
-        assert_eq!(bindings.len(), 10);
+        assert_eq!(bindings.len(), 11);
         for binding in bindings {
             binding.validate().unwrap();
         }

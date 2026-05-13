@@ -2,6 +2,16 @@
 
 ## 2026-05-13
 
+- Started the real-host-depth storage sprint on `sprint-real-host-depth-storage-starfs`, preserving existing browser storage mounts while adding raw OPFS task-facing mounts and StarFS as a separate optional backend.
+- Added `crates/wanix-web/js/storage-p9.js`, an async storage-adapter 9P server/export boundary over `MessagePort`, with read/write/create/readdir/mkdir/remove/stat, large payload coverage, complete dirent chunking, malformed-frame rejection, and `Tflush` cancellation/late-reply suppression.
+- Added `crates/wanix-web/js/storage-starfs.js`, a StarFS-compatible browser adapter over an explicit backing adapter. It exposes the ordinary filesystem tree plus `.starfs/kv`, `.starfs/toolcalls`, and `.starfs/snapshots` control surfaces without replacing OPFS or other storage backends.
+- Wired `backend: "starfs"` through browser descriptor validation, the native browser storage registry stand-in, JS storage adapter resolution, browser binding fixtures, and `wanix-system` helper methods for `mountStorageExport`, `mountTaskStorage`, `mountStarFs`, and `mountTaskStarFs`.
+- Expanded browser smoke so capability-detected OPFS mounts can be attached under `#task/<id>/ns/storage/opfs`, remounted to prove persistence, and mounted side by side with a StarFS store.
+- Expanded browser 9P tests for storage exports, large writes, large directory listings, storage `Tflush`, malformed frames, origin-gated concurrent import responders, and server teardown.
+- Added a Go-compatible JS/WASM runner fixture and Node/browser smoke coverage that runs it through the same browser worker runtime port, task-message, stdout, and exit-state path as JS/WASM workloads.
+- Added `cargo run -p wanix-cli -- accept native-tcp` as an opt-in native loopback TCP host-capability check, separate from deterministic `accept all`.
+- Added `docs/audits/real-host-depth-matrix.json` and refreshed the completion audit matrix to classify OPFS, StarFS, cross-document 9P, live backend, native TCP, VM-provider, and Go-compatible execution boundaries.
+- Verified the sprint with `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test -p wanix-fs --features native-http`, `node --test tests/*.test.mjs`, `cargo run -p wanix-cli -- accept all`, `cargo run -p wanix-cli -- accept native-tcp`, `cargo build -p wanix-web --target wasm32-unknown-unknown`, `wasm-pack build crates/wanix-web --target web --out-dir ../../target/wanix-web-pkg --dev`, and Playwright smoke against `tests/browser-smoke.html`.
 - Updated local `../wanix` to upstream `origin/main` at `2feaf3f` and recorded the accepted/rejected delta in `docs/audits/upstream-catch-up-matrix.json`.
 - Added task export storage and `#task/<id>/export` exposure, plus runtime helpers for installing task exports.
 - Added namespace bind rendering and `#task/<id>/binds` introspection with deterministic output.

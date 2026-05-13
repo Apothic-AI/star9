@@ -18,6 +18,8 @@ export * from "./worker-runtime.js";
 export * from "./storage-file-system.js";
 export * from "./storage-web.js";
 export * from "./storage-js-value.js";
+export * from "./storage-starfs.js";
+export * from "./storage-p9.js";
 export * from "./terminal.js";
 
 function defineElement(name, ctor) {

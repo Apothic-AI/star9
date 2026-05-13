@@ -8,6 +8,7 @@ import {
     createWanixP9NamespaceMount,
     serveWanixP9FramePort,
 } from "../crates/wanix-web/js/p9-port.js";
+import { createStorageP9FramePort } from "../crates/wanix-web/js/storage-p9.js";
 
 test("serveWanixP9FramePort handles binary request frames and posts binary responses", {
     concurrency: false,
@@ -332,6 +333,202 @@ test("WanixP9NamespaceMount reads, writes, and lists over MessagePort 9P", {
     );
 });
 
+test("createStorageP9FramePort exports async storage adapters as 9P mounts", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const adapter = new MemoryStorageAdapter({
+        "hello.txt": encoder.encode("hello"),
+    });
+    const exported = createStorageP9FramePort(adapter);
+    t.after(() => {
+        exported.server.close();
+        exported.port.close();
+    });
+
+    const mount = await createWanixP9NamespaceMount(exported.port);
+    t.after(() => mount.close());
+
+    assert.equal(await mount.readText("hello.txt"), "hello");
+    await mount.mkdir("docs");
+    await mount.writeText("docs/created.txt", "created");
+    assert.equal(await mount.readText("docs/created.txt"), "created");
+    assert.deepEqual(
+        (await mount.readDir("docs")).map((entry) => entry.name),
+        ["created.txt"],
+    );
+    await mount.remove("docs/created.txt");
+    await assert.rejects(
+        () => mount.readText("docs/created.txt"),
+        /remote 9P (?:error 2|path not found)/,
+    );
+});
+
+test("storage 9P exports large writes and complete directory chunks", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const adapter = new MemoryStorageAdapter();
+    const exported = createStorageP9FramePort(adapter, { msize: 192 });
+    t.after(() => {
+        exported.server.close();
+        exported.port.close();
+    });
+
+    const mount = await createWanixP9NamespaceMount(exported.port);
+    t.after(() => mount.close());
+
+    const payload = "x".repeat(130_000);
+    await mount.writeText("large.txt", payload);
+    assert.equal(await mount.readText("large.txt"), payload);
+
+    await mount.mkdir("many");
+    for (let index = 0; index < 48; index += 1) {
+        await mount.writeText(`many/entry-${String(index).padStart(2, "0")}-long-name.txt`, String(index));
+    }
+    const names = (await mount.readDir("many")).map((entry) => entry.name);
+    assert.equal(names.length, 48);
+    assert.equal(names[0], "entry-00-long-name.txt");
+    assert.equal(names.at(-1), "entry-47-long-name.txt");
+});
+
+test("storage 9P server aborts pending adapter work on Tflush and rejects malformed frames", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const adapter = new SlowReadStorageAdapter({
+        "slow.txt": encoder.encode("slow-data"),
+    });
+    const exported = createStorageP9FramePort(adapter);
+    t.after(() => {
+        exported.server.close();
+        exported.port.close();
+    });
+
+    const errors = [];
+    const client = createWanixP9FrameClient(exported.port);
+    client.onError((error) => errors.push(error));
+    t.after(() => client.close());
+
+    await client.request(requestFrame(100, 1, (out) => {
+        out.u32(4096);
+        out.string("9P2000.L");
+    }));
+    await client.request(requestFrame(104, 2, (out) => {
+        out.u32(1);
+        out.u32(0xffffffff);
+        out.string("wanix");
+        out.string("");
+        out.u32(0);
+    }));
+    await client.request(requestFrame(110, 3, (out) => {
+        out.u32(1);
+        out.u32(2);
+        out.u16(1);
+        out.string("slow.txt");
+    }));
+
+    const controller = new AbortController();
+    const pending = client.request(requestFrame(116, 4, (out) => {
+        out.u32(2);
+        out.u64(0);
+        out.u32(8);
+    }), {
+        signal: controller.signal,
+    });
+    await adapter.waitForRead();
+    assert.equal(adapter.lastSignal.aborted, false);
+
+    controller.abort(new Error("cancel storage read"));
+    await assert.rejects(pending, /cancel storage read/);
+    assert.equal(adapter.lastSignal.aborted, true);
+    adapter.releaseRead();
+    await flushTasks();
+    assert.deepEqual(errors, []);
+
+    const responses = [];
+    exported.port.addEventListener("message", (event) => responses.push(event.data));
+    exported.port.start();
+    const malformed = p9Frame(100, 99);
+    malformed[0] = 99;
+    exported.port.postMessage(malformed);
+    assert.equal(responses.length, 1);
+    assert.equal(responses[0][4], 7);
+    assert.equal(tagOf(responses[0]), 0xffff);
+
+    exported.port.postMessage("not-binary");
+    assert.equal(responses.length, 2);
+    assert.equal(responses[1][4], 7);
+    assert.equal(tagOf(responses[1]), 0xffff);
+});
+
+test("wanix import responder enforces origins and supports concurrent imported mounts", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const target = new FakeWindowTarget();
+    const servedServers = [];
+    const responder = await attachWanixImportResponder(target, {
+        handle9pFrame(frame) {
+            return p9Frame(frame[4] + 1, tagOf(frame), [tagOf(frame) & 0xff]);
+        },
+    }, {
+        allowOrigins: ["https://allowed.example"],
+        onrequest({ server }) {
+            servedServers.push(server);
+        },
+    });
+    t.after(() => responder.close());
+
+    const denied = new MessageChannel();
+    const deniedTransfers = [];
+    denied.port1.addEventListener("message", (event) => deniedTransfers.push(event.data));
+    denied.port1.start();
+    target.dispatchMessage({
+        request: "wanix-import",
+        responder: denied.port2,
+    }, {
+        origin: "https://denied.example",
+    });
+    assert.equal(deniedTransfers.length, 0);
+
+    const [first, second] = [new MessageChannel(), new MessageChannel()];
+    const imported = [];
+    for (const channel of [first, second]) {
+        channel.port1.addEventListener("message", (event) => imported.push(event.data));
+        channel.port1.start();
+        target.dispatchMessage({
+            request: "wanix-import",
+            responder: channel.port2,
+        }, {
+            origin: "https://allowed.example",
+        });
+    }
+
+    assert.equal(imported.length, 2);
+    const responses = [];
+    for (const [index, port] of imported.entries()) {
+        port.addEventListener("message", (event) => responses.push({ index, frame: event.data }));
+        port.start();
+        port.postMessage(p9Frame(110, 20 + index, [1, index]));
+    }
+
+    assert.equal(responses.length, 2);
+    assert.deepEqual(responses.map(({ frame }) => frame[4]), [111, 111]);
+    assert.deepEqual(responses.map(({ frame }) => tagOf(frame)), [20, 21]);
+    responder.close();
+    assert.equal(servedServers.length, 2);
+    assert.equal(servedServers.every((server) => server.closed), true);
+});
+
 function p9Frame(type, tag, payload = []) {
     const frame = new Uint8Array(7 + payload.length);
     const size = frame.byteLength;
@@ -344,6 +541,12 @@ function p9Frame(type, tag, payload = []) {
     frame[6] = (tag >> 8) & 0xff;
     frame.set(payload, 7);
     return frame;
+}
+
+function requestFrame(type, tag, buildBody) {
+    const out = new Writer();
+    buildBody?.(out);
+    return p9Frame(type, tag, out.bytes());
 }
 
 const encoder = new TextEncoder();
@@ -473,6 +676,131 @@ class FakeNinePServer {
     }
 }
 
+class MemoryStorageAdapter {
+    constructor(files = {}) {
+        this.files = new Map(Object.entries(files));
+        this.dirs = new Set(["."]);
+        for (const path of this.files.keys()) {
+            let current = ".";
+            for (const part of path.split("/").slice(0, -1)) {
+                current = current === "." ? part : `${current}/${part}`;
+                this.dirs.add(current);
+            }
+        }
+    }
+
+    async stat(path = ".") {
+        const normalized = clean(path);
+        if (this.dirs.has(normalized)) {
+            return { name: base(normalized), kind: "dir", type: "dir", size: 0 };
+        }
+        const file = this.files.get(normalized);
+        if (!file) {
+            throw storageError("ENOENT", `Path does not exist: ${normalized}`);
+        }
+        return { name: base(normalized), kind: "file", type: "file", size: file.byteLength };
+    }
+
+    async readFile(path) {
+        const normalized = clean(path);
+        const file = this.files.get(normalized);
+        if (!file) {
+            throw storageError("ENOENT", `Path does not exist: ${normalized}`);
+        }
+        return file.slice();
+    }
+
+    async writeFile(path, bytes) {
+        const normalized = clean(path);
+        const parent = parentPath(normalized);
+        if (!this.dirs.has(parent)) {
+            throw storageError("ENOENT", `Parent does not exist: ${parent}`);
+        }
+        this.files.set(normalized, new Uint8Array(bytes));
+    }
+
+    async readText(path) {
+        return decoder.decode(await this.readFile(path));
+    }
+
+    async writeText(path, text) {
+        await this.writeFile(path, encoder.encode(String(text)));
+    }
+
+    async readDir(path = ".") {
+        const normalized = clean(path);
+        if (!this.dirs.has(normalized)) {
+            throw storageError("ENOENT", `Directory does not exist: ${normalized}`);
+        }
+        const prefix = normalized === "." ? "" : `${normalized}/`;
+        const names = new Map();
+        for (const dir of this.dirs) {
+            if (dir === normalized || !dir.startsWith(prefix)) continue;
+            const rest = dir.slice(prefix.length);
+            const [name, ...tail] = rest.split("/");
+            if (name && tail.length === 0) names.set(name, "dir");
+        }
+        for (const file of this.files.keys()) {
+            if (!file.startsWith(prefix)) continue;
+            const rest = file.slice(prefix.length);
+            const [name, ...tail] = rest.split("/");
+            if (name && tail.length === 0) names.set(name, "file");
+        }
+        return [...names.entries()]
+            .sort((left, right) => left[0].localeCompare(right[0]))
+            .map(([name, kind]) => ({ name, kind, type: kind, size: 0 }));
+    }
+
+    async mkdir(path) {
+        const normalized = clean(path);
+        const parent = parentPath(normalized);
+        if (!this.dirs.has(parent)) {
+            throw storageError("ENOENT", `Parent does not exist: ${parent}`);
+        }
+        this.dirs.add(normalized);
+    }
+
+    async remove(path) {
+        const normalized = clean(path);
+        if (this.files.delete(normalized)) {
+            return;
+        }
+        if (this.dirs.delete(normalized)) {
+            return;
+        }
+        throw storageError("ENOENT", `Path does not exist: ${normalized}`);
+    }
+}
+
+class SlowReadStorageAdapter extends MemoryStorageAdapter {
+    constructor(files = {}) {
+        super(files);
+        this.lastSignal = null;
+        this._releaseRead = null;
+        this._readStarted = null;
+        this._readStartedPromise = new Promise((resolve) => {
+            this._readStarted = resolve;
+        });
+    }
+
+    async readFile(path, options = {}) {
+        this.lastSignal = options.signal || null;
+        this._readStarted();
+        await new Promise((resolve) => {
+            this._releaseRead = resolve;
+        });
+        return super.readFile(path);
+    }
+
+    waitForRead() {
+        return this._readStartedPromise;
+    }
+
+    releaseRead() {
+        this._releaseRead?.();
+    }
+}
+
 class Writer {
     constructor() {
         this._bytes = [];
@@ -557,6 +885,36 @@ function qid() {
 
 function join(parent = ".", name = ".") {
     return parent === "." ? name : `${parent}/${name}`;
+}
+
+function clean(path = ".") {
+    const value = String(path || ".");
+    const parts = [];
+    for (const part of value.split("/")) {
+        if (!part || part === ".") continue;
+        if (part === "..") throw storageError("EINVAL", "path traversal");
+        parts.push(part);
+    }
+    return parts.length === 0 ? "." : parts.join("/");
+}
+
+function base(path = ".") {
+    const normalized = clean(path);
+    return normalized === "." ? "." : normalized.slice(normalized.lastIndexOf("/") + 1);
+}
+
+function parentPath(path = ".") {
+    const normalized = clean(path);
+    if (normalized === "." || !normalized.includes("/")) {
+        return ".";
+    }
+    return normalized.slice(0, normalized.lastIndexOf("/"));
+}
+
+function storageError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
 }
 
 function tagOf(frame) {
@@ -669,9 +1027,9 @@ class FakeWindowTarget {
         this._listeners.get(type)?.delete(listener);
     }
 
-    dispatchMessage(data) {
+    dispatchMessage(data, options = {}) {
         for (const listener of this._listeners.get("message") ?? []) {
-            listener({ data });
+            listener({ data, ...options });
         }
     }
 }

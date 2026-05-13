@@ -8,7 +8,7 @@ use wanix_vfs::{BindMode, Namespace};
 use crate::{
     CacheStorageDescriptor, DomStorageDescriptor, DownloadStorageDescriptor,
     FileSystemAccessStorageDescriptor, JsValueStorageDescriptor, OpfsStorageDescriptor,
-    WebStorageDescriptor, WorkerStorageDescriptor,
+    StarFsStorageDescriptor, WebStorageDescriptor, WorkerStorageDescriptor,
 };
 
 #[derive(Clone, Default)]
@@ -25,6 +25,7 @@ struct BrowserStorageRegistryState {
     downloads: BTreeMap<DownloadBucketKey, FsRef>,
     workers: BTreeMap<String, FsRef>,
     dom: BTreeMap<DomStorageKey, FsRef>,
+    starfs: BTreeMap<String, FsRef>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -217,6 +218,20 @@ impl BrowserStorageRegistry {
         Ok(fs)
     }
 
+    pub fn resolve_starfs(&self, descriptor: &StarFsStorageDescriptor) -> Result<FsRef> {
+        descriptor.validate()?;
+        let key = descriptor
+            .id
+            .clone()
+            .or_else(|| descriptor.root.clone())
+            .unwrap_or_else(|| "default".to_string());
+        let fs = {
+            let mut state = self.state.write().unwrap();
+            get_or_insert_memfs(&mut state.starfs, key)
+        };
+        rooted_view(fs, descriptor.root.as_deref())
+    }
+
     pub fn resolve(&self, descriptor: &WebStorageDescriptor) -> Result<FsRef> {
         descriptor.validate()?;
         match descriptor {
@@ -229,6 +244,7 @@ impl BrowserStorageRegistry {
             WebStorageDescriptor::Download(descriptor) => self.resolve_download(descriptor),
             WebStorageDescriptor::Worker(descriptor) => self.resolve_worker(descriptor),
             WebStorageDescriptor::Dom(descriptor) => self.resolve_dom(descriptor),
+            WebStorageDescriptor::Starfs(descriptor) => self.resolve_starfs(descriptor),
         }
     }
 }

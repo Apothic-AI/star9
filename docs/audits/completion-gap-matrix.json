@@ -81,6 +81,7 @@
       "real module worker lifecycle through wanix-system",
       "dynamic JS runner execution",
       "direct WASI-style .wasm instantiation in browser/worker JS",
+      "Go-compatible JS/WASM runner fixture through the same worker lifecycle without Go build dependencies",
       "stdout task message routing",
       "exit task message routing",
       "worker port open and handoff"
@@ -103,7 +104,7 @@
     "network": {
       "implemented": ["deterministic Plan 9-style listener/dial/accept/data/hangup resources"],
       "classification": "native/browser real transports are opt-in host integration; deterministic model is default conformance",
-      "evidence": ["cargo run -p wanix-cli -- accept devices"]
+      "evidence": ["cargo run -p wanix-cli -- accept devices", "cargo run -p wanix-cli -- accept native-tcp"]
     }
   },
   "backends": {
@@ -116,7 +117,7 @@
       "live": "environment-gated tests documented in docs/LIVE_TESTS.md"
     },
     "browser_storage": {
-      "implemented": ["OPFS", "File System Access", "Cache API", "DOM", "download", "JS value", "worker-backed adapters", "browser debounce scheduler"],
+      "implemented": ["OPFS", "File System Access", "Cache API", "DOM", "download", "JS value", "worker-backed adapters", "browser debounce scheduler", "storage-to-9P export bridge", "OPFS-backed task async mounts", "StarFS optional mount backend"],
       "evidence": ["tests/browser-storage-adapters.test.mjs", "tests/browser-mounts.test.mjs", "tests/browser-smoke.html"]
     }
   },
@@ -127,9 +128,24 @@
       "client AbortSignal to Tflush",
       "server async Tflush cancellation for Promise-backed work",
       "late reply suppression",
-      "Rlerror replies for valid requests whose facade fails"
+      "Rlerror replies for valid requests whose facade fails",
+      "async storage adapter export over MessagePort 9P",
+      "complete-dirent browser directory chunks",
+      "origin-gated concurrent import responders",
+      "malformed storage frame rejection"
     ],
     "evidence": ["tests/browser-p9-port.test.mjs", "tests/browser-smoke.html"]
+  },
+  "storage_direction": {
+    "default_browser_persistence": "raw OPFS through existing async storage adapters",
+    "starfs_role": "optional/additional OPFS-backed mount for durable/auditable workspaces; not a replacement for raw OPFS or existing storage mounts",
+    "starfs_reference": "/home/bitnom/Code/apothic-monorepo/libs/rust/starfs",
+    "implementation_shape": "browser-side StarFS-compatible adapter over a backing storage adapter, exported through the storage 9P bridge when task/namespace handoff is required",
+    "explicit_boundaries": [
+      "The checked-in StarFS adapter preserves filesystem, KV, snapshot-manifest, and tool-call-log surfaces but does not vendor the external StarFS SDK into the default build.",
+      "Full StarFS inode, hard-link, xattr, and PrimaDB/SQLite semantics remain an optional future SDK-backed integration boundary.",
+      "Real OPFS mounts are browser-side async overlays and 9P exports; synchronous Rust Wasmi task namespaces use descriptor-backed stand-ins unless a browser worker proxy is mounted over 9P."
+    ]
   },
   "source_classifications": [
     { "path": "crates/wanix-core/src/lib.rs", "match": "operation not supported", "classification": "core error variant" },
@@ -149,6 +165,8 @@
     { "path": "crates/wanix-web/js/storage-file-system.js", "match": "Unsupported browser storage backend", "classification": "browser storage descriptor validation boundary" },
     { "path": "crates/wanix-web/js/storage-file-system.js", "match": "unsupported(", "classification": "browser capability detection boundary" },
     { "path": "crates/wanix-web/js/storage-js-value.js", "match": "Unsupported", "classification": "JS-value storage handle validation boundary" },
+    { "path": "crates/wanix-web/js/storage-p9.js", "match": "unsupported 9P version", "classification": "storage 9P protocol negotiation boundary" },
+    { "path": "crates/wanix-web/js/storage-p9.js", "match": "unsupported storage 9P request type", "classification": "storage 9P request validation boundary" },
     { "path": "crates/wanix-web/js/storage-web.js", "match": "Unsupported DOM target type", "classification": "DOM storage target validation boundary" },
     { "path": "crates/wanix-web/js/worker-runtime.js", "match": "Unsupported worker runtime message", "classification": "worker runtime envelope validation boundary" },
     { "path": "crates/wanix-web/js/storage-web.js", "match": "Browser anchor downloads are not supported", "classification": "browser download capability boundary" }
