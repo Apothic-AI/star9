@@ -1822,6 +1822,12 @@ struct R2FsInner {
 pub trait ObjectStore: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<Object>>;
     fn put(&self, key: &str, object: Object) -> Result<()>;
+    fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<&Object>,
+        new: Option<Object>,
+    ) -> Result<bool>;
     fn delete(&self, key: &str) -> Result<()>;
     fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Object)>>;
 }
@@ -1865,6 +1871,27 @@ impl ObjectStore for InMemoryObjectStore {
         Ok(())
     }
 
+    fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<&Object>,
+        new: Option<Object>,
+    ) -> Result<bool> {
+        let mut objects = self.objects.write().unwrap();
+        if objects.get(key) != expected {
+            return Ok(false);
+        }
+        match new {
+            Some(object) => {
+                objects.insert(key.to_string(), object);
+            }
+            None => {
+                objects.remove(key);
+            }
+        }
+        Ok(true)
+    }
+
     fn delete(&self, key: &str) -> Result<()> {
         self.objects.write().unwrap().remove(key);
         Ok(())
@@ -1883,6 +1910,8 @@ impl ObjectStore for InMemoryObjectStore {
 }
 
 impl R2Fs {
+    const COMPARE_AND_SWAP_RETRIES: usize = 3;
+
     pub fn new(store: Arc<dyn ObjectStore>) -> Self {
         Self::with_base_path(store, "")
     }
@@ -1938,17 +1967,8 @@ impl R2Fs {
     }
 
     fn put_directory_object(&self, name: &str, entries: Vec<(String, FileMode)>) -> Result<()> {
-        self.store().put(
-            &self.key(name),
-            Object::new(
-                r2_metadata(
-                    "application/x-directory",
-                    FileMode::DIR | FileMode::from_perm(0o755),
-                    0,
-                ),
-                format_r2_listing(entries).into_bytes(),
-            ),
-        )
+        self.store()
+            .put(&self.key(name), directory_listing_object(entries))
     }
 
     fn update_parent_listing(&self, name: &str, child_mode: Option<FileMode>) -> Result<()> {
@@ -1957,35 +1977,30 @@ impl R2Fs {
         if child == "." || child.is_empty() {
             return Ok(());
         }
-        let parent_object = match self.store().get(&self.key(&parent))? {
-            Some(object) => object,
-            None if parent == "." => Object::new(
-                r2_metadata(
-                    "application/x-directory",
-                    FileMode::DIR | FileMode::from_perm(0o755),
-                    0,
-                ),
-                Vec::new(),
-            ),
-            None => return Err(Error::path("r2fs", parent, ErrorKind::NotFound)),
-        };
-        let mut entries = parse_r2_listing(&parent_object.body);
-        if let Some(mode) = child_mode {
-            entries.insert(child, mode);
-        } else {
-            entries.remove(&child);
+        let parent_key = self.key(&parent);
+        for _ in 0..Self::COMPARE_AND_SWAP_RETRIES {
+            let parent_object = match self.store().get(&parent_key)? {
+                Some(object) => object,
+                None if parent == "." => directory_listing_object(Vec::new()),
+                None => return Err(Error::path("r2fs", parent, ErrorKind::NotFound)),
+            };
+            let mut entries = parse_r2_listing(&parent_object.body);
+            if let Some(mode) = child_mode {
+                entries.insert(child.clone(), mode);
+            } else {
+                entries.remove(&child);
+            }
+            let next = directory_listing_object(entries.into_iter().collect());
+            if self
+                .store()
+                .compare_and_swap(&parent_key, Some(&parent_object), Some(next))?
+            {
+                return Ok(());
+            }
         }
-        self.store().put(
-            &self.key(&parent),
-            Object::new(
-                r2_metadata(
-                    "application/x-directory",
-                    FileMode::DIR | FileMode::from_perm(0o755),
-                    0,
-                ),
-                format_r2_listing(entries.into_iter().collect()).into_bytes(),
-            ),
-        )
+        Err(Error::Message(format!(
+            "r2fs compare-and-swap conflict for {parent}"
+        )))
     }
 
     fn parse_object(&self, name: &str, object: Object) -> R2Node {
@@ -2293,6 +2308,17 @@ fn format_r2_listing(entries: Vec<(String, FileMode)>) -> String {
         .into_iter()
         .map(|(name, mode)| format!("{} {}\n", name, format_http_mode(mode)))
         .collect()
+}
+
+fn directory_listing_object(entries: Vec<(String, FileMode)>) -> Object {
+    Object::new(
+        r2_metadata(
+            "application/x-directory",
+            FileMode::DIR | FileMode::from_perm(0o755),
+            0,
+        ),
+        format_r2_listing(entries).into_bytes(),
+    )
 }
 
 #[derive(Clone)]
@@ -3452,5 +3478,192 @@ mod tests {
         assert!(objects.contains_key("/tenant/root/data"));
         assert!(objects.contains_key("/tenant/root/data/file"));
         assert!(!objects.contains_key("/data/file"));
+    }
+
+    struct ConflictOnceObjectStore {
+        objects: RwLock<BTreeMap<String, Object>>,
+        trigger_key: String,
+        injected: Mutex<bool>,
+    }
+
+    impl ConflictOnceObjectStore {
+        fn new(trigger_key: impl Into<String>) -> Self {
+            Self {
+                objects: RwLock::new(BTreeMap::new()),
+                trigger_key: trigger_key.into(),
+                injected: Mutex::new(false),
+            }
+        }
+
+        fn inject_external_child(objects: &mut BTreeMap<String, Object>, parent_key: &str) {
+            let sibling_key = format!("{parent_key}/peer");
+            objects.insert(
+                sibling_key,
+                Object::new(
+                    r2_metadata("application/octet-stream", FileMode::from_perm(0o644), 4),
+                    b"peer".to_vec(),
+                ),
+            );
+            objects.insert(
+                parent_key.to_string(),
+                directory_listing_object(vec![("peer".to_string(), FileMode::from_perm(0o644))]),
+            );
+        }
+    }
+
+    impl ObjectStore for ConflictOnceObjectStore {
+        fn get(&self, key: &str) -> Result<Option<Object>> {
+            Ok(self.objects.read().unwrap().get(key).cloned())
+        }
+
+        fn put(&self, key: &str, object: Object) -> Result<()> {
+            self.objects
+                .write()
+                .unwrap()
+                .insert(key.to_string(), object);
+            Ok(())
+        }
+
+        fn compare_and_swap(
+            &self,
+            key: &str,
+            expected: Option<&Object>,
+            new: Option<Object>,
+        ) -> Result<bool> {
+            let mut objects = self.objects.write().unwrap();
+            let mut injected = self.injected.lock().unwrap();
+            if !*injected && key == self.trigger_key {
+                *injected = true;
+                Self::inject_external_child(&mut objects, key);
+            }
+            if objects.get(key) != expected {
+                return Ok(false);
+            }
+            match new {
+                Some(object) => {
+                    objects.insert(key.to_string(), object);
+                }
+                None => {
+                    objects.remove(key);
+                }
+            }
+            Ok(true)
+        }
+
+        fn delete(&self, key: &str) -> Result<()> {
+            self.objects.write().unwrap().remove(key);
+            Ok(())
+        }
+
+        fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Object)>> {
+            Ok(self
+                .objects
+                .read()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.starts_with(prefix))
+                .map(|(key, object)| (key.clone(), object.clone()))
+                .collect())
+        }
+    }
+
+    struct AlwaysConflictObjectStore {
+        objects: RwLock<BTreeMap<String, Object>>,
+        trigger_key: String,
+    }
+
+    impl AlwaysConflictObjectStore {
+        fn new(trigger_key: impl Into<String>) -> Self {
+            Self {
+                objects: RwLock::new(BTreeMap::new()),
+                trigger_key: trigger_key.into(),
+            }
+        }
+    }
+
+    impl ObjectStore for AlwaysConflictObjectStore {
+        fn get(&self, key: &str) -> Result<Option<Object>> {
+            Ok(self.objects.read().unwrap().get(key).cloned())
+        }
+
+        fn put(&self, key: &str, object: Object) -> Result<()> {
+            self.objects
+                .write()
+                .unwrap()
+                .insert(key.to_string(), object);
+            Ok(())
+        }
+
+        fn compare_and_swap(
+            &self,
+            key: &str,
+            expected: Option<&Object>,
+            new: Option<Object>,
+        ) -> Result<bool> {
+            if key == self.trigger_key {
+                return Ok(false);
+            }
+            let mut objects = self.objects.write().unwrap();
+            if objects.get(key) != expected {
+                return Ok(false);
+            }
+            match new {
+                Some(object) => {
+                    objects.insert(key.to_string(), object);
+                }
+                None => {
+                    objects.remove(key);
+                }
+            }
+            Ok(true)
+        }
+
+        fn delete(&self, key: &str) -> Result<()> {
+            self.objects.write().unwrap().remove(key);
+            Ok(())
+        }
+
+        fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Object)>> {
+            Ok(self
+                .objects
+                .read()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.starts_with(prefix))
+                .map(|(key, object)| (key.clone(), object.clone()))
+                .collect())
+        }
+    }
+
+    #[test]
+    fn r2fs_retries_parent_listing_compare_and_swap_conflicts() {
+        let store = Arc::new(ConflictOnceObjectStore::new("/dir"));
+        let fs = R2Fs::new(store);
+
+        fs.mkdir("dir", FileMode::from_perm(0o755)).unwrap();
+        write_file(&fs, "dir/file", b"value", FileMode::from_perm(0o644)).unwrap();
+
+        assert_eq!(read_file(&fs, "dir/file").unwrap(), b"value");
+        assert_eq!(read_file(&fs, "dir/peer").unwrap(), b"peer");
+        assert_eq!(
+            read_dir(&fs, "dir")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            vec!["file", "peer"]
+        );
+    }
+
+    #[test]
+    fn r2fs_reports_parent_listing_compare_and_swap_conflicts() {
+        let store = Arc::new(AlwaysConflictObjectStore::new("/dir"));
+        let fs = R2Fs::new(store);
+
+        fs.mkdir("dir", FileMode::from_perm(0o755)).unwrap();
+        let err = fs
+            .update_parent_listing("dir/file", Some(FileMode::from_perm(0o644)))
+            .unwrap_err();
+        assert_eq!(err.to_string(), "r2fs compare-and-swap conflict for dir");
     }
 }
