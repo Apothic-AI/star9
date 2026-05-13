@@ -1,10 +1,11 @@
 use std::sync::Arc;
+use std::{io, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use wanix_core::{ErrorKind, FileMode, OpenFlags, Result};
-use wanix_fs::{fs_ref, open, read_dir, read_file, stat, write_file, FileSystem, MemFs};
+use wanix_fs::{fs_ref, open, read_dir, read_file, stat, write_file, FileSystem, LocalFs, MemFs};
 use wanix_protocol::{
-    p9::{LoopbackTransport, NinePClientFs, NinePServer},
+    p9::{serve_frame_stream, LoopbackTransport, NinePClientFs, NinePServer},
     runtime::{
         EnvironmentEntry, ExecutionKind, ExecutionSpec, PortDescriptor, PortHandoff,
         PortOpenRequest, RuntimeRequest, RuntimeResponse, StdioSet, WorkerHandle,
@@ -36,6 +37,10 @@ enum Command {
     },
     Stat {
         path: String,
+    },
+    ServeP9 {
+        #[arg(default_value = ".")]
+        root: PathBuf,
     },
     Accept {
         #[command(subcommand)]
@@ -81,6 +86,12 @@ fn run() -> Result<()> {
                 "size={} mode={:o} dir={} modified_ms={}",
                 stat.size, stat.mode, stat.is_dir, stat.modified_ms
             );
+        }
+        Command::ServeP9 { root } => {
+            let server = NinePServer::new(fs_ref(LocalFs::new(root)));
+            let mut stdin = io::stdin().lock();
+            let mut stdout = io::stdout().lock();
+            serve_frame_stream(&server, &mut stdin, &mut stdout)?;
         }
         Command::Accept { suite } => {
             print!("{}", render_acceptance_output(suite)?);
