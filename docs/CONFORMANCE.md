@@ -107,6 +107,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 These surfaces are represented in Rust but should continue to be expanded with differential or fixture-backed tests as behavior becomes more specific:
 
+- The completion sprint in `PLAN.md` is the authoritative checklist for closing these remaining oracle areas. Each item below should either gain direct Rust/Node/Playwright/CLI/live conformance or be reclassified as an explicit host capability boundary with tests and docs.
 - HTTP filesystem remote metadata semantics beyond the currently covered cache validators, Wanix metadata fields, and conditional GET/HEAD behavior.
 - `SyncFs` backend-specific transport scheduling semantics beyond reusable tar patch application and the browser async-target debounce scheduler.
 - HTTP filesystem broader live-service behavior against real servers.

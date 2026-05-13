@@ -2,6 +2,7 @@
 
 ## 2026-05-13
 
+- Captured the final completion sprint plan in `PLAN.md`, covering WASI preview1 audit and compiled workloads, real browser JS/WASM execution, terminal/VM/network parity, live backend and browser storage hardening, true async 9P cancellation, and the final unsupported/placeholder cleanup gate.
 - Added high-level worker lifecycle methods to the `WanixSystem` native/wasm facade for worker spawn/start, port open/handoff, stdout recording, and exit recording through `RuntimeProtocolHost`.
 - Added `SystemElement.startBrowserWorker(...)`, which spawns a real browser `Worker`, transfers the runtime port, sends the JS/WASM execution bootstrap, records task messages back into the Rust runtime, opens/hands off ports, and exposes deterministic controller cleanup.
 - Added a browser module-worker fixture and expanded `tests/browser-smoke.html` so Playwright now starts a real worker-backed JS/WASM task, observes a runner message, records exit status through `#task/<id>/exit`, opens and hands off a worker port, and cleans up the host.

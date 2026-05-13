@@ -15,6 +15,75 @@ Immediate protocol/runtime tranche:
 - Deepen remaining host-specific device behavior, especially real terminal screen protocol, VM execution, worker integration, and native/browser TCP adapters.
 - Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
 
+## Completion Sprint Plan
+
+This sprint is the final port-completion run. The work should proceed continuously through all gates below until the Rust implementation is either complete or every intentionally unported surface is classified in documentation with a test proving the user-facing behavior.
+
+### 1. Evidence Inventory And Gap Matrix
+
+- Build a machine-readable audit of WASI preview1 imports implemented by `WasmiWasiHandler`, imports still missing, imports intentionally unsupported, and the exact errno behavior for unsupported host capabilities.
+- Audit direct JS/WASM execution paths, browser worker bootstrap paths, task fd/namespace handoff, browser custom elements, and current smoke fixtures against the reference `../wanix` behavior that still matters.
+- Audit device roots for terminal, VM, and network files against the expected Plan 9-style file protocol: stable files, control commands, state transitions, blocking or async behavior, close semantics, resize/winch behavior, and error behavior.
+- Audit backend surfaces for HTTP, S3/R2, browser storage, SyncFs scheduling, cache validators, conditional requests, auth errors, pagination, object metadata, conflict handling, and capability detection.
+- Audit all `unsupported`, `not supported`, `placeholder`, `TODO`, `FIXME`, `todo!`, and `unimplemented!` sites. Each site must be assigned to one of: remove by implementation, keep as a host capability boundary, or keep as an explicit spec-level unsupported behavior with direct tests.
+- Gate: add or update a checked-in audit fixture or docs table mapping every remaining gap to a tranche below, with no unclassified placeholders.
+
+### 2. WASI Preview1 Completion
+
+- Complete the preview1 import matrix for fd, path, clock, random, args/env, process, polling, advisory, sync, file metadata, and socket-like imports.
+- Replace broad unsupported behavior with precise host behavior where Wanix can model it over task namespaces and fd handles.
+- Implement socket/listener behavior once the network device adapter contract is in place: create/listen/accept/connect/read/write/shutdown should route through deterministic Wanix network resources by default and native/browser adapters when explicitly enabled.
+- Add representative compiled fixtures, not only inline WAT, covering file tree traversal, stdio, args/env, clocks/random, fd renumbering, links/symlinks/xattrs where applicable, polling, network sockets, nonzero exits, traps, and invalid syscall/error paths.
+- Ensure WASI workloads run through the normal Wanix task lifecycle: namespace clone, cwd/preopens, fd table installation, stdio descriptors, task messages, exit state, cleanup, and deterministic status reporting.
+- Gate: Rust tests and CLI acceptance run compiled WASI workloads through Wanix task paths without Go shims, and the syscall matrix has no unclassified preview1 imports.
+
+### 3. Direct Browser JS/WASM Execution
+
+- Move browser execution beyond bootstrap-only fixtures by running real module workers that instantiate representative JS and WebAssembly workloads through Wanix runtime ports.
+- Provide a browser-side WASI import object backed by Wanix runtime requests for namespace and fd operations, with stdio and task messages routed through the same task fd table used by native execution.
+- Support namespace/fd/stdio handoff into browser workers, explicit task start/exit/error messages, port handoff, structured worker cleanup, and deterministic propagation of worker failures into `#task/<id>/exit`.
+- Keep direct `.wasm` behavior explicit: either implement direct browser WASM execution through the Wanix WASI import object or retain a tested, documented unsupported boundary if only JS-runner execution is meant to be public.
+- Expand browser smoke and Node tests to cover successful JS workload, successful WASM workload, stderr/stdout routing, namespace read/write, worker error, port transfer, cancellation/termination, and cleanup.
+- Gate: Playwright smoke starts real browser JS and WASM workloads through Wanix task paths and observes fd/stdout/task/exit/port behavior without test-only shortcuts.
+
+### 4. Terminal, VM, And Network Device Parity
+
+- Terminal: finish browser element protocol parity on top of the retained `data`, `program`, `screen`, `resize`, `winch`, `state`, and `size` files. Cover CRLF normalization, resize event delivery, screen retention, clear/reset, close behavior, and browser element integration.
+- VM: introduce a provider contract for VM lifecycle operations and keep the deterministic provider as the default offline implementation. Implement enough real provider plumbing for examples to start, observe state, exchange console/control data, stop, reset, and report errors through stable device files.
+- Network: split the deterministic Plan 9-style model from optional real adapters. Implement native TCP listener/dialer behavior and a browser transport boundary where browser capability exists, while preserving offline deterministic tests as the default.
+- Add CLI examples and acceptance paths for terminal, VM, and TCP behavior that exercise the same files users interact with.
+- Gate: terminal browser smoke, VM lifecycle acceptance, deterministic network tests, native opt-in TCP tests, and browser transport smoke all pass.
+
+### 5. Live Backend And Browser Storage Hardening
+
+- HTTP: deepen remote metadata semantics, validators, range/conditional behavior where needed, multipart metadata, mutation preconditions, cache invalidation, transport errors, redirect/auth handling where supported, and opt-in live-server tests.
+- SyncFs: connect browser timer scheduling and backend-specific scheduling semantics to real async storage targets, including explicit flush, close, retry-after-error, and no-retry-spin behavior.
+- S3/R2: add opt-in live bucket coverage for GET/PUT/DELETE/list, pagination, metadata, CAS/conflict behavior, auth failure, SigV4 edge cases, and R2/S3 service differences. Keep default tests offline.
+- Browser storage: expand real capability-detected Playwright smoke for OPFS, File System Access where automatable, Cache API, JS value, DOM, download, and worker-backed adapters. Cover read/write/list/stat/mkdir/remove, failure modes, and cleanup.
+- Gate: offline default tests remain deterministic, live tests are environment-gated and documented, and browser smoke covers real host storage capabilities without test-only storage shortcuts.
+
+### 6. True Async 9P Cancellation And Transport Parity
+
+- Replace synchronous-only `Tflush` acknowledgement with an async operation registry for 9P server work that can cancel in-flight reads, writes, walks, directory reads, backend calls, and browser transport requests where the underlying host supports cancellation.
+- Ensure `Tflush` removes or aborts pending work by old tag, returns `Rflush`, prevents late replies from completing cancelled client requests, and preserves fid/session state exactly where the protocol requires it.
+- Add stress coverage for partial frames, malformed sizes, response ordering, duplicate tags, unknown tags, concurrent operations, cancellation races, remote errors, close/unmount while pending, and browser `MessagePort` transfer edge cases.
+- Extend native import/serve hooks beyond stdin/stdout where examples need it, while keeping Rust-owned stream framing as the common boundary.
+- Gate: Rust, Node, and Playwright conformance prove cancellation, late replies, remote errors, and browser/native transport stress behavior.
+
+### 7. Examples, CLI, Distribution, And Docs
+
+- Port or replace representative namespace, bind, import/export, terminal, VM, TCP, WASI REPL, JS/WASM REPL, and workbench-style examples with Rust-backed artifacts.
+- Expand CLI acceptance around native 9P import/serve, device protocols, worker protocol, browser artifact generation, live-test opt-ins, and distribution outputs.
+- Update README, architecture, conformance, and any site/example docs to describe Rust as the primary implementation, the supported host capability boundaries, and how to run offline, browser, and live backend verification.
+- Gate: every major public claim has a test, smoke, fixture, or documented opt-in verification path.
+
+### 8. Final Cleanup And Release Gate
+
+- Remove obsolete scaffolding and temporary adapters that were only useful during porting.
+- Resolve the unsupported audit: implemented surfaces should no longer say unsupported, host capability boundaries should produce precise errors, and spec-level unsupported behavior should be covered by tests and docs.
+- Run final formatting, linting, Rust tests, Node tests, wasm build, wasm-pack build, Playwright smoke, CLI acceptance, native opt-in tests, and live opt-in tests when credentials/capabilities are present.
+- Gate: the working tree is clean, docs and progress are current, all default verification passes offline, and opt-in live/browser/native coverage is documented with exact commands.
+
 ## Planning Constraints
 
 - Do not attach scheduling/time estimate assumptions to planning docs.
