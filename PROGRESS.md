@@ -2,6 +2,12 @@
 
 ## 2026-05-13
 
+- Added browser-side `BrowserJsWasmWorkerHost` helpers in `crates/wanix-web/js/js-wasm-worker-host.js`, layering stable JS/WASM execution bootstrap messages over the existing Worker host runtime port transfer without Go shims.
+- Added deterministic Node coverage for JS/WASM bootstrap normalization, runtime port transfer, task-message observation, wrapped host startup, and cleanup.
+- Added a native-only `DebouncedSyncScheduler::start_background` path with a shutdown handle, Condvar wakeups, debounce preservation across repeated requests, no retry spin after failures, and clean shutdown behavior.
+- Added focused SyncFs scheduler tests for background debounce, pending-work shutdown, and retry only after a new request following a failed background sync.
+- Added an opt-in `native-http` feature in `wanix-fs` plus a Rust-native `NativeHttpTransport` over `ureq` for `HttpFs`, preserving request method/URL/headers/body, surfacing HTTP status responses including 404, and mapping transport failures into Wanix errors without affecting `wasm32` builds.
+- Added feature-gated loopback `TcpListener` tests covering native transport request/response round trips, GET response header/body preservation, and `HttpFs` not-found mapping for HTTP 404 without live network services.
 - Added a Wasmi-backed `WasmiWasiHandler` for WASI preview1 execution through the Rust `ExecutionRegistry`, including kind-wide execution handler registration, task namespace module loading, args/env/cwd propagation, preopened cwd, fd read/write/seek/close/stat behavior, path open/stat behavior, deterministic random/clock imports, and proc-exit mapping.
 - Added WAT-based runtime tests proving WASI modules can read and write Wanix namespace files, write through task stdio fds, observe args/env counts, and return exit status without Go or browser shims.
 - Replaced test-only runtime protocol inspection helpers with public immutable snapshot APIs for workers, ports, handoff targets, and task messages.

@@ -7,6 +7,7 @@ defineElement("wanix-bind", BindElement);
 defineElement("wanix-task", TaskElement);
 
 export { BindElement, SystemElement, TaskElement };
+export * from "./js-wasm-worker-host.js";
 export * from "./worker-host.js";
 export * from "./worker-runtime.js";
 export * from "./storage-file-system.js";

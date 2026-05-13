@@ -8,21 +8,21 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 
 - Plan 9-style namespaces and bind semantics.
 - Filesystem traits, helpers, metadata, paths, file handles, and open flags.
-- In-memory, local, map, union, pipe, signal, tar-compatible, metadata-cache, and initial sync filesystem surfaces.
-- HTTP filesystem protocol semantics through a Rust transport abstraction.
+- In-memory, local, map, union, pipe, signal, tar-compatible, metadata-cache, and local-first sync filesystem surfaces.
+- HTTP filesystem protocol semantics through a Rust transport abstraction, with an opt-in native blocking transport.
 - Multipart HTTP directory listing parsing and PATCH tar behavior tested through fake transports.
 - Opt-in HTTP filesystem caching with deterministic TTL tests and mutation invalidation.
 - R2-style object storage semantics through a Rust object-store abstraction.
-- Explicit metadata caching through `MetaCacheFs` and local-first sync orchestration through `SyncFs`.
+- Explicit metadata caching through `MetaCacheFs` and local-first sync orchestration through `SyncFs`, including a native background debounce scheduler.
 - Task/resource filesystem with per-task namespaces, aliases, drivers, and file descriptors.
 - Typed public file API for the Wanix JS handle operation set.
 - CBOR encode/decode helpers for the typed public API boundary.
-- Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, and `#download` surfaces.
+- Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net` surfaces.
 - Deterministic terminal, VM, and Plan 9-style network device state surfaces.
 - Rust-native 9P import/export with xattr read/list/write support.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
 - Browser Worker/MessagePort JS glue for runtime message envelopes and transferred ports.
-- Browser Worker host facade for Worker-like startup, runtime port transfer, message routing, and cleanup.
+- Browser Worker host facade for Worker-like startup, runtime port transfer, message routing, JS/WASM execution bootstrap, and cleanup.
 - Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests.
 - Wasmi-backed WASI preview1 execution over Wanix task namespaces and fd tables.
 - Native CLI acceptance commands for 9P loopback, deterministic devices, and runtime worker protocol flows.
@@ -43,7 +43,8 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 ```sh
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-node --test tests/browser-storage-adapters.test.mjs tests/browser-worker-host.test.mjs
+cargo test -p wanix-fs --features native-http
+node --test tests/browser-storage-adapters.test.mjs tests/browser-worker-host.test.mjs tests/browser-js-wasm-worker-host.test.mjs
 cargo run -p wanix-cli -- accept all
 cargo build -p wanix-web --target wasm32-unknown-unknown
 wasm-pack build crates/wanix-web --target web --out-dir ../../target/wanix-web-pkg --dev

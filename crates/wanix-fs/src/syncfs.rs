@@ -2,6 +2,11 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{
+    sync::Condvar,
+    thread::{self, JoinHandle},
+};
 
 use crate::{
     clean_path, exists, lstat, mkdir_all, parent_path, read_dir, read_file, remove_all, write_file,
@@ -62,13 +67,27 @@ pub struct SyncScheduleSnapshot {
 pub struct DebouncedSyncScheduler {
     sync: SyncFs,
     debounce: Duration,
-    state: Arc<Mutex<DebouncedSyncState>>,
+    state: Arc<DebouncedSyncStateCell>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
+struct DebouncedSyncStateCell {
+    inner: Mutex<DebouncedSyncState>,
+    #[cfg(not(target_arch = "wasm32"))]
+    wake: Condvar,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 struct DebouncedSyncState {
     requested_at: Option<SystemTime>,
     last_error: Option<String>,
+    request_serial: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    failed_request_serial: Option<u64>,
+    #[cfg(not(target_arch = "wasm32"))]
+    background_running: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    shutdown_requested: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,6 +95,12 @@ enum PullPathAction {
     DeleteLocal,
     SyncRemoteDir,
     SyncRemoteLeaf,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct DebouncedSyncBackgroundHandle {
+    scheduler: DebouncedSyncScheduler,
+    join: Option<JoinHandle<()>>,
 }
 
 impl SyncFs {
@@ -274,7 +299,7 @@ impl DebouncedSyncScheduler {
         Self {
             sync,
             debounce,
-            state: Arc::new(Mutex::new(DebouncedSyncState::default())),
+            state: Arc::new(DebouncedSyncStateCell::default()),
         }
     }
 
@@ -283,17 +308,24 @@ impl DebouncedSyncScheduler {
     }
 
     pub fn request(&self, now: SystemTime) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.inner.lock().unwrap();
         state.requested_at = Some(now);
         state.last_error = None;
+        state.request_serial = state.request_serial.wrapping_add(1);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            state.failed_request_serial = None;
+        }
+        drop(state);
+        self.notify_waiters();
     }
 
     pub fn pending(&self) -> bool {
-        self.state.lock().unwrap().requested_at.is_some()
+        self.state.inner.lock().unwrap().requested_at.is_some()
     }
 
     pub fn is_due(&self, now: SystemTime) -> bool {
-        let state = self.state.lock().unwrap();
+        let state = self.state.inner.lock().unwrap();
         state
             .requested_at
             .map(|requested_at| self.due_at(requested_at))
@@ -301,7 +333,7 @@ impl DebouncedSyncScheduler {
     }
 
     pub fn snapshot(&self) -> SyncScheduleSnapshot {
-        let state = self.state.lock().unwrap();
+        let state = self.state.inner.lock().unwrap();
         SyncScheduleSnapshot {
             pending: state.requested_at.is_some(),
             requested_at: state.requested_at,
@@ -313,43 +345,170 @@ impl DebouncedSyncScheduler {
     }
 
     pub fn run_due(&self, now: SystemTime) -> Result<bool> {
-        if !self.is_due(now) {
-            return Ok(false);
-        }
+        let request_serial = {
+            let state = self.state.inner.lock().unwrap();
+            match state.requested_at {
+                Some(requested_at) if now.duration_since(self.due_at(requested_at)).is_ok() => {
+                    state.request_serial
+                }
+                _ => return Ok(false),
+            }
+        };
 
-        match self.sync.sync() {
-            Ok(()) => {
-                let mut state = self.state.lock().unwrap();
-                state.requested_at = None;
-                state.last_error = None;
-                Ok(true)
-            }
-            Err(err) => {
-                self.state.lock().unwrap().last_error = Some(err.to_string());
-                Err(err)
-            }
-        }
+        self.run_sync_attempt(request_serial)?;
+        Ok(true)
     }
 
     pub fn flush(&self) -> Result<()> {
-        match self.sync.sync() {
-            Ok(()) => {
-                let mut state = self.state.lock().unwrap();
-                state.requested_at = None;
-                state.last_error = None;
-                Ok(())
-            }
-            Err(err) => {
-                self.state.lock().unwrap().last_error = Some(err.to_string());
-                Err(err)
-            }
-        }
+        let request_serial = self.state.inner.lock().unwrap().request_serial;
+        self.run_sync_attempt(request_serial)
     }
 
     fn due_at(&self, requested_at: SystemTime) -> SystemTime {
         requested_at
             .checked_add(self.debounce)
             .unwrap_or(requested_at)
+    }
+
+    fn run_sync_attempt(&self, request_serial: u64) -> Result<()> {
+        let result = self.sync.sync();
+        self.finish_sync_attempt(request_serial, &result);
+        result
+    }
+
+    fn finish_sync_attempt(&self, request_serial: u64, result: &Result<()>) {
+        let mut state = self.state.inner.lock().unwrap();
+        if state.request_serial == request_serial {
+            match result {
+                Ok(()) => {
+                    state.requested_at = None;
+                    state.last_error = None;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        state.failed_request_serial = None;
+                    }
+                }
+                Err(err) => {
+                    state.last_error = Some(err.to_string());
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        state.failed_request_serial = Some(request_serial);
+                    }
+                }
+            }
+        }
+        drop(state);
+        self.notify_waiters();
+    }
+
+    fn notify_waiters(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.state.wake.notify_all();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DebouncedSyncScheduler {
+    pub fn start_background(&self) -> Result<DebouncedSyncBackgroundHandle> {
+        {
+            let mut state = self.state.inner.lock().unwrap();
+            if state.background_running {
+                return Err(crate::Error::Message(
+                    "background scheduler already running".to_string(),
+                ));
+            }
+            state.background_running = true;
+            state.shutdown_requested = false;
+        }
+
+        let scheduler = self.clone();
+        let join = match thread::Builder::new()
+            .name("wanix-syncfs-scheduler".to_string())
+            .spawn(move || scheduler.run_background())
+        {
+            Ok(join) => join,
+            Err(err) => {
+                let mut state = self.state.inner.lock().unwrap();
+                state.background_running = false;
+                state.shutdown_requested = false;
+                return Err(crate::Error::from(err));
+            }
+        };
+
+        Ok(DebouncedSyncBackgroundHandle {
+            scheduler: self.clone(),
+            join: Some(join),
+        })
+    }
+
+    fn run_background(&self) {
+        loop {
+            let request_serial = {
+                let mut state = self.state.inner.lock().unwrap();
+                loop {
+                    if state.shutdown_requested {
+                        state.background_running = false;
+                        state.shutdown_requested = false;
+                        self.state.wake.notify_all();
+                        return;
+                    }
+
+                    let Some(requested_at) = state.requested_at else {
+                        state = self.state.wake.wait(state).unwrap();
+                        continue;
+                    };
+
+                    if state.failed_request_serial == Some(state.request_serial) {
+                        state = self.state.wake.wait(state).unwrap();
+                        continue;
+                    }
+
+                    let delay = self
+                        .due_at(requested_at)
+                        .duration_since(SystemTime::now())
+                        .unwrap_or(Duration::ZERO);
+                    if delay.is_zero() {
+                        break state.request_serial;
+                    }
+
+                    let (next_state, _) = self.state.wake.wait_timeout(state, delay).unwrap();
+                    state = next_state;
+                    // Recompute the due time after every wake. A new request may have arrived
+                    // while the worker was reacquiring the lock after a timeout.
+                }
+            };
+
+            let result = self.sync.sync();
+            self.finish_sync_attempt(request_serial, &result);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DebouncedSyncBackgroundHandle {
+    pub fn shutdown(mut self) -> thread::Result<()> {
+        self.shutdown_inner()
+    }
+
+    fn shutdown_inner(&mut self) -> thread::Result<()> {
+        {
+            let mut state = self.scheduler.state.inner.lock().unwrap();
+            state.shutdown_requested = true;
+        }
+        self.scheduler.state.wake.notify_all();
+
+        if let Some(join) = self.join.take() {
+            join.join()
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for DebouncedSyncBackgroundHandle {
+    fn drop(&mut self) {
+        let _ = self.shutdown_inner();
     }
 }
 
@@ -799,6 +958,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::{
+        sync::{Condvar, Mutex},
+        thread,
+        time::Instant,
+    };
 
     use super::{DirtyChange, PullConflictPolicy, RemoteSyncBackend, SyncFs};
     use crate::{
@@ -925,6 +1090,132 @@ mod tests {
             {
                 return Err(Error::Message("injected patch failure".to_string()));
             }
+            self.inner.apply_patch(patch)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[derive(Default)]
+    struct PatchAttemptRecorder {
+        attempts: Mutex<Vec<Instant>>,
+        ready: Condvar,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl PatchAttemptRecorder {
+        fn record(&self) {
+            let mut attempts = self.attempts.lock().unwrap();
+            attempts.push(Instant::now());
+            self.ready.notify_all();
+        }
+
+        fn wait_for_count(&self, expected: usize, timeout: Duration) -> bool {
+            let deadline = Instant::now() + timeout;
+            let mut attempts = self.attempts.lock().unwrap();
+            while attempts.len() < expected {
+                let now = Instant::now();
+                if now >= deadline {
+                    return false;
+                }
+                let (next_attempts, result) =
+                    self.ready.wait_timeout(attempts, deadline - now).unwrap();
+                attempts = next_attempts;
+                if result.timed_out() && attempts.len() < expected {
+                    return false;
+                }
+            }
+            true
+        }
+
+        fn count(&self) -> usize {
+            self.attempts.lock().unwrap().len()
+        }
+
+        fn nth(&self, index: usize) -> Instant {
+            self.attempts.lock().unwrap()[index]
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        predicate()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct ObservedMemoryRemoteSync {
+        inner: MemoryRemoteSync,
+        attempts: Arc<PatchAttemptRecorder>,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl ObservedMemoryRemoteSync {
+        fn new() -> Self {
+            Self {
+                inner: MemoryRemoteSync::default(),
+                attempts: Arc::new(PatchAttemptRecorder::default()),
+            }
+        }
+
+        fn fs(&self) -> MemFs {
+            self.inner.fs()
+        }
+
+        fn attempts(&self) -> Arc<PatchAttemptRecorder> {
+            self.attempts.clone()
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl RemoteSyncBackend for ObservedMemoryRemoteSync {
+        fn index(&self) -> Result<crate::FsRef> {
+            self.inner.index()
+        }
+
+        fn apply_patch(&self, patch: &[u8]) -> Result<()> {
+            self.attempts.record();
+            self.inner.apply_patch(patch)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct ObservedFailOnceRemoteSync {
+        inner: FailOnceRemoteSync,
+        attempts: Arc<PatchAttemptRecorder>,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl ObservedFailOnceRemoteSync {
+        fn new() -> Self {
+            Self {
+                inner: FailOnceRemoteSync::new(),
+                attempts: Arc::new(PatchAttemptRecorder::default()),
+            }
+        }
+
+        fn fs(&self) -> MemFs {
+            self.inner.fs()
+        }
+
+        fn attempts(&self) -> Arc<PatchAttemptRecorder> {
+            self.attempts.clone()
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl RemoteSyncBackend for ObservedFailOnceRemoteSync {
+        fn index(&self) -> Result<crate::FsRef> {
+            self.inner.index()
+        }
+
+        fn apply_patch(&self, patch: &[u8]) -> Result<()> {
+            self.attempts.record();
             self.inner.apply_patch(patch)
         }
     }
@@ -1229,5 +1520,81 @@ mod tests {
         assert!(scheduler.run_due(start + Duration::from_secs(1)).unwrap());
         assert!(!scheduler.pending());
         assert_eq!(read_file(&remote.fs(), "retry.txt").unwrap(), b"later");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn syncfs_scheduler_background_debounces_requests() {
+        let local = MemFs::new();
+        let remote = Arc::new(ObservedMemoryRemoteSync::new());
+        let attempts = remote.attempts();
+        let sync = SyncFs::new(fs_ref(local.clone()), remote.clone());
+        let scheduler = sync.scheduler(Duration::from_millis(80));
+        let handle = scheduler.start_background().unwrap();
+
+        write_file(&sync, "notes.txt", b"local", FileMode::from_perm(0o644)).unwrap();
+
+        scheduler.request(SystemTime::now());
+        thread::sleep(Duration::from_millis(30));
+        let second_request_at = Instant::now();
+        scheduler.request(SystemTime::now());
+
+        assert!(attempts.wait_for_count(1, Duration::from_millis(400)));
+        assert!(wait_until(Duration::from_millis(200), || !scheduler.pending()));
+        assert_eq!(attempts.count(), 1);
+        assert!(attempts.nth(0).duration_since(second_request_at) >= Duration::from_millis(70));
+        assert_eq!(read_file(&remote.fs(), "notes.txt").unwrap(), b"local");
+
+        handle.shutdown().unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn syncfs_scheduler_background_shutdown_stops_pending_work() {
+        let local = MemFs::new();
+        let remote = Arc::new(ObservedMemoryRemoteSync::new());
+        let sync = SyncFs::new(fs_ref(local.clone()), remote.clone());
+        let scheduler = sync.scheduler(Duration::from_secs(60));
+        let handle = scheduler.start_background().unwrap();
+
+        write_file(&sync, "notes.txt", b"local", FileMode::from_perm(0o644)).unwrap();
+        scheduler.request(SystemTime::now());
+
+        handle.shutdown().unwrap();
+
+        assert!(scheduler.pending());
+        assert_eq!(remote.inner.patch_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn syncfs_scheduler_background_waits_for_new_request_after_failure() {
+        let local = MemFs::new();
+        let remote = Arc::new(ObservedFailOnceRemoteSync::new());
+        let attempts = remote.attempts();
+        let sync = SyncFs::new(fs_ref(local.clone()), remote.clone());
+        let scheduler = sync.scheduler(Duration::ZERO);
+        let handle = scheduler.start_background().unwrap();
+
+        write_file(&sync, "retry.txt", b"later", FileMode::from_perm(0o644)).unwrap();
+        scheduler.request(SystemTime::now());
+
+        assert!(attempts.wait_for_count(1, Duration::from_millis(300)));
+        assert!(wait_until(Duration::from_millis(200), || scheduler
+            .snapshot()
+            .last_error
+            .as_deref()
+            == Some("injected patch failure")));
+        assert!(scheduler.pending());
+        assert!(!attempts.wait_for_count(2, Duration::from_millis(60)));
+
+        scheduler.request(SystemTime::now());
+
+        assert!(attempts.wait_for_count(2, Duration::from_millis(300)));
+        assert!(wait_until(Duration::from_millis(200), || !scheduler.pending()));
+        assert!(!scheduler.pending());
+        assert_eq!(read_file(&remote.fs(), "retry.txt").unwrap(), b"later");
+
+        handle.shutdown().unwrap();
     }
 }

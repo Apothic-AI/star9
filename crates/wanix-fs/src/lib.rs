@@ -5,6 +5,8 @@
 //! copy, metadata, symlinks, and open flags so backends do not need to duplicate
 //! fallback behavior.
 
+#[cfg(all(feature = "native-http", not(target_arch = "wasm32")))]
+mod http_native;
 mod metacache;
 mod syncfs;
 
@@ -19,6 +21,8 @@ use std::time::{Duration, SystemTime};
 
 use http::Method;
 
+#[cfg(all(feature = "native-http", not(target_arch = "wasm32")))]
+pub use http_native::NativeHttpTransport;
 pub use metacache::{CacheFs, MetaCacheFs};
 pub use syncfs::{
     DebouncedSyncScheduler, DirtyChange, DirtyEntry, RemoteSyncBackend, RemoteSyncRef, SyncFs,
