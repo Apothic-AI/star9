@@ -34,7 +34,7 @@ The crate also ports the key `fskit` building blocks:
 
 `R2Fs` is implemented over a Rust `ObjectStore` trait. The trait includes compare-and-swap for parent directory listing updates, allowing deterministic retry and conflict behavior to be tested with `InMemoryObjectStore` while keeping remote Cloudflare/S3 adapter wiring separate from the storage-format semantics.
 
-`HttpFs` is implemented over a Rust `HttpTransport` trait. Mutating requests carry Wanix metadata headers plus a `Change-Timestamp`, and `patch_tar` sends complete tar patch payloads through `PATCH` without requiring a live network transport in tests. Caching is opt-in through `with_cache_ttl`, stores stat/node successes and not-found responses, and invalidates affected cached entries after mutations.
+`HttpFs` is implemented over a Rust `HttpTransport` trait. Mutating requests carry Wanix metadata headers plus a `Change-Timestamp`, and `patch_tar` sends complete tar patch payloads through `PATCH` without requiring a live network transport in tests. Directory reads request multipart listings when available and fall back to plain directory bodies. Caching is opt-in through `with_cache_ttl`, stores stat/node successes and not-found responses, and invalidates affected cached entries after mutations.
 
 ## Namespace
 
@@ -69,7 +69,7 @@ The crate also ports the key `fskit` building blocks:
 
 Typed requests and responses can be encoded and decoded as CBOR through `wanix-protocol`, keeping the wire boundary Rust-owned while matching the public Wanix operation set.
 
-`wanix-protocol::p9` provides the Rust-native 9P bridge baseline. It owns a 9P2000.L-style frame codec, a `NinePServer` that exports any `wanix-fs::FileSystem`, a synchronous `NinePTransport` trait, and a `NinePClientFs` that imports a remote 9P export back into the normal filesystem trait surface. Browser MessagePort/WebSocket adapters can wrap the frame transport without changing the core protocol implementation.
+`wanix-protocol::p9` provides the Rust-native 9P bridge baseline. It owns a 9P2000.L-style frame codec, a `NinePServer` that exports any `wanix-fs::FileSystem`, a synchronous `NinePTransport` trait, and a `NinePClientFs` that imports a remote 9P export back into the normal filesystem trait surface. The bridge includes xattr walk/create support over the existing filesystem xattr trait methods. Browser MessagePort/WebSocket adapters can wrap the frame transport without changing the core protocol implementation.
 
 `wanix-protocol::runtime` owns typed worker/task messages for spawn/start requests, execution specs, stdio/fd descriptors, port open and handoff, task message payloads, and exit status. The protocol has Rust-owned CBOR round-trip tests and is the shared contract for runtime drivers and browser worker adapters.
 
@@ -85,7 +85,7 @@ Typed requests and responses can be encoded and decoded as CBOR through `wanix-p
 - `#task` for task allocation and lookup.
 - `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net`.
 
-Runtime device implementations live in a focused `devices` module. The terminal surface exposes deterministic program/data queues, winch signaling, ctl, state, and size files. The VM surface exposes ctl-driven state, alias/config, console, id, and kind files. `#net` is currently a deterministic allocator for connection-like resources with ctl/data/status files; it does not open real sockets yet.
+Runtime device implementations live in a focused `devices` module. The terminal surface exposes deterministic program/data queues, reference-style LF-to-CRLF program write normalization, winch signaling, ctl, state, and size files. The VM surface exposes `new/<kind>` allocation, ctl-driven state, alias lookup/update, config, console, id, and kind files. `#net` is a deterministic Plan 9-style TCP state machine with dial, bind, announce, listen accept, hangup/reset, status/local/remote, and in-memory data flow; it does not open real sockets yet.
 
 `wanix-web` exposes a `wasm-bindgen` `WanixSystem` facade. Browser-specific logic stays in this crate; core runtime state remains Rust-native and host-neutral. The plain ES module at `crates/wanix-web/js/wanix-elements.js` defines `wanix-system`, `wanix-bind`, and `wanix-task` without a bundler, lazy-loads the wasm package, and delegates file, namespace, 9P, and task operations to the Rust facade.
 

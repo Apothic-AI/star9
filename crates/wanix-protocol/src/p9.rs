@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::io::SeekFrom;
+use std::ops::Range;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -85,6 +86,10 @@ mod msg {
     pub const RGETATTR: u8 = 25;
     pub const TSETATTR: u8 = 26;
     pub const RSETATTR: u8 = 27;
+    pub const TXATTRWALK: u8 = 30;
+    pub const RXATTRWALK: u8 = 31;
+    pub const TXATTRCREATE: u8 = 32;
+    pub const RXATTRCREATE: u8 = 33;
     pub const TREADDIR: u8 = 40;
     pub const RREADDIR: u8 = 41;
     pub const TFSYNC: u8 = 50;
@@ -202,6 +207,17 @@ pub enum NinePRequest {
         fid: u32,
         attr: SetAttr,
     },
+    XattrWalk {
+        fid: u32,
+        newfid: u32,
+        name: String,
+    },
+    XattrCreate {
+        fid: u32,
+        name: String,
+        size: u64,
+        flags: u32,
+    },
     Read {
         fid: u32,
         offset: u64,
@@ -267,6 +283,8 @@ pub enum NinePResponse {
     Lcreate { qid: Qid, iounit: u32 },
     GetAttr { attr: NinePAttr },
     SetAttr,
+    XattrWalk { size: u64 },
+    XattrCreate,
     Read { data: Vec<u8> },
     Write { count: u32 },
     Clunk,
@@ -343,6 +361,24 @@ pub fn encode_request(tag: u16, request: &NinePRequest) -> Result<Vec<u8>> {
             put_u32(&mut body, *fid);
             encode_setattr(&mut body, attr);
             msg::TSETATTR
+        }
+        NinePRequest::XattrWalk { fid, newfid, name } => {
+            put_u32(&mut body, *fid);
+            put_u32(&mut body, *newfid);
+            put_string(&mut body, name)?;
+            msg::TXATTRWALK
+        }
+        NinePRequest::XattrCreate {
+            fid,
+            name,
+            size,
+            flags,
+        } => {
+            put_u32(&mut body, *fid);
+            put_string(&mut body, name)?;
+            put_u64(&mut body, *size);
+            put_u32(&mut body, *flags);
+            msg::TXATTRCREATE
         }
         NinePRequest::Read { fid, offset, count } => {
             put_u32(&mut body, *fid);
@@ -475,6 +511,17 @@ pub fn decode_request(frame: &[u8]) -> Result<(u16, NinePRequest)> {
             fid: d.u32()?,
             attr: d.setattr()?,
         },
+        msg::TXATTRWALK => NinePRequest::XattrWalk {
+            fid: d.u32()?,
+            newfid: d.u32()?,
+            name: d.string()?,
+        },
+        msg::TXATTRCREATE => NinePRequest::XattrCreate {
+            fid: d.u32()?,
+            name: d.string()?,
+            size: d.u64()?,
+            flags: d.u32()?,
+        },
         msg::TREAD => NinePRequest::Read {
             fid: d.u32()?,
             offset: d.u64()?,
@@ -565,6 +612,11 @@ pub fn encode_response(tag: u16, response: &NinePResponse) -> Result<Vec<u8>> {
             msg::RGETATTR
         }
         NinePResponse::SetAttr => msg::RSETATTR,
+        NinePResponse::XattrWalk { size } => {
+            put_u64(&mut body, *size);
+            msg::RXATTRWALK
+        }
+        NinePResponse::XattrCreate => msg::RXATTRCREATE,
         NinePResponse::Read { data } => {
             put_counted_data(&mut body, data)?;
             msg::RREAD
@@ -626,6 +678,8 @@ pub fn decode_response(frame: &[u8]) -> Result<(u16, NinePResponse)> {
         },
         msg::RGETATTR => NinePResponse::GetAttr { attr: d.attr()? },
         msg::RSETATTR => NinePResponse::SetAttr,
+        msg::RXATTRWALK => NinePResponse::XattrWalk { size: d.u64()? },
+        msg::RXATTRCREATE => NinePResponse::XattrCreate,
         msg::RREAD => NinePResponse::Read {
             data: d.counted_data()?,
         },
@@ -887,7 +941,7 @@ impl<'a> Decoder<'a> {
 
 struct FidState {
     path: String,
-    file: Option<BoxFile>,
+    handle: FidHandle,
     flags: u32,
 }
 
@@ -895,9 +949,89 @@ impl FidState {
     fn unopened(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
-            file: None,
+            handle: FidHandle::None,
             flags: 0,
         }
+    }
+}
+
+enum FidHandle {
+    None,
+    File(BoxFile),
+    XattrRead { data: Vec<u8> },
+    XattrWrite(XattrWriteState),
+}
+
+struct XattrWriteState {
+    name: String,
+    flags: u32,
+    expected_size: u64,
+    data: Vec<u8>,
+    written: Vec<Range<u64>>,
+    committed: bool,
+}
+
+impl XattrWriteState {
+    fn new(name: String, flags: u32, expected_size: u64) -> Result<Self> {
+        Ok(Self {
+            name,
+            flags,
+            expected_size,
+            data: vec![0; expected_size.try_into().map_err(|_| ErrorKind::Invalid)?],
+            written: Vec::new(),
+            committed: false,
+        })
+    }
+
+    fn write_at(&mut self, offset: u64, chunk: &[u8]) -> Result<usize> {
+        let end = offset
+            .checked_add(chunk.len().try_into().map_err(|_| ErrorKind::Invalid)?)
+            .ok_or(ErrorKind::Invalid)?;
+        if end > self.expected_size {
+            return Err(ErrorKind::Invalid.into());
+        }
+        let start: usize = offset.try_into().map_err(|_| ErrorKind::Invalid)?;
+        let end: usize = end.try_into().map_err(|_| ErrorKind::Invalid)?;
+        self.data[start..end].copy_from_slice(chunk);
+        self.record_write(offset..end as u64);
+        Ok(chunk.len())
+    }
+
+    fn is_complete(&self) -> bool {
+        self.expected_size == 0
+            || matches!(
+                self.written.as_slice(),
+                [range] if range.start == 0 && range.end == self.expected_size
+            )
+    }
+
+    fn record_write(&mut self, range: Range<u64>) {
+        if range.is_empty() {
+            return;
+        }
+
+        let mut start = range.start;
+        let mut end = range.end;
+        let mut merged = Vec::with_capacity(self.written.len() + 1);
+        let mut inserted = false;
+        for existing in self.written.drain(..) {
+            if existing.end < start {
+                merged.push(existing);
+            } else if end < existing.start {
+                if !inserted {
+                    merged.push(start..end);
+                    inserted = true;
+                }
+                merged.push(existing);
+            } else {
+                start = start.min(existing.start);
+                end = end.max(existing.end);
+            }
+        }
+        if !inserted {
+            merged.push(start..end);
+        }
+        self.written = merged;
     }
 }
 
@@ -966,6 +1100,13 @@ impl NinePServer {
             } => self.lcreate(fid, &name, flags, mode),
             NinePRequest::GetAttr { fid, request_mask } => self.getattr(fid, request_mask),
             NinePRequest::SetAttr { fid, attr } => self.setattr(fid, attr),
+            NinePRequest::XattrWalk { fid, newfid, name } => self.xattrwalk(fid, newfid, &name),
+            NinePRequest::XattrCreate {
+                fid,
+                name,
+                size,
+                flags,
+            } => self.xattrcreate(fid, &name, size, flags),
             NinePRequest::Read { fid, offset, count } => self.read(fid, offset, count),
             NinePRequest::Write { fid, offset, data } => self.write(fid, offset, &data),
             NinePRequest::Clunk { fid } => self.clunk(fid).map(|_| NinePResponse::Clunk),
@@ -1034,7 +1175,7 @@ impl NinePServer {
         let qid = qid_for(self.fsys.as_ref(), &path)?;
         let mut state = self.state.lock().unwrap();
         let fid_state = state.fids.get_mut(&fid).ok_or(ErrorKind::Invalid)?;
-        fid_state.file = Some(file);
+        fid_state.handle = FidHandle::File(file);
         fid_state.flags = flags;
         Ok(NinePResponse::Lopen { qid, iounit: 0 })
     }
@@ -1050,7 +1191,7 @@ impl NinePServer {
         let mut state = self.state.lock().unwrap();
         let fid_state = state.fids.get_mut(&fid).ok_or(ErrorKind::Invalid)?;
         fid_state.path = path;
-        fid_state.file = Some(file);
+        fid_state.handle = FidHandle::File(file);
         fid_state.flags = flags;
         Ok(NinePResponse::Lcreate { qid, iounit: 0 })
     }
@@ -1059,11 +1200,13 @@ impl NinePServer {
         let (path, meta) = {
             let mut state = self.state.lock().unwrap();
             let fid_state = state.fids.get_mut(&fid).ok_or(ErrorKind::Invalid)?;
-            let meta = match fid_state.file.as_mut() {
-                Some(file) => file.stat()?,
-                None => self
+            let meta = match &mut fid_state.handle {
+                FidHandle::File(file) => file.stat()?,
+                FidHandle::None => self
                     .fsys
                     .lstat(&FsContext::new().no_follow(), &fid_state.path)?,
+                FidHandle::XattrRead { data } => Metadata::file("xattr", 0o444, data.len() as u64),
+                FidHandle::XattrWrite(write) => Metadata::file("xattr", 0o200, write.expected_size),
             };
             (fid_state.path.clone(), meta)
         };
@@ -1107,21 +1250,77 @@ impl NinePServer {
         Ok(NinePResponse::SetAttr)
     }
 
+    fn xattrwalk(&self, fid: u32, newfid: u32, name: &str) -> Result<NinePResponse> {
+        let path = {
+            let state = self.state.lock().unwrap();
+            if newfid != fid && state.fids.contains_key(&newfid) {
+                return Err(ErrorKind::Invalid.into());
+            }
+            state.fids.get(&fid).ok_or(ErrorKind::Invalid)?.path.clone()
+        };
+        let data = if name.is_empty() {
+            encode_xattr_names(&self.fsys.list_xattrs(&path)?)
+        } else {
+            self.fsys.get_xattr(&path, name)?
+        };
+        self.state.lock().unwrap().fids.insert(
+            newfid,
+            FidState {
+                path,
+                handle: FidHandle::XattrRead { data: data.clone() },
+                flags: OpenFlags::RDONLY.bits(),
+            },
+        );
+        Ok(NinePResponse::XattrWalk {
+            size: data.len().try_into().map_err(|_| ErrorKind::Invalid)?,
+        })
+    }
+
+    fn xattrcreate(&self, fid: u32, name: &str, size: u64, flags: u32) -> Result<NinePResponse> {
+        if name.is_empty() {
+            return Err(ErrorKind::Invalid.into());
+        }
+        let mut state = self.state.lock().unwrap();
+        let fid_state = state.fids.get_mut(&fid).ok_or(ErrorKind::Invalid)?;
+        fid_state.handle =
+            FidHandle::XattrWrite(XattrWriteState::new(name.to_string(), flags, size)?);
+        fid_state.flags = OpenFlags::WRONLY.bits();
+        Ok(NinePResponse::XattrCreate)
+    }
+
     fn read(&self, fid: u32, offset: u64, count: u32) -> Result<NinePResponse> {
         let mut state = self.state.lock().unwrap();
         let fid_state = state.fids.get_mut(&fid).ok_or(ErrorKind::Invalid)?;
-        let file = fid_state.file.as_mut().ok_or(ErrorKind::Invalid)?;
-        let mut data = vec![0; count as usize];
-        let n = file.read_at(&mut data, offset)?;
-        data.truncate(n);
+        let data = match &mut fid_state.handle {
+            FidHandle::File(file) => {
+                let mut data = vec![0; count as usize];
+                let n = file.read_at(&mut data, offset)?;
+                data.truncate(n);
+                data
+            }
+            FidHandle::XattrRead { data } => {
+                let start: usize = offset.try_into().map_err(|_| ErrorKind::Invalid)?;
+                if start >= data.len() {
+                    Vec::new()
+                } else {
+                    data[start..start.saturating_add(count as usize).min(data.len())].to_vec()
+                }
+            }
+            FidHandle::XattrWrite(_) => return Err(ErrorKind::PermissionDenied.into()),
+            FidHandle::None => return Err(ErrorKind::Invalid.into()),
+        };
         Ok(NinePResponse::Read { data })
     }
 
     fn write(&self, fid: u32, offset: u64, data: &[u8]) -> Result<NinePResponse> {
         let mut state = self.state.lock().unwrap();
         let fid_state = state.fids.get_mut(&fid).ok_or(ErrorKind::Invalid)?;
-        let file = fid_state.file.as_mut().ok_or(ErrorKind::Invalid)?;
-        let count = file.write_at(data, offset)?;
+        let count = match &mut fid_state.handle {
+            FidHandle::File(file) => file.write_at(data, offset)?,
+            FidHandle::XattrWrite(write) => write.write_at(offset, data)?,
+            FidHandle::XattrRead { .. } => return Err(ErrorKind::PermissionDenied.into()),
+            FidHandle::None => return Err(ErrorKind::Invalid.into()),
+        };
         Ok(NinePResponse::Write {
             count: count.try_into().map_err(|_| ErrorKind::Invalid)?,
         })
@@ -1133,7 +1332,9 @@ impl NinePServer {
             state.fids.remove(&fid)
         };
         let mut fid_state = state.ok_or(ErrorKind::Invalid)?;
-        if let Some(mut file) = fid_state.file.take() {
+        self.commit_xattr_if_ready(&mut fid_state)?;
+        if let FidHandle::File(mut file) = std::mem::replace(&mut fid_state.handle, FidHandle::None)
+        {
             file.close()?;
         }
         Ok(())
@@ -1148,7 +1349,8 @@ impl NinePServer {
         if fid_state.path == "." {
             return Err(ErrorKind::Invalid.into());
         }
-        if let Some(mut file) = fid_state.file.take() {
+        if let FidHandle::File(mut file) = std::mem::replace(&mut fid_state.handle, FidHandle::None)
+        {
             let _ = file.close();
         }
         self.fsys.remove(&fid_state.path)?;
@@ -1236,13 +1438,35 @@ impl NinePServer {
     fn fsync(&self, fid: u32) -> Result<NinePResponse> {
         let mut state = self.state.lock().unwrap();
         let fid_state = state.fids.get_mut(&fid).ok_or(ErrorKind::Invalid)?;
-        if let Some(file) = fid_state.file.as_mut() {
-            match file.sync() {
+        let mut commit_xattr = false;
+        match &mut fid_state.handle {
+            FidHandle::File(file) => match file.sync() {
                 Ok(()) | Err(Error::Kind(ErrorKind::NotSupported)) => {}
                 Err(err) => return Err(err),
-            }
+            },
+            FidHandle::XattrWrite(_) => commit_xattr = true,
+            FidHandle::XattrRead { .. } | FidHandle::None => {}
+        }
+        if commit_xattr {
+            self.commit_xattr_if_ready(fid_state)?;
         }
         Ok(NinePResponse::Fsync)
+    }
+
+    fn commit_xattr_if_ready(&self, fid_state: &mut FidState) -> Result<()> {
+        if let FidHandle::XattrWrite(write) = &mut fid_state.handle {
+            if write.committed {
+                return Ok(());
+            }
+            if !write.is_complete() {
+                return Err(ErrorKind::Invalid.into());
+            }
+            let _ = write.flags;
+            self.fsys
+                .set_xattr(&fid_state.path, &write.name, &write.data)?;
+            write.committed = true;
+        }
+        Ok(())
     }
 
     fn flush(&self, _oldtag: u16) -> NinePResponse {
@@ -1433,6 +1657,88 @@ impl NinePClientFs {
         };
         let clunk = self.clunk_fid(fid);
         result.and(clunk)
+    }
+
+    fn xattrwalk_fid(&self, path: &str, attr: &str) -> Result<(u32, u64)> {
+        let fid = self.walk_fid(path)?;
+        let newfid = self.alloc_fid();
+        let result = match self.call(NinePRequest::XattrWalk {
+            fid,
+            newfid,
+            name: attr.to_string(),
+        }) {
+            Ok(NinePResponse::XattrWalk { size }) => Ok((newfid, size)),
+            Ok(_) => Err(ErrorKind::Invalid.into()),
+            Err(err) => Err(err),
+        };
+        let clunk = self.clunk_fid(fid);
+        match (result, clunk) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(err), Ok(())) | (Err(err), Err(_)) => {
+                let _ = self.clunk_fid(newfid);
+                Err(err)
+            }
+            (Ok(_), Err(err)) => {
+                let _ = self.clunk_fid(newfid);
+                Err(err)
+            }
+        }
+    }
+
+    fn read_all_fid(&self, fid: u32, size: u64) -> Result<Vec<u8>> {
+        let mut data = Vec::new();
+        let mut offset = 0_u64;
+        let count = self
+            .inner
+            .msize
+            .load(Ordering::Relaxed)
+            .saturating_sub(11)
+            .max(1);
+        while offset < size {
+            let remaining = size - offset;
+            let chunk = match self.call(NinePRequest::Read {
+                fid,
+                offset,
+                count: count.min(remaining.min(u64::from(u32::MAX)) as u32),
+            })? {
+                NinePResponse::Read { data } => data,
+                _ => return Err(ErrorKind::Invalid.into()),
+            };
+            if chunk.is_empty() {
+                return Err(ErrorKind::UnexpectedEof.into());
+            }
+            offset = offset
+                .checked_add(chunk.len().try_into().map_err(|_| ErrorKind::Invalid)?)
+                .ok_or(ErrorKind::Invalid)?;
+            data.extend_from_slice(&chunk);
+        }
+        Ok(data)
+    }
+
+    fn write_all_fid(&self, fid: u32, data: &[u8]) -> Result<()> {
+        let count = self
+            .inner
+            .msize
+            .load(Ordering::Relaxed)
+            .saturating_sub(23)
+            .max(1) as usize;
+        let mut offset = 0_u64;
+        for chunk in data.chunks(count) {
+            match self.call(NinePRequest::Write {
+                fid,
+                offset,
+                data: chunk.to_vec(),
+            })? {
+                NinePResponse::Write { count } if count as usize == chunk.len() => {
+                    offset = offset
+                        .checked_add(chunk.len().try_into().map_err(|_| ErrorKind::Invalid)?)
+                        .ok_or(ErrorKind::Invalid)?;
+                }
+                NinePResponse::Write { .. } => return Err(ErrorKind::UnexpectedEof.into()),
+                _ => return Err(ErrorKind::Invalid.into()),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1664,6 +1970,45 @@ impl FileSystem for NinePClientFs {
         let target = result?;
         clunk?;
         Ok(target)
+    }
+
+    fn set_xattr(&self, name: &str, attr: &str, data: &[u8]) -> Result<()> {
+        let path = validated_client_path("setxattr", name)?;
+        let fid = self.walk_fid(&path)?;
+        let result = match self.call(NinePRequest::XattrCreate {
+            fid,
+            name: attr.to_string(),
+            size: data.len().try_into().map_err(|_| ErrorKind::Invalid)?,
+            flags: 0,
+        }) {
+            Ok(NinePResponse::XattrCreate) => self.write_all_fid(fid, data),
+            Ok(_) => Err(ErrorKind::Invalid.into()),
+            Err(err) => Err(err),
+        };
+        let clunk = self.clunk_fid(fid);
+        result.and(clunk)
+    }
+
+    fn get_xattr(&self, name: &str, attr: &str) -> Result<Vec<u8>> {
+        let path = validated_client_path("getxattr", name)?;
+        let (fid, size) = self.xattrwalk_fid(&path, attr)?;
+        let result = self.read_all_fid(fid, size);
+        let clunk = self.clunk_fid(fid);
+        let data = result?;
+        clunk?;
+        Ok(data)
+    }
+
+    fn list_xattrs(&self, name: &str) -> Result<Vec<String>> {
+        let path = validated_client_path("listxattrs", name)?;
+        let (fid, size) = self.xattrwalk_fid(&path, "")?;
+        let result = self
+            .read_all_fid(fid, size)
+            .and_then(|data| decode_xattr_names(&data));
+        let clunk = self.clunk_fid(fid);
+        let attrs = result?;
+        clunk?;
+        Ok(attrs)
     }
 }
 
@@ -1969,6 +2314,30 @@ fn dirent_type(mode: FileMode) -> u8 {
     }
 }
 
+fn encode_xattr_names(names: &[String]) -> Vec<u8> {
+    let mut names = names.to_vec();
+    names.sort();
+    let mut out = Vec::new();
+    for name in &names {
+        out.extend_from_slice(name.as_bytes());
+        out.push(0);
+    }
+    out
+}
+
+fn decode_xattr_names(data: &[u8]) -> Result<Vec<String>> {
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+    if data.last().copied() != Some(0) {
+        return Err(ErrorKind::Invalid.into());
+    }
+    data[..data.len() - 1]
+        .split(|byte| *byte == 0)
+        .map(|name| String::from_utf8(name.to_vec()).map_err(|_| ErrorKind::Invalid.into()))
+        .collect()
+}
+
 fn open_flags_from_9p(flags: u32) -> OpenFlags {
     let mut out = match flags & 0b11 {
         1 => OpenFlags::WRONLY,
@@ -2090,7 +2459,14 @@ mod tests {
             .unwrap()
             .fids
             .iter()
-            .map(|(fid, state)| (*fid, state.path.clone(), state.file.is_some(), state.flags))
+            .map(|(fid, state)| {
+                (
+                    *fid,
+                    state.path.clone(),
+                    matches!(&state.handle, FidHandle::File(_)),
+                    state.flags,
+                )
+            })
             .collect();
         fids.sort_by_key(|(fid, ..)| *fid);
         fids
@@ -2112,6 +2488,17 @@ mod tests {
             offset: 7,
             data: b"abc".to_vec(),
         });
+        round_trip_request(NinePRequest::XattrWalk {
+            fid: 2,
+            newfid: 3,
+            name: "user.mime_type".to_string(),
+        });
+        round_trip_request(NinePRequest::XattrCreate {
+            fid: 2,
+            name: "user.author".to_string(),
+            size: 5,
+            flags: 0,
+        });
         round_trip_request(NinePRequest::RenameAt {
             olddirfid: 1,
             oldname: "a".to_string(),
@@ -2129,6 +2516,8 @@ mod tests {
         round_trip_response(NinePResponse::Read {
             data: b"payload".to_vec(),
         });
+        round_trip_response(NinePResponse::XattrWalk { size: 12 });
+        round_trip_response(NinePResponse::XattrCreate);
         round_trip_response(NinePResponse::GetAttr {
             attr: NinePAttr {
                 valid: ATTR_BASIC,
@@ -2489,6 +2878,276 @@ mod tests {
     }
 
     #[test]
+    fn raw_server_reads_xattr_via_xattrwalk() {
+        let mem = MemFs::from_entries([("dir/file.txt", b"hello".as_slice())]);
+        fs::set_xattr(&mem, "dir/file.txt", "user.mime_type", b"text/plain").unwrap();
+        let server = NinePServer::new(fs_ref(mem));
+        server
+            .handle_frame(
+                &encode_request(
+                    1,
+                    &NinePRequest::Attach {
+                        fid: 1,
+                        afid: NOFID,
+                        uname: "u".into(),
+                        aname: String::new(),
+                        n_uname: 0,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        server
+            .handle_frame(
+                &encode_request(
+                    2,
+                    &NinePRequest::Walk {
+                        fid: 1,
+                        newfid: 2,
+                        names: vec!["dir".into(), "file.txt".into()],
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let walk = server
+            .handle_frame(
+                &encode_request(
+                    3,
+                    &NinePRequest::XattrWalk {
+                        fid: 2,
+                        newfid: 3,
+                        name: "user.mime_type".into(),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_response(&walk).unwrap(),
+            (
+                3,
+                NinePResponse::XattrWalk {
+                    size: b"text/plain".len() as u64,
+                },
+            )
+        );
+
+        let read = server
+            .handle_frame(
+                &encode_request(
+                    4,
+                    &NinePRequest::Read {
+                        fid: 3,
+                        offset: 0,
+                        count: 64,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_response(&read).unwrap(),
+            (
+                4,
+                NinePResponse::Read {
+                    data: b"text/plain".to_vec(),
+                },
+            )
+        );
+    }
+
+    #[test]
+    fn raw_server_lists_xattrs_via_empty_xattrwalk_name() {
+        let mem = MemFs::from_entries([("dir/file.txt", b"hello".as_slice())]);
+        fs::set_xattr(&mem, "dir/file.txt", "user.author", b"wanix").unwrap();
+        fs::set_xattr(&mem, "dir/file.txt", "user.mime_type", b"text/plain").unwrap();
+        let server = NinePServer::new(fs_ref(mem));
+        server
+            .handle_frame(
+                &encode_request(
+                    1,
+                    &NinePRequest::Attach {
+                        fid: 1,
+                        afid: NOFID,
+                        uname: "u".into(),
+                        aname: String::new(),
+                        n_uname: 0,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        server
+            .handle_frame(
+                &encode_request(
+                    2,
+                    &NinePRequest::Walk {
+                        fid: 1,
+                        newfid: 2,
+                        names: vec!["dir".into(), "file.txt".into()],
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let expected = b"user.author\0user.mime_type\0".to_vec();
+        let walk = server
+            .handle_frame(
+                &encode_request(
+                    3,
+                    &NinePRequest::XattrWalk {
+                        fid: 2,
+                        newfid: 3,
+                        name: String::new(),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_response(&walk).unwrap(),
+            (
+                3,
+                NinePResponse::XattrWalk {
+                    size: expected.len() as u64,
+                },
+            )
+        );
+
+        let read = server
+            .handle_frame(
+                &encode_request(
+                    4,
+                    &NinePRequest::Read {
+                        fid: 3,
+                        offset: 0,
+                        count: 64,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_response(&read).unwrap(),
+            (4, NinePResponse::Read { data: expected })
+        );
+    }
+
+    #[test]
+    fn raw_server_commits_xattr_writes_on_clunk() {
+        let mem = MemFs::from_entries([("dir/file.txt", b"hello".as_slice())]);
+        let server = NinePServer::new(fs_ref(mem.clone()));
+        server
+            .handle_frame(
+                &encode_request(
+                    1,
+                    &NinePRequest::Attach {
+                        fid: 1,
+                        afid: NOFID,
+                        uname: "u".into(),
+                        aname: String::new(),
+                        n_uname: 0,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        server
+            .handle_frame(
+                &encode_request(
+                    2,
+                    &NinePRequest::Walk {
+                        fid: 1,
+                        newfid: 2,
+                        names: vec!["dir".into(), "file.txt".into()],
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let create = server
+            .handle_frame(
+                &encode_request(
+                    3,
+                    &NinePRequest::XattrCreate {
+                        fid: 2,
+                        name: "user.note".into(),
+                        size: 5,
+                        flags: 0,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_response(&create).unwrap(),
+            (3, NinePResponse::XattrCreate)
+        );
+
+        let write = server
+            .handle_frame(
+                &encode_request(
+                    4,
+                    &NinePRequest::Write {
+                        fid: 2,
+                        offset: 0,
+                        data: b"hello".to_vec(),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_response(&write).unwrap(),
+            (4, NinePResponse::Write { count: 5 })
+        );
+        assert_eq!(
+            fs::get_xattr(&mem, "dir/file.txt", "user.note")
+                .unwrap_err()
+                .kind(),
+            ErrorKind::NotFound
+        );
+
+        let clunk = server
+            .handle_frame(&encode_request(5, &NinePRequest::Clunk { fid: 2 }).unwrap())
+            .unwrap();
+        assert_eq!(decode_response(&clunk).unwrap(), (5, NinePResponse::Clunk));
+        assert_eq!(
+            fs::get_xattr(&mem, "dir/file.txt", "user.note").unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn client_filesystem_round_trips_xattrs() {
+        let (mem, client) = client_with_memfs();
+        fs::set_xattr(&mem, "dir/file.txt", "user.mime_type", b"text/plain").unwrap();
+
+        assert_eq!(
+            fs::get_xattr(&client, "dir/file.txt", "user.mime_type").unwrap(),
+            b"text/plain"
+        );
+        assert_eq!(
+            fs::list_xattrs(&client, "dir/file.txt").unwrap(),
+            vec!["user.mime_type".to_string()]
+        );
+
+        fs::set_xattr(&client, "dir/file.txt", "user.author", b"wanix").unwrap();
+        assert_eq!(
+            fs::list_xattrs(&client, "dir/file.txt").unwrap(),
+            vec!["user.author".to_string(), "user.mime_type".to_string()]
+        );
+        assert_eq!(
+            fs::get_xattr(&mem, "dir/file.txt", "user.author").unwrap(),
+            b"wanix"
+        );
+    }
+
+    #[test]
     fn client_rejects_invalid_paths_like_reference() {
         let (_mem, client) = client_with_memfs();
 
@@ -2508,6 +3167,4 @@ mod tests {
             assert_eq!(client.remove(path).unwrap_err().kind(), ErrorKind::Invalid);
         }
     }
-
-    // TODO: Add Txattrwalk/Txattrcreate coverage once this module models xattr handle semantics.
 }

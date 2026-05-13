@@ -2426,6 +2426,12 @@ impl HttpResponse {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HttpMultipartPart {
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
 impl HttpFs {
     pub fn new(base_url: impl Into<String>, transport: Arc<dyn HttpTransport>) -> Self {
         Self::with_cache_ttl(base_url, transport, Duration::ZERO)
@@ -2710,21 +2716,24 @@ impl HttpFs {
     }
 
     pub fn patch_tar(&self, name: &str, body: impl Into<Vec<u8>>) -> Result<()> {
+        if !valid_path(name) {
+            return Err(Error::path("patch", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        let body = body.into();
         let mut headers = BTreeMap::new();
         headers.insert("Content-Type".to_string(), "application/x-tar".to_string());
+        headers.insert("Content-Length".to_string(), body.len().to_string());
         insert_change_timestamp(&mut headers);
-        self.request(
-            Method::from_bytes(b"PATCH").unwrap(),
-            name,
-            headers,
-            body.into(),
-        )
-        .map(|_| {
-            self.invalidate_cache_after_patch(name);
+        self.request(Method::PATCH, &name, headers, body).map(|_| {
+            self.invalidate_cache_after_patch(&name);
         })
     }
 
     fn parse_node(&self, name: &str, response: HttpResponse) -> Result<HttpNode> {
+        if let Some(boundary) = multipart_boundary(&response.headers) {
+            return self.parse_multipart_node(name, &boundary, response.body);
+        }
         let metadata = parse_http_metadata(name, &response.headers, response.body.len() as u64);
         let entries = if metadata.is_dir() {
             parse_http_directory(name, &response.body)
@@ -2736,6 +2745,83 @@ impl HttpFs {
             body: response.body,
             entries,
         })
+    }
+
+    fn parse_multipart_node(&self, name: &str, boundary: &str, body: Vec<u8>) -> Result<HttpNode> {
+        let name = clean_path(name);
+        let mut root = None;
+        let mut entries = BTreeMap::new();
+
+        for part in parse_http_multipart(&body, boundary)? {
+            let Some(part_path) = self.multipart_part_path(&part.headers) else {
+                continue;
+            };
+            let metadata = parse_http_metadata(&part_path, &part.headers, part.body.len() as u64);
+            if part_path == name {
+                for entry in parse_http_directory(&part_path, &part.body) {
+                    entries.insert(entry.name.clone(), entry);
+                }
+                root = Some((metadata, part.body));
+                continue;
+            }
+            if parent_path(&part_path) != name {
+                continue;
+            }
+            let entry_name = base_name(&part_path).to_string();
+            let mut entry_metadata = metadata;
+            entry_metadata.name = entry_name.clone();
+            entries.insert(
+                entry_name.clone(),
+                DirEntry::new(entry_name, entry_metadata),
+            );
+        }
+
+        let Some((metadata, body)) = root else {
+            return Err(Error::Message(format!(
+                "httpfs {name} returned malformed multipart directory listing"
+            )));
+        };
+
+        Ok(HttpNode {
+            metadata,
+            body,
+            entries: entries.into_values().collect(),
+        })
+    }
+
+    fn multipart_part_path(&self, headers: &BTreeMap<String, String>) -> Option<String> {
+        if let Some(path) = header_value(headers, "Content-Location") {
+            return Some(self.normalize_multipart_path(&path));
+        }
+        let disposition = header_value(headers, "Content-Disposition")?;
+        let (_, params) = parse_header_parameters(&disposition);
+        let filename = params
+            .get("filename")
+            .or_else(|| params.get("filename*"))
+            .cloned()?;
+        Some(self.normalize_multipart_path(&filename))
+    }
+
+    fn normalize_multipart_path(&self, raw: &str) -> String {
+        let trimmed = raw.trim();
+        let without_base = trimmed
+            .strip_prefix(&self.inner.base_url)
+            .unwrap_or(trimmed);
+        let path = if let Some(scheme) = without_base.find("://") {
+            let remainder = &without_base[scheme + 3..];
+            remainder
+                .find('/')
+                .map(|idx| &remainder[idx..])
+                .unwrap_or("/")
+        } else {
+            without_base
+        };
+        let cleaned = path.trim_matches('"').trim_start_matches('/');
+        if cleaned.is_empty() {
+            ".".to_string()
+        } else {
+            clean_path(cleaned)
+        }
     }
 }
 
@@ -2762,6 +2848,30 @@ impl FileSystem for HttpFs {
         }
         let name = clean_path(name);
         self.load_metadata(&name)
+    }
+
+    fn read_dir(&self, _ctx: &FsContext, name: &str) -> Result<Vec<DirEntry>> {
+        if !valid_path(name) {
+            return Err(Error::path("readdir", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        let node = if let Some(result) = self.cached_node(&name) {
+            result?
+        } else {
+            let mut headers = BTreeMap::new();
+            headers.insert("Accept".to_string(), "multipart/mixed".to_string());
+            let result = self
+                .request(Method::GET, &name, headers, Vec::new())
+                .and_then(|response| self.parse_node(&name, response));
+            self.cache_node_result(&name, &result);
+            result?
+        };
+        if !node.metadata.is_dir() {
+            return Err(Error::path("readdir", &name, ErrorKind::Invalid));
+        }
+        let mut entries = node.entries;
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
     }
 
     fn open_file(&self, name: &str, flags: OpenFlags, perm: FileMode) -> Result<BoxFile> {
@@ -3003,6 +3113,37 @@ fn parse_http_directory(base: &str, body: &[u8]) -> Vec<DirEntry> {
         .collect()
 }
 
+fn parse_http_multipart(body: &[u8], boundary: &str) -> Result<Vec<HttpMultipartPart>> {
+    let delimiter = format!("--{boundary}").into_bytes();
+    let mut cursor = find_bytes(body, &delimiter, 0)
+        .ok_or_else(|| Error::Message("multipart body missing boundary".to_string()))?;
+    let mut parts = Vec::new();
+
+    loop {
+        if !body[cursor..].starts_with(&delimiter) {
+            return Err(Error::Message(
+                "multipart body has invalid boundary".to_string(),
+            ));
+        }
+        cursor += delimiter.len();
+        if body.get(cursor..cursor + 2) == Some(b"--".as_slice()) {
+            break;
+        }
+        cursor = consume_multipart_newline(body, cursor)
+            .ok_or_else(|| Error::Message("multipart body missing newline".to_string()))?;
+        let (headers, body_start) = parse_http_part_headers(body, cursor)?;
+        let (body_end, next_cursor) = find_multipart_body_end(body, &delimiter, body_start)
+            .ok_or_else(|| Error::Message("multipart part missing closing boundary".to_string()))?;
+        parts.push(HttpMultipartPart {
+            headers,
+            body: body[body_start..body_end].to_vec(),
+        });
+        cursor = next_cursor;
+    }
+
+    Ok(parts)
+}
+
 fn parse_http_metadata(name: &str, headers: &BTreeMap<String, String>, body_len: u64) -> Metadata {
     let content_type = header_value(headers, "Content-Type").unwrap_or_default();
     let mode = header_value(headers, "Content-Mode")
@@ -3015,6 +3156,11 @@ fn parse_http_metadata(name: &str, headers: &BTreeMap<String, String>, body_len:
         });
     let size = header_value(headers, "Content-Length")
         .and_then(|value| value.parse().ok())
+        .or_else(|| {
+            header_value(headers, "Content-Range")
+                .as_deref()
+                .and_then(parse_http_content_range_size)
+        })
         .unwrap_or(body_len);
     let modified = header_value(headers, "Content-Modified")
         .and_then(|value| value.parse::<u64>().ok())
@@ -3064,6 +3210,99 @@ fn header_value(headers: &BTreeMap<String, String>, name: &str) -> Option<String
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case(name))
         .map(|(_, value)| value.clone())
+}
+
+fn multipart_boundary(headers: &BTreeMap<String, String>) -> Option<String> {
+    let content_type = header_value(headers, "Content-Type")?;
+    let (media_type, params) = parse_header_parameters(&content_type);
+    media_type
+        .starts_with("multipart/")
+        .then(|| params.get("boundary").cloned())
+        .flatten()
+}
+
+fn parse_header_parameters(value: &str) -> (String, BTreeMap<String, String>) {
+    let mut parts = value.split(';');
+    let media_type = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+    let mut params = BTreeMap::new();
+    for part in parts {
+        let Some((key, raw_value)) = part.trim().split_once('=') else {
+            continue;
+        };
+        let value = raw_value.trim().trim_matches('"').to_string();
+        params.insert(key.trim().to_ascii_lowercase(), value);
+    }
+    (media_type, params)
+}
+
+fn parse_http_content_range_size(value: &str) -> Option<u64> {
+    value.split_once('/')?.1.trim().parse().ok()
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+    if needle.is_empty() || start > haystack.len() || haystack.len() - start < needle.len() {
+        return None;
+    }
+    haystack[start..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|offset| start + offset)
+}
+
+fn consume_multipart_newline(body: &[u8], cursor: usize) -> Option<usize> {
+    match body.get(cursor..cursor + 2) {
+        Some(b"\r\n") => Some(cursor + 2),
+        _ if body.get(cursor) == Some(&b'\n') => Some(cursor + 1),
+        _ => None,
+    }
+}
+
+fn parse_http_part_headers(body: &[u8], start: usize) -> Result<(BTreeMap<String, String>, usize)> {
+    let crlf_end = find_bytes(body, b"\r\n\r\n", start).map(|idx| (idx, idx + 4));
+    let lf_end = find_bytes(body, b"\n\n", start).map(|idx| (idx, idx + 2));
+    let (header_end, next) = match (crlf_end, lf_end) {
+        (Some(crlf), Some(lf)) => {
+            if crlf.0 <= lf.0 {
+                crlf
+            } else {
+                lf
+            }
+        }
+        (Some(crlf), None) => crlf,
+        (None, Some(lf)) => lf,
+        (None, None) => {
+            return Err(Error::Message(
+                "multipart part missing header terminator".to_string(),
+            ));
+        }
+    };
+
+    let mut headers = BTreeMap::new();
+    for line in String::from_utf8_lossy(&body[start..header_end]).lines() {
+        let line = line.trim_end_matches('\r');
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        headers.insert(key.trim().to_string(), value.trim().to_string());
+    }
+    Ok((headers, next))
+}
+
+fn find_multipart_body_end(body: &[u8], delimiter: &[u8], start: usize) -> Option<(usize, usize)> {
+    if body[start..].starts_with(delimiter) {
+        return Some((start, start));
+    }
+    let mut search = start;
+    while let Some(found) = find_bytes(body, delimiter, search) {
+        if found >= 2 && &body[found - 2..found] == b"\r\n" {
+            return Some((found - 2, found));
+        }
+        if found >= 1 && body[found - 1] == b'\n' {
+            return Some((found - 1, found));
+        }
+        search = found + 1;
+    }
+    None
 }
 
 fn unix_secs(time: SystemTime) -> u64 {
@@ -3627,6 +3866,298 @@ mod tests {
             .with_header("Content-Length", len.to_string())
     }
 
+    fn http_response_from_metadata(metadata: &Metadata, body: Vec<u8>) -> HttpResponse {
+        let content_type = if metadata.mode.is_dir() {
+            "application/x-directory"
+        } else if metadata.mode.is_symlink() {
+            "application/x-symlink"
+        } else {
+            "application/octet-stream"
+        };
+        HttpResponse::new(200)
+            .with_header("Content-Type", content_type)
+            .with_header("Content-Mode", format_http_mode(metadata.mode))
+            .with_header("Content-Length", metadata.size.to_string())
+            .with_header("Content-Modified", unix_secs(metadata.modified).to_string())
+            .with_header(
+                "Content-Ownership",
+                format!("{}:{}", metadata.uid, metadata.gid),
+            )
+            .with_body(body)
+    }
+
+    fn http_response_from_fs(fsys: &dyn FileSystem, name: &str) -> Result<HttpResponse> {
+        let metadata = lstat(fsys, name)?;
+        if metadata.is_dir() {
+            let body = read_dir(fsys, name)?
+                .into_iter()
+                .map(|entry| format!("{} {}\n", entry.name, format_http_mode(entry.metadata.mode)))
+                .collect::<String>()
+                .into_bytes();
+            return Ok(http_response_from_metadata(&metadata, body));
+        }
+        let body = if metadata.mode.is_symlink() {
+            fsys.readlink(name)?.into_bytes()
+        } else {
+            read_file(fsys, name)?
+        };
+        Ok(http_response_from_metadata(&metadata, body))
+    }
+
+    fn http_head_from_fs(fsys: &dyn FileSystem, name: &str) -> Result<HttpResponse> {
+        let metadata = lstat(fsys, name)?;
+        Ok(http_response_from_metadata(&metadata, Vec::new()))
+    }
+
+    fn multipart_directory_response(
+        path: &str,
+        root_listing: &str,
+        parts: Vec<(BTreeMap<String, String>, Vec<u8>)>,
+    ) -> HttpResponse {
+        let boundary = "wanix-boundary";
+        let mut body = Vec::new();
+        let root_path = HttpFs::normalize_http_path(path);
+        let root_headers = BTreeMap::from([
+            ("Content-Location".to_string(), root_path),
+            (
+                "Content-Type".to_string(),
+                "application/x-directory".to_string(),
+            ),
+            ("Content-Mode".to_string(), "16877".to_string()),
+            (
+                "Content-Length".to_string(),
+                (2 + root_listing.lines().count()).to_string(),
+            ),
+            ("Content-Modified".to_string(), "1700000000".to_string()),
+            ("Content-Ownership".to_string(), "0:0".to_string()),
+        ]);
+        append_multipart_part(&mut body, boundary, &root_headers, root_listing.as_bytes());
+        for (headers, part_body) in parts {
+            append_multipart_part(&mut body, boundary, &headers, &part_body);
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        HttpResponse::new(200)
+            .with_header(
+                "Content-Type",
+                format!("multipart/mixed; boundary={boundary}"),
+            )
+            .with_body(body)
+    }
+
+    fn append_multipart_part(
+        body: &mut Vec<u8>,
+        boundary: &str,
+        headers: &BTreeMap<String, String>,
+        part_body: &[u8],
+    ) {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        for (key, value) in headers {
+            body.extend_from_slice(format!("{key}: {value}\r\n").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(part_body);
+        body.extend_from_slice(b"\r\n");
+    }
+
+    fn multipart_directory_response_from_fs(
+        fsys: &dyn FileSystem,
+        name: &str,
+    ) -> Result<HttpResponse> {
+        let metadata = lstat(fsys, name)?;
+        let entries = read_dir(fsys, name)?;
+        let root_listing = entries
+            .iter()
+            .map(|entry| format!("{} {}\n", entry.name, format_http_mode(entry.metadata.mode)))
+            .collect::<String>();
+        let mut parts = Vec::new();
+        for entry in entries {
+            let child_name = if name == "." {
+                entry.name.clone()
+            } else {
+                format!("{name}/{}", entry.name)
+            };
+            let child_metadata = lstat(fsys, &child_name)?;
+            let mut headers = BTreeMap::from([
+                (
+                    "Content-Location".to_string(),
+                    HttpFs::normalize_http_path(&child_name),
+                ),
+                (
+                    "Content-Type".to_string(),
+                    if child_metadata.is_dir() {
+                        "application/x-directory".to_string()
+                    } else if child_metadata.mode.is_symlink() {
+                        "application/x-symlink".to_string()
+                    } else {
+                        "application/octet-stream".to_string()
+                    },
+                ),
+                (
+                    "Content-Mode".to_string(),
+                    format_http_mode(child_metadata.mode),
+                ),
+                (
+                    "Content-Modified".to_string(),
+                    unix_secs(child_metadata.modified).to_string(),
+                ),
+                (
+                    "Content-Ownership".to_string(),
+                    format!("{}:{}", child_metadata.uid, child_metadata.gid),
+                ),
+            ]);
+            let part_body = if child_metadata.is_dir() {
+                let body = read_dir(fsys, &child_name)?
+                    .into_iter()
+                    .map(|entry| {
+                        format!("{} {}\n", entry.name, format_http_mode(entry.metadata.mode))
+                    })
+                    .collect::<String>()
+                    .into_bytes();
+                headers.insert(
+                    "Content-Length".to_string(),
+                    child_metadata.size.to_string(),
+                );
+                body
+            } else {
+                headers.insert(
+                    "Content-Range".to_string(),
+                    format!("bytes 0-0/{}", child_metadata.size),
+                );
+                Vec::new()
+            };
+            parts.push((headers, part_body));
+        }
+        Ok(multipart_directory_response(name, &root_listing, parts)
+            .with_header("Content-Mode", format_http_mode(metadata.mode)))
+    }
+
+    fn tar_patch_bytes(
+        entries: impl IntoIterator<Item = (impl Into<String>, impl Into<Vec<u8>>)>,
+    ) -> Vec<u8> {
+        let patch = MemFs::from_entries(entries);
+        let mut body = Vec::new();
+        TarFs::archive_to_writer(&patch, &mut body).unwrap();
+        body
+    }
+
+    fn apply_tar_patch_to_fs(fsys: &dyn FileSystem, root: &str, body: &[u8]) -> Result<()> {
+        let patch = TarFs::from_reader(Cursor::new(body.to_vec()))?;
+        apply_tar_tree(&patch, ".", fsys, root)
+    }
+
+    fn apply_tar_tree(
+        patch: &dyn FileSystem,
+        patch_path: &str,
+        target: &dyn FileSystem,
+        target_root: &str,
+    ) -> Result<()> {
+        let metadata = lstat(patch, patch_path)?;
+        let target_path = if patch_path == "." {
+            clean_path(target_root)
+        } else if target_root == "." {
+            clean_path(patch_path)
+        } else {
+            clean_path(&format!("{target_root}/{patch_path}"))
+        };
+
+        if patch_path == "." || metadata.is_dir() {
+            mkdir_all(
+                target,
+                &target_path,
+                FileMode::from_perm(metadata.mode.perm()),
+            )?;
+        } else if metadata.mode.is_symlink() {
+            target.symlink(&patch.readlink(patch_path)?, &target_path)?;
+        } else {
+            mkdir_all(
+                target,
+                &parent_path(&target_path),
+                FileMode::from_perm(0o755),
+            )?;
+            write_file(
+                target,
+                &target_path,
+                &read_file(patch, patch_path)?,
+                FileMode::from_perm(metadata.mode.perm()),
+            )?;
+        }
+
+        if metadata.is_dir() {
+            for entry in read_dir(patch, patch_path)? {
+                let child = if patch_path == "." {
+                    entry.name
+                } else {
+                    format!("{patch_path}/{}", entry.name)
+                };
+                apply_tar_tree(patch, &child, target, target_root)?;
+            }
+        }
+        Ok(())
+    }
+
+    struct PatchApplyingTransport {
+        base_url: String,
+        fs: Arc<MemFs>,
+        requests: Mutex<Vec<HttpRequest>>,
+    }
+
+    impl PatchApplyingTransport {
+        fn new(base_url: &str, fs: MemFs) -> Self {
+            Self {
+                base_url: base_url.trim_end_matches('/').to_string(),
+                fs: Arc::new(fs),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<HttpRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        fn request_name(&self, url: &str) -> String {
+            let path = url.strip_prefix(&self.base_url).unwrap_or(url);
+            let trimmed = path.trim_start_matches('/');
+            if trimmed.is_empty() {
+                ".".to_string()
+            } else {
+                clean_path(trimmed)
+            }
+        }
+    }
+
+    impl HttpTransport for PatchApplyingTransport {
+        fn request(&self, request: HttpRequest) -> Result<HttpResponse> {
+            self.requests.lock().unwrap().push(request.clone());
+            let name = self.request_name(&request.url);
+            match request.method {
+                Method::GET => {
+                    if request
+                        .headers
+                        .get("Accept")
+                        .is_some_and(|value| value == "multipart/mixed")
+                        && is_dir(self.fs.as_ref(), &name).unwrap_or(false)
+                    {
+                        multipart_directory_response_from_fs(self.fs.as_ref(), &name)
+                    } else {
+                        http_response_from_fs(self.fs.as_ref(), &name)
+                    }
+                }
+                Method::HEAD => http_head_from_fs(self.fs.as_ref(), &name),
+                Method::PATCH
+                    if request
+                        .headers
+                        .get("Content-Type")
+                        .is_some_and(|value| value == "application/x-tar") =>
+                {
+                    apply_tar_patch_to_fs(self.fs.as_ref(), &name, &request.body)?;
+                    Ok(HttpResponse::new(204))
+                }
+                Method::PATCH => Ok(HttpResponse::new(400)),
+                _ => Ok(HttpResponse::new(405)),
+            }
+        }
+    }
+
     #[test]
     fn httpfs_reads_files_and_directories() {
         let transport = Arc::new(RecordingTransport::default());
@@ -3660,6 +4191,92 @@ mod tests {
         assert_eq!(requests[0].method, Method::GET);
         assert_eq!(requests[0].url, "https://example.invalid/root/file");
         assert_eq!(requests[1].url, "https://example.invalid/root/");
+    }
+
+    #[test]
+    fn httpfs_reads_multipart_directory_listing_metadata() {
+        let transport = Arc::new(RecordingTransport::default());
+        transport.push(multipart_directory_response(
+            ".",
+            "alpha 33188\nbeta 16877\nlink 41471\n",
+            vec![
+                (
+                    BTreeMap::from([
+                        ("Content-Location".to_string(), "/alpha".to_string()),
+                        (
+                            "Content-Type".to_string(),
+                            "application/octet-stream".to_string(),
+                        ),
+                        ("Content-Mode".to_string(), "33188".to_string()),
+                        ("Content-Range".to_string(), "bytes 0-0/5".to_string()),
+                        ("Content-Modified".to_string(), "1700000000".to_string()),
+                        ("Content-Ownership".to_string(), "7:8".to_string()),
+                    ]),
+                    Vec::new(),
+                ),
+                (
+                    BTreeMap::from([
+                        (
+                            "Content-Disposition".to_string(),
+                            "attachment; filename=\"/beta\"".to_string(),
+                        ),
+                        (
+                            "Content-Type".to_string(),
+                            "application/x-directory".to_string(),
+                        ),
+                        ("Content-Mode".to_string(), "16877".to_string()),
+                        ("Content-Length".to_string(), "3".to_string()),
+                        ("Content-Modified".to_string(), "1700000001".to_string()),
+                        ("Content-Ownership".to_string(), "1:2".to_string()),
+                    ]),
+                    b"nested 33188\n".to_vec(),
+                ),
+                (
+                    BTreeMap::from([
+                        ("Content-Location".to_string(), "/link".to_string()),
+                        (
+                            "Content-Type".to_string(),
+                            "application/x-symlink".to_string(),
+                        ),
+                        ("Content-Mode".to_string(), "41471".to_string()),
+                        ("Content-Range".to_string(), "bytes 0-0/4".to_string()),
+                        ("Content-Modified".to_string(), "1700000002".to_string()),
+                        ("Content-Ownership".to_string(), "3:4".to_string()),
+                    ]),
+                    Vec::new(),
+                ),
+            ],
+        ));
+        let fs = HttpFs::new("https://example.invalid/root", transport.clone());
+
+        let entries: Vec<_> = read_dir(&fs, ".")
+            .unwrap()
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.name,
+                    entry.metadata.size,
+                    entry.metadata.uid,
+                    entry.metadata.gid,
+                    entry.metadata.mode,
+                )
+            })
+            .collect();
+
+        assert_eq!(entries[0].0, "alpha");
+        assert_eq!(entries[0].1, 5);
+        assert_eq!(entries[0].2, 7);
+        assert_eq!(entries[0].3, 8);
+        assert_eq!(entries[1].0, "beta");
+        assert!(entries[1].4.is_dir());
+        assert_eq!(entries[1].1, 3);
+        assert_eq!(entries[2].0, "link");
+        assert!(entries[2].4.is_symlink());
+        assert_eq!(entries[2].1, 4);
+
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].headers["Accept"], "multipart/mixed");
     }
 
     #[test]
@@ -4036,8 +4653,9 @@ mod tests {
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].method.as_str(), "PATCH");
             assert_eq!(requests[0].url, "https://example.invalid/fs/dir");
-            assert_eq!(requests[0].headers.len(), 2);
+            assert_eq!(requests[0].headers.len(), 3);
             assert_eq!(requests[0].headers["Content-Type"], "application/x-tar");
+            assert_eq!(requests[0].headers["Content-Length"], "9");
             assert_eq!(requests[0].headers["Change-Timestamp"], "1700000000123456");
             assert_eq!(requests[0].body, b"tar-patch");
         });
@@ -4073,11 +4691,60 @@ mod tests {
             assert!(requests
                 .iter()
                 .all(|request| request.headers["Content-Type"] == "application/x-tar"));
+            assert_eq!(requests[0].headers["Content-Length"], "3");
+            assert_eq!(requests[1].headers["Content-Length"], "3");
             assert!(requests
                 .iter()
                 .all(|request| request.headers["Change-Timestamp"] == "1700000000123456"));
             assert_eq!(requests[0].body, b"one");
             assert_eq!(requests[1].body, b"two");
+        });
+    }
+
+    #[test]
+    fn httpfs_patch_tar_applies_tar_representation_with_fake_transport() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        with_test_current_time(now, || {
+            let transport = Arc::new(PatchApplyingTransport::new(
+                "https://example.invalid/fs",
+                MemFs::from_entries([("dir/child", b"old".to_vec())]),
+            ));
+            let fs = HttpFs::with_cache_ttl(
+                "https://example.invalid/fs",
+                transport.clone(),
+                Duration::from_secs(60),
+            );
+            let tar_body = tar_patch_bytes([
+                ("child", b"new".to_vec()),
+                ("nested/file", b"nested".to_vec()),
+            ]);
+
+            let before: Vec<_> = read_dir(&fs, "dir")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(before, vec!["child"]);
+            assert_eq!(read_file(&fs, "dir/child").unwrap(), b"old");
+
+            fs.patch_tar("dir", tar_body.clone()).unwrap();
+
+            let after: Vec<_> = read_dir(&fs, "dir")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(after, vec!["child", "nested"]);
+            assert_eq!(read_file(&fs, "dir/child").unwrap(), b"new");
+            assert_eq!(read_file(&fs, "dir/nested/file").unwrap(), b"nested");
+
+            let requests = transport.requests();
+            assert!(requests.iter().any(|request| {
+                request.method == Method::PATCH
+                    && request.headers["Content-Type"] == "application/x-tar"
+                    && request.headers["Content-Length"] == tar_body.len().to_string()
+                    && request.body == tar_body
+            }));
         });
     }
 

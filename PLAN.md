@@ -9,8 +9,8 @@ Immediate protocol/runtime tranche:
 - Continue browser system and binding parity beyond the component-driven `wanix-system`/`wanix-bind`/`wanix-task` baseline, especially cross-document imports and richer task element behavior.
 - Attach the browser host storage adapters to namespace mounts where the synchronous Rust `FileSystem` boundary can be satisfied, and continue import/execution glue on top of the custom elements, Worker/MessagePort helpers, and host-neutral registries.
 - Replace deterministic execution handlers with real WASI syscall execution and browser/native JS-WASM execution drivers.
-- Continue backend hardening with HTTP multipart/PATCH application behavior, remote metadata details, and cloud object-store adapter boundaries.
-- Deepen remaining placeholder device behavior, especially real terminal screen protocol, VM execution, worker integration, and network/TCP behavior.
+- Continue backend hardening with HTTP remote metadata details, live transport adapters, and cloud object-store adapter boundaries.
+- Deepen remaining host-specific device behavior, especially real terminal screen protocol, VM execution, worker integration, and native/browser TCP adapters.
 - Keep expanding Rust-owned conformance fixtures for browser bindings, storage backends, worker messaging, execution, devices, and backend hardening.
 
 ## Planning Constraints
@@ -96,7 +96,7 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 9. WASM and browser runtime
    - Port root runtime initialization and built-in bindings from the current `wasm` package.
    - Recreate `wanix-system` behavior with Rust-backed WASM exports and minimal JS glue.
-- Port worker startup, task worker messaging, port opening, 9P import/export, namespace setup from `<wanix-bind>`, and mount integration for browser filesystem bindings.
+   - Port worker startup, task worker messaging, port opening, 9P import/export, namespace setup from `<wanix-bind>`, and mount integration for browser filesystem bindings.
 
 10. WASI and Go-compatible JS execution
     - Port or replace the current worker shims for WASI and Go-compatible JS/WASM workloads.

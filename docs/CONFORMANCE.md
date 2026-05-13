@@ -17,6 +17,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `HttpFs` GET/HEAD reads, directory listing parsing, PUT writes, mkdir, symlink, MOVE rename, DELETE remove, metadata parsing, and protocol header formatting through a Rust recording transport.
 - `HttpFs` PATCH tar payload transport behavior and mutating request `Change-Timestamp` headers through a Rust recording transport.
 - `HttpFs` opt-in metadata/node caching behavior for success and not-found responses, deterministic TTL expiry, and mutation-driven invalidation after write, mkdir/symlink, remove, rename, and PATCH tar operations.
+- `HttpFs` multipart/mixed directory listing parsing and fake-transport PATCH tar application behavior.
 - `R2Fs` object key scoping, directory listing objects, metadata fields, files, directories, symlinks, base path scoping, rename, remove, and parent listing updates through a Rust object store trait.
 - `R2Fs` parent listing compare-and-swap retry behavior and deterministic conflict exhaustion through Rust in-memory object stores.
 - Pipe bidirectional reads and writes with file close preserving the underlying pipe.
@@ -46,6 +47,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - 9P client filesystem behavior over loopback transport for read, write, create, readdir, rename, remove, mkdir, and rmdir operations.
 - 9P partial-walk edge behavior, duplicate `newfid` rejection, and client not-found mapping for partial remote walks.
 - 9P flush acknowledgement behavior and fid-state preservation for synchronous server handling.
+- 9P xattr walk/create message codec coverage plus server/client xattr read, list, and write commit behavior over MemFs xattrs.
 - 9P client invalid path rejection before normalization for empty, absolute, and parent-traversal inputs.
 - Runtime 9P namespace export and loopback import behavior.
 - Browser smoke coverage for reading files through a Rust 9P imported mount.
@@ -54,9 +56,9 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Host-neutral browser storage registry resolution for writable registered handles, persistent descriptor identities, and subpath-rooted mounts.
 - Runtime root bindings for core and device surfaces.
 - Device allocator resource creation.
-- Terminal device program/data queues, winch signal path, ctl clear/reset/noop behavior, state, and size files.
-- VM device ctl start/stop/reset behavior, state, alias/config fields, console log, id, and kind files.
-- Network placeholder allocator with per-resource ctl/data/status files and deterministic connect/listen/close/reset behavior.
+- Terminal device program/data queues, program LF-to-CRLF normalization, winch signal path, ctl clear/reset/noop behavior, state, and size files.
+- VM device `new/<kind>` allocation, ctl start/stop/reset/alias/config behavior, alias lookup, state fields, console log, id, and kind files.
+- Network deterministic Plan 9-style connection resources for dial, bind, announce, listen accept, hangup/reset, status/local/remote, data flow, and invalid transitions.
 - WASI and Go-compatible JS execution adapter task starts.
 - Native `WanixSystem` smoke operations.
 - Browser wasm smoke operations through `tests/browser-smoke.html`.
@@ -79,13 +81,13 @@ These surfaces are represented in Rust but should continue to be expanded with d
 
 - HTTP filesystem remote metadata semantics beyond the currently covered cache headers and Wanix metadata fields.
 - `SyncFs` host timer integration and backend-specific patch/application semantics beyond the in-memory test backend.
-- HTTP filesystem multipart parsing, PATCH archive application semantics, and real network transport.
+- HTTP filesystem live network transport and remote PATCH semantics against real servers.
 - Cloudflare/S3 adapter wiring for the Rust `ObjectStore` contract.
 - Cross-document/browser MessagePort transport wiring for remote 9P import/export using the JS port helpers beyond loopback smoke.
-- Additional 9P edge cases such as flush cancellation, xattr messages, and remote conflict/error parity.
+- Additional 9P edge cases such as flush cancellation and remote conflict/error parity.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters where async browser APIs meet the synchronous Rust filesystem trait boundary.
 - Browser Worker startup and runtime request handling on top of the JS Worker/MessagePort glue and host-neutral typed runtime adapter.
 - Terminal screen protocol details beyond the host-neutral file protocol.
-- Real VM execution and network/TCP transport behavior beyond deterministic placeholder resources.
+- Real VM execution and native/browser TCP transport adapters beyond deterministic state-machine resources.
 - Full WASI syscall execution.
 - Full Go-compatible JS/WASM worker execution.
