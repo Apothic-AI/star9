@@ -1,8 +1,10 @@
 //! Browser/WASM entry points for the Rust Wanix runtime.
 
 mod descriptors;
+pub mod message_port;
 pub mod p9_transport;
 mod storage;
+pub mod worker;
 
 use wanix_core::Result;
 use wanix_protocol::WanixApi;
