@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 mod devices;
+mod execution;
 mod worker;
 
 use wanix_core::{FileMode, FsContext, Result};
@@ -11,6 +12,7 @@ use wanix_protocol::p9::{LoopbackTransport, NinePClientFs, NinePServer, NinePTra
 use wanix_task::{Task, TaskFs};
 use wanix_vfs::{BindMode, Namespace};
 
+pub use execution::{ExecutionRegistry, FnExecutionHandler, NativeExecutionHandler};
 pub use worker::{RuntimeProtocolHost, WorkerHost};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -19,6 +21,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Runtime {
     root: Task,
     task_fs: TaskFs,
+    execution_registry: ExecutionRegistry,
     protocol_host: RuntimeProtocolHost,
 }
 
@@ -28,10 +31,12 @@ impl Runtime {
         let root = task_fs.alloc("auto", None)?;
         bind_core(&root, task_fs.clone())?;
         bind_devices(&root)?;
+        let execution_registry = ExecutionRegistry::new();
         let protocol_host = RuntimeProtocolHost::new(root.clone(), task_fs.clone());
         Ok(Self {
             root,
             task_fs,
+            execution_registry,
             protocol_host,
         })
     }
@@ -50,6 +55,10 @@ impl Runtime {
 
     pub fn protocol_host(&self) -> RuntimeProtocolHost {
         self.protocol_host.clone()
+    }
+
+    pub fn execution_registry(&self) -> ExecutionRegistry {
+        self.execution_registry.clone()
     }
 
     pub fn handle_runtime_request(
@@ -196,7 +205,23 @@ pub fn smoke_file_api(runtime: &Runtime) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wanix_fs::{open, read_dir, read_file};
+    use wanix_fs::{fs_ref, open, read_dir, read_file, FileHandle, MemFs};
+    use wanix_protocol::runtime::{
+        EnvironmentEntry, ExecutionKind as ProtocolExecutionKind, ExecutionSpec, ExitStatus,
+        FdDescriptor, FdKind, StdioSet, StreamDescriptor,
+    };
+
+    fn read_handle(file: &mut dyn FileHandle) -> Result<Vec<u8>> {
+        let mut data = Vec::new();
+        let mut buf = [0_u8; 64];
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                return Ok(data);
+            }
+            data.extend_from_slice(&buf[..n]);
+        }
+    }
 
     #[test]
     fn root_binds_wanix_task_and_devices() {
@@ -258,6 +283,264 @@ mod tests {
         );
         ExecutionAdapter::wasi("repl.wasm").finish(&task, 0);
         assert_eq!(task.exit(), "0");
+    }
+
+    #[test]
+    fn execution_registry_reports_missing_handler_after_starting_task_state() {
+        let runtime = Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+
+        let err = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ProtocolExecutionKind::Wasi,
+                    module: "missing.wasm".into(),
+                    args: vec!["alpha".into()],
+                    env: vec![EnvironmentEntry {
+                        name: "MODE".into(),
+                        value: "test".into(),
+                    }],
+                    cwd: Some("sandbox".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("operation not supported: no execution handler registered"));
+        assert_eq!(task.cmd(), "missing.wasm alpha");
+        assert_eq!(task.env(), vec!["MODE=test".to_string()]);
+        assert_eq!(task.dir(), "sandbox");
+        assert_eq!(task.exit(), "started");
+        assert_eq!(
+            task.fd_entries(),
+            vec![
+                (0, "stdin".to_string()),
+                (1, "stdout".to_string()),
+                (2, "stderr".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn execution_registry_runs_wasi_handlers_against_task_namespace() {
+        let runtime = Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("stdin.txt", b"stdin-bytes".to_vec()),
+                    ("stdout.txt", Vec::new()),
+                    ("stderr.txt", Vec::new()),
+                    ("extra.txt", b"side-channel".to_vec()),
+                    ("result.txt", Vec::new()),
+                ])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+
+        let registry = runtime.execution_registry();
+        registry.register_fn(ProtocolExecutionKind::Wasi, "echo.wasm", |task, _spec| {
+            assert_eq!(task.worker(), Some("native:wasi:echo.wasm".to_string()));
+            assert_eq!(task.cmd(), "echo.wasm alpha beta");
+            assert_eq!(task.arg(0), "echo.wasm");
+            assert_eq!(task.arg(1), "alpha");
+            assert_eq!(task.arg(2), "beta");
+            assert_eq!(
+                task.env(),
+                vec!["GREETING=hello".to_string(), "MODE=test".to_string()]
+            );
+            assert_eq!(task.dir(), "workspace");
+            assert_eq!(task.fd_path(0).unwrap(), "workspace/stdin.txt");
+            assert_eq!(task.fd_path(1).unwrap(), "workspace/stdout.txt");
+            assert_eq!(task.fd_path(2).unwrap(), "workspace/stderr.txt");
+            assert_eq!(task.fd_path(7).unwrap(), "workspace/extra.txt");
+
+            let stdin = task.with_fd_mut(0, |file| read_handle(file))?;
+            let extra = task.with_fd_mut(7, |file| read_handle(file))?;
+            task.with_fd_mut(1, |file| {
+                file.write(
+                    format!("stdout:{}:{}", task.arg(1), String::from_utf8_lossy(&stdin))
+                        .as_bytes(),
+                )?;
+                file.sync()?;
+                Ok(())
+            })?;
+            task.with_fd_mut(2, |file| {
+                file.write(
+                    format!("stderr:{}:{}", task.dir(), String::from_utf8_lossy(&extra)).as_bytes(),
+                )?;
+                file.sync()?;
+                Ok(())
+            })?;
+            write_file(
+                task.namespace().as_ref(),
+                "workspace/result.txt",
+                format!("cmd={};env={}", task.cmd(), task.env().join(",")).as_bytes(),
+                FileMode::from_perm(0o644),
+            )?;
+            Ok(ExitStatus::ExitCode(23))
+        });
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ProtocolExecutionKind::Wasi,
+                    module: "echo.wasm".into(),
+                    args: vec!["alpha".into(), "beta".into()],
+                    env: vec![
+                        EnvironmentEntry {
+                            name: "GREETING".into(),
+                            value: "hello".into(),
+                        },
+                        EnvironmentEntry {
+                            name: "MODE".into(),
+                            value: "test".into(),
+                        },
+                    ],
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet {
+                        stdin: StreamDescriptor::Fd(FdDescriptor {
+                            fd: 0,
+                            kind: FdKind::File,
+                            path: Some("workspace/stdin.txt".into()),
+                            read: true,
+                            write: false,
+                        }),
+                        stdout: StreamDescriptor::Fd(FdDescriptor {
+                            fd: 1,
+                            kind: FdKind::File,
+                            path: Some("workspace/stdout.txt".into()),
+                            read: false,
+                            write: true,
+                        }),
+                        stderr: StreamDescriptor::Fd(FdDescriptor {
+                            fd: 2,
+                            kind: FdKind::File,
+                            path: Some("workspace/stderr.txt".into()),
+                            read: false,
+                            write: true,
+                        }),
+                    },
+                    fds: vec![FdDescriptor {
+                        fd: 7,
+                        kind: FdKind::File,
+                        path: Some("workspace/extra.txt".into()),
+                        read: true,
+                        write: false,
+                    }],
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(23));
+        assert_eq!(task.exit(), "23");
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/stdout.txt").unwrap(),
+            b"stdout:alpha:stdin-bytes"
+        );
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/stderr.txt").unwrap(),
+            b"stderr:workspace:side-channel"
+        );
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/result.txt").unwrap(),
+            b"cmd=echo.wasm alpha beta;env=GREETING=hello,MODE=test"
+        );
+    }
+
+    #[test]
+    fn execution_registry_runs_js_wasm_handlers() {
+        let runtime = Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("stdout.txt", Vec::new()),
+                    ("result.txt", Vec::new()),
+                ])),
+                ".",
+                "sandbox",
+                BindMode::Replace,
+            )
+            .unwrap();
+
+        runtime.execution_registry().register_fn(
+            ProtocolExecutionKind::JsWasm,
+            "ui.wasm",
+            |task, spec| {
+                assert_eq!(spec.kind, ProtocolExecutionKind::JsWasm);
+                assert_eq!(task.worker(), Some("native:js_wasm:ui.wasm".to_string()));
+                assert_eq!(task.cmd(), "ui.wasm --hydrate");
+                assert_eq!(task.dir(), "sandbox");
+                task.with_fd_mut(1, |file| {
+                    file.write(b"console:ready")?;
+                    file.sync()?;
+                    Ok(())
+                })?;
+                write_file(
+                    task.namespace().as_ref(),
+                    "sandbox/result.txt",
+                    b"rendered",
+                    FileMode::from_perm(0o644),
+                )?;
+                Ok(ExitStatus::ExitCode(0))
+            },
+        );
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ProtocolExecutionKind::JsWasm,
+                    module: "ui.wasm".into(),
+                    args: vec!["--hydrate".into()],
+                    env: Vec::new(),
+                    cwd: Some("sandbox".into()),
+                    stdio: StdioSet {
+                        stdin: StreamDescriptor::Null,
+                        stdout: StreamDescriptor::Fd(FdDescriptor {
+                            fd: 1,
+                            kind: FdKind::File,
+                            path: Some("sandbox/stdout.txt".into()),
+                            read: false,
+                            write: true,
+                        }),
+                        stderr: StreamDescriptor::Null,
+                    },
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(task.exit(), "0");
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "sandbox/stdout.txt").unwrap(),
+            b"console:ready"
+        );
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "sandbox/result.txt").unwrap(),
+            b"rendered"
+        );
     }
 
     #[test]
