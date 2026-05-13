@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+mod worker;
+
 use wanix_core::{
     clean_path, valid_path, DirEntry, Error, ErrorKind, FileMode, FsContext, Metadata, Result,
 };
@@ -14,12 +16,15 @@ use wanix_protocol::p9::{LoopbackTransport, NinePClientFs, NinePServer, NinePTra
 use wanix_task::{Task, TaskFs};
 use wanix_vfs::{BindMode, Namespace};
 
+pub use worker::{RuntimeProtocolHost, WorkerHost};
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone)]
 pub struct Runtime {
     root: Task,
     task_fs: TaskFs,
+    protocol_host: RuntimeProtocolHost,
 }
 
 impl Runtime {
@@ -28,7 +33,12 @@ impl Runtime {
         let root = task_fs.alloc("auto", None)?;
         bind_core(&root, task_fs.clone())?;
         bind_devices(&root)?;
-        Ok(Self { root, task_fs })
+        let protocol_host = RuntimeProtocolHost::new(root.clone(), task_fs.clone());
+        Ok(Self {
+            root,
+            task_fs,
+            protocol_host,
+        })
     }
 
     pub fn root(&self) -> Task {
@@ -41,6 +51,17 @@ impl Runtime {
 
     pub fn namespace(&self) -> Arc<Namespace> {
         self.root.namespace()
+    }
+
+    pub fn protocol_host(&self) -> RuntimeProtocolHost {
+        self.protocol_host.clone()
+    }
+
+    pub fn handle_runtime_request(
+        &self,
+        request: wanix_protocol::runtime::RuntimeRequest,
+    ) -> Result<wanix_protocol::runtime::RuntimeResponse> {
+        self.protocol_host.handle_request(request)
     }
 
     pub fn export_9p(&self) -> Arc<NinePServer> {
