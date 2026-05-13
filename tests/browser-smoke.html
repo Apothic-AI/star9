@@ -6,6 +6,15 @@
   import init, { WanixSystem } from "../target/wanix-web-pkg/wanix_web.js";
 
   const status = document.querySelector("#status");
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const entriesOf = (path, system) => Array.from(system.readDir(path));
+  const numericTaskIds = (entries) =>
+    entries
+      .filter((entry) => /^\d+$/.test(entry))
+      .map((entry) => Number(entry))
+      .sort((left, right) => left - right);
 
   try {
     await init("../target/wanix-web-pkg/wanix_web_bg.wasm");
@@ -14,21 +23,81 @@
     const version = system.readText("#wanix/version").trim();
     system.bindRamFs("tmp");
     system.writeText("tmp/hello", "browser-ok");
+    system.setupNamespace("1", [
+      {
+        dst: "worker-store",
+        kind: "ns",
+        storage: {
+          backend: "worker",
+          worker: "smoke-worker",
+          path: "nested/root",
+        },
+      },
+    ]);
+    system.writeText("worker-store/state.txt", "storage-ok");
+    const storageText = system.readText("worker-store/state.txt");
+    const storageEntries = entriesOf("worker-store", system);
     system.mountSelf9p("remote");
     const text = system.readText("tmp/hello");
     const remoteText = system.readText("remote/tmp/hello");
-    const entries = system.readDir("tmp");
+    const remoteStorageText = system.readText("remote/worker-store/state.txt");
+    const entries = entriesOf("tmp", system);
+    const taskEntriesBefore = entriesOf("#task", system);
     const wasiTask = system.startWasi("repl.wasm");
+    const taskEntriesAfterWasi = entriesOf("#task", system);
     const goTask = system.startGoJs("repl-gojs.wasm");
+    const taskEntriesAfterGo = entriesOf("#task", system);
+    const wasiCmd = system.readText(`#task/${wasiTask}/cmd`).trim();
+    const wasiExit = system.readText(`#task/${wasiTask}/exit`).trim();
+    const goCmd = system.readText(`#task/${goTask}/cmd`).trim();
+    const goExit = system.readText(`#task/${goTask}/exit`).trim();
 
-    if (version !== "0.1.0") throw new Error(`bad version ${version}`);
-    if (text !== "browser-ok") throw new Error(`bad text ${text}`);
-    if (remoteText !== "browser-ok") throw new Error(`bad remote text ${remoteText}`);
-    if (!entries.includes("hello")) throw new Error(`missing tmp entry: ${entries}`);
-    if (!wasiTask || !goTask || wasiTask === goTask) throw new Error("bad task ids");
+    assert(version === "0.1.0", `bad version ${version}`);
+    assert(text === "browser-ok", `bad text ${text}`);
+    assert(remoteText === "browser-ok", `bad remote text ${remoteText}`);
+    assert(storageText === "storage-ok", `bad storage text ${storageText}`);
+    assert(
+      remoteStorageText === "storage-ok",
+      `bad remote storage text ${remoteStorageText}`,
+    );
+    assert(entries.includes("hello"), `missing tmp entry: ${entries}`);
+    assert(
+      storageEntries.includes("state.txt"),
+      `missing storage entry: ${storageEntries}`,
+    );
+    assert(Boolean(wasiTask) && Boolean(goTask) && wasiTask !== goTask, "bad task ids");
+    assert(wasiCmd === "repl.wasm", `bad wasi cmd ${wasiCmd}`);
+    assert(goCmd === "repl-gojs.wasm", `bad go cmd ${goCmd}`);
+    assert(wasiExit === "started", `bad wasi exit ${wasiExit}`);
+    assert(goExit === "started", `bad go exit ${goExit}`);
+    assert(
+      numericTaskIds(taskEntriesAfterWasi).includes(Number(wasiTask)),
+      `missing wasi task entry: ${taskEntriesAfterWasi}`,
+    );
+    assert(
+      numericTaskIds(taskEntriesAfterGo).includes(Number(goTask)),
+      `missing go task entry: ${taskEntriesAfterGo}`,
+    );
+    assert(
+      numericTaskIds(taskEntriesBefore).includes(1),
+      `missing root task entry: ${taskEntriesBefore}`,
+    );
+    assert(
+      Number(goTask) === Number(wasiTask) + 1,
+      `bad task order ${wasiTask}, ${goTask}`,
+    );
 
     document.body.dataset.status = "ok";
-    status.textContent = JSON.stringify({ version, entries, remoteText, wasiTask, goTask });
+    status.textContent = JSON.stringify({
+      version,
+      entries,
+      remoteText,
+      storageEntries,
+      remoteStorageText,
+      wasiTask,
+      goTask,
+      taskEntriesAfterGo,
+    });
   } catch (err) {
     document.body.dataset.status = "error";
     status.textContent = err && err.stack ? err.stack : String(err);
