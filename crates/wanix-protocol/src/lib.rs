@@ -10,6 +10,8 @@ use wanix_core::{Error, ErrorKind, FileMode, OpenFlags, Result};
 use wanix_fs::{self as fs, FileSystem};
 use wanix_task::Task;
 
+pub mod p9;
+
 pub fn encode_request(request: &ApiRequest) -> Result<Vec<u8>> {
     encode_cbor(request)
 }

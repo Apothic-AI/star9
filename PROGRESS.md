@@ -1,5 +1,13 @@
 # wanix-rs Progress
 
+## 2026-05-13
+
+- Added a Rust-native `wanix_protocol::p9` module implementing a 9P2000.L-style frame codec for version, attach, walk, open/create, getattr/setattr, read/write, clunk/remove, mkdir/readdir, renameat/unlinkat, fsync, symlink, and readlink messages.
+- Added `NinePServer` over `wanix_fs::FileSystem`, with fid tracking, stable FNV-1a qids, Wanix metadata-to-9P attribute mapping, directory-entry encoding, and errno-based `Rlerror` responses.
+- Added `NinePClientFs` over a synchronous frame transport trait plus `LoopbackTransport`, allowing Rust callers to mount a 9P export as a normal `FileSystem` without Go dependencies.
+- Added MemFs-backed 9P tests for codec round trips, raw version/attach/walk/getattr behavior, client read/write/create/list behavior, rename/remove behavior, and directory create/remove behavior.
+- Verified `cargo fmt`, `cargo test -p wanix-fs`, `cargo test -p wanix-protocol`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `cargo build -p wanix-web --target wasm32-unknown-unknown`.
+
 ## 2026-05-12
 
 - Replaced the `CacheFs = MemFs` placeholder with a real Rust-native `MetaCacheFs` wrapper in `wanix-fs`.

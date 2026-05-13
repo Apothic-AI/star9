@@ -4,10 +4,11 @@
 
 Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the reference implementation to clone and port from without wrapping or depending on Go code.
 
-Immediate filesystem tranche:
+Immediate protocol/runtime tranche:
 
-- Complete a Rust-native metadata cache wrapper with TTL, refresh-ahead, error caching, and mutation invalidation.
-- Land a contained `SyncFs` baseline with local-first dirty tracking plus explicit `push`/`pull`/`sync` operations before adding backend-specific conflict policies or background scheduling.
+- Wire the Rust-native 9P bridge into runtime/browser import-export surfaces once transport adapters are in place.
+- Add browser-safe MessagePort/WebSocket framing around the Rust-owned 9P frame codec.
+- Keep expanding Rust-owned conformance fixtures for 9P edge cases, browser bindings, storage backends, and worker execution.
 
 ## Planning Constraints
 
