@@ -110,7 +110,7 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - Cross-document/browser MessagePort namespace mounting for remote 9P imports beyond the current async browser read/write/list mount baseline, especially richer mutation/error parity under browser smoke.
 - Additional 9P edge cases such as server-side operation cancellation after `Tflush` and remote conflict/error parity.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters inside task/WASI-visible Rust namespaces where async browser APIs meet the synchronous Rust filesystem trait boundary. The current browser-side async mount table covers `wanix-system` operations.
-- Broader browser Worker execution orchestration beyond the current real module-worker smoke path, especially fd/stdio namespace handoff for representative workloads.
+- Broader browser Worker execution orchestration beyond the current real module-worker smoke path, especially namespace handoff and representative workloads over the existing fd/stdio task-message routing.
 - Terminal browser element protocol details beyond the host-neutral data/program/screen file protocol.
 - Real VM execution and native/browser TCP transport adapters beyond deterministic state-machine resources.
 - Real WASI socket behavior beyond the current explicit unsupported preview1 imports.

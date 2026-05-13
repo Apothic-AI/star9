@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::SeekFrom;
 use std::sync::{Arc, Mutex};
 
 use wanix_core::{Error, ErrorKind, FileMode, FsContext, Result};
@@ -229,9 +230,13 @@ impl RuntimeProtocolHost {
             TaskMessagePayload::PortHandoff(handoff) => {
                 self.handoff_port(handoff)?;
             }
-            TaskMessagePayload::Ready
-            | TaskMessagePayload::StdioData(_)
-            | TaskMessagePayload::FdData(_) => {}
+            TaskMessagePayload::StdioData(data) => {
+                write_task_fd(&task, stdio_fd(data.stream), &data.data)?;
+            }
+            TaskMessagePayload::FdData(data) => {
+                write_task_fd(&task, data.fd, &data.data)?;
+            }
+            TaskMessagePayload::Ready => {}
         }
         Ok(())
     }
@@ -482,6 +487,22 @@ fn render_exit_status(status: &ExitStatus) -> String {
     }
 }
 
+fn stdio_fd(stream: wanix_protocol::runtime::StdioStream) -> u32 {
+    match stream {
+        wanix_protocol::runtime::StdioStream::Stdin => 0,
+        wanix_protocol::runtime::StdioStream::Stdout => 1,
+        wanix_protocol::runtime::StdioStream::Stderr => 2,
+    }
+}
+
+fn write_task_fd(task: &Task, fd: u32, data: &[u8]) -> Result<()> {
+    task.with_fd_mut(fd, |file| {
+        file.seek(SeekFrom::End(0))?;
+        file.write(data)?;
+        file.sync()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,6 +548,23 @@ mod tests {
             .iter()
             .find(|entry| entry.task_id == task_id)
             .unwrap()
+    }
+
+    fn read_task_fd(task: &Task, fd: u32) -> Vec<u8> {
+        task.with_fd_mut(fd, |file| {
+            file.seek(SeekFrom::Start(0))?;
+            let mut out = Vec::new();
+            let mut buf = [0_u8; 64];
+            loop {
+                let n = file.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                out.extend_from_slice(&buf[..n]);
+            }
+            Ok(out)
+        })
+        .unwrap()
     }
 
     #[test]
@@ -735,6 +773,20 @@ mod tests {
         else {
             panic!("expected worker response");
         };
+        runtime
+            .handle_runtime_request(RuntimeRequest::StartWorker(WorkerStartRequest {
+                worker: handle.clone(),
+                execution: ExecutionSpec {
+                    kind: ExecutionKind::JsWasm,
+                    module: "worker.mjs".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: None,
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            }))
+            .unwrap();
 
         runtime
             .handle_runtime_request(RuntimeRequest::PostMessage(TaskMessage {
@@ -767,6 +819,7 @@ mod tests {
                 }),
             }))
             .unwrap();
+        assert_eq!(read_task_fd(&task, 1), b"ok");
         assert_eq!(
             host.task_messages_snapshot(&handle.task_id)
                 .unwrap()
@@ -1000,5 +1053,6 @@ mod tests {
         let task = runtime.task_fs().lookup(&handle.task_id).unwrap();
         assert_eq!(task.cmd(), "echo.wasm hello");
         assert_eq!(worker.snapshot().unwrap().lifecycle, "started");
+        assert_eq!(read_task_fd(&task, 1), b"hello");
     }
 }
