@@ -151,6 +151,18 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .func_wrap(WASI, "poll_oneoff", poll_oneoff)
         .map_err(wasmi_error)?;
     linker
+        .func_wrap(WASI, "sock_accept", sock_accept)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "sock_recv", sock_recv)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "sock_send", sock_send)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "sock_shutdown", sock_shutdown)
+        .map_err(wasmi_error)?;
+    linker
         .func_wrap(WASI, "fd_write", fd_write)
         .map_err(wasmi_error)?;
     linker
@@ -386,6 +398,29 @@ fn poll_oneoff(
     }
     write_u32(&mut caller, nevents_ptr, nsubscriptions as u32)
         .map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
+fn sock_accept(_fd: i32, _flags: i32, _fd_ptr: i32) -> i32 {
+    ERRNO_NOTSUP
+}
+
+fn sock_recv(
+    _fd: i32,
+    _ri_data: i32,
+    _ri_data_len: i32,
+    _ri_flags: i32,
+    _ro_datalen: i32,
+    _ro_flags: i32,
+) -> i32 {
+    ERRNO_NOTSUP
+}
+
+fn sock_send(_fd: i32, _si_data: i32, _si_data_len: i32, _si_flags: i32, _so_datalen: i32) -> i32 {
+    ERRNO_NOTSUP
+}
+
+fn sock_shutdown(_fd: i32, _how: i32) -> i32 {
+    ERRNO_NOTSUP
 }
 
 fn fd_write(
@@ -1617,6 +1652,108 @@ mod tests {
                     (i32.const 32))
                   (i32.const 28)
                   (i32.const 17)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([("program.wasm", program)])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_exposes_unsupported_socket_imports() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "sock_accept"
+                (func $sock_accept (param i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "sock_recv"
+                (func $sock_recv (param i32 i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "sock_send"
+                (func $sock_send (param i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "sock_shutdown"
+                (func $sock_shutdown (param i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+
+              (func $assert_errno (param $errno i32) (param $want i32) (param $code i32)
+                local.get $errno
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (call $assert_errno
+                  (call $sock_accept
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 58)
+                  (i32.const 10))
+                (call $assert_errno
+                  (call $sock_recv
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 0)
+                    (i32.const 0)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 58)
+                  (i32.const 11))
+                (call $assert_errno
+                  (call $sock_send
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 0)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 58)
+                  (i32.const 12))
+                (call $assert_errno
+                  (call $sock_shutdown
+                    (i32.const 3)
+                    (i32.const 0))
+                  (i32.const 58)
+                  (i32.const 13)))
             )
             "#,
         )
