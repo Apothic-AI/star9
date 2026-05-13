@@ -1,17 +1,12 @@
 //! Wanix runtime composition.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
+mod devices;
 mod worker;
 
-use wanix_core::{
-    clean_path, valid_path, DirEntry, Error, ErrorKind, FileMode, FsContext, Metadata, Result,
-};
-use wanix_fs::{
-    directory_file, fs_ref, read_file, write_file, BoxFile, ControlFile, FileHandle, FileSystem,
-    FsRef, MapFs, MemFs, Node, PipeFs, SignalFs,
-};
+use wanix_core::{FileMode, FsContext, Result};
+use wanix_fs::{fs_ref, read_file, write_file, FileSystem, FsRef, MapFs, Node};
 use wanix_protocol::p9::{LoopbackTransport, NinePClientFs, NinePServer, NinePTransport};
 use wanix_task::{Task, TaskFs};
 use wanix_vfs::{BindMode, Namespace};
@@ -125,206 +120,7 @@ fn bind_core(root: &Task, task_fs: TaskFs) -> Result<()> {
 }
 
 fn bind_devices(root: &Task) -> Result<()> {
-    let devices: [(&str, FsRef); 10] = [
-        (
-            "#pipe",
-            fs_ref(DeviceAllocator::new("pipe", || fs_ref(PipeFs::new(false)))),
-        ),
-        (
-            "#signal",
-            fs_ref(DeviceAllocator::new("signal", || {
-                fs_ref(SignalFs::default())
-            })),
-        ),
-        (
-            "#ramfs",
-            fs_ref(DeviceAllocator::new("ramfs", || fs_ref(MemFs::new()))),
-        ),
-        ("#term", fs_ref(DeviceAllocator::new("term", terminal_fs))),
-        ("#vm", fs_ref(DeviceAllocator::new("vm", vm_fs))),
-        ("#worker", fs_ref(DeviceAllocator::new("worker", worker_fs))),
-        ("#web", fs_ref(web_fs())),
-        ("#js", fs_ref(js_value_fs())),
-        (
-            "#cache",
-            fs_ref(DeviceAllocator::new("cache", || fs_ref(MemFs::new()))),
-        ),
-        (
-            "#download",
-            fs_ref(DeviceAllocator::new("download", download_fs)),
-        ),
-    ];
-    for (dst, fs) in devices {
-        root.namespace().bind(fs, ".", dst, BindMode::Replace)?;
-    }
-    Ok(())
-}
-
-#[derive(Clone)]
-pub struct DeviceAllocator {
-    kind: String,
-    state: Arc<DeviceAllocatorState>,
-}
-
-struct DeviceAllocatorState {
-    next_id: Mutex<u32>,
-    resources: RwLock<BTreeMap<String, FsRef>>,
-    factory: Box<dyn Fn() -> FsRef + Send + Sync>,
-}
-
-impl DeviceAllocator {
-    pub fn new(
-        kind: impl Into<String>,
-        factory: impl Fn() -> FsRef + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            kind: kind.into(),
-            state: Arc::new(DeviceAllocatorState {
-                next_id: Mutex::new(0),
-                resources: RwLock::new(BTreeMap::new()),
-                factory: Box::new(factory),
-            }),
-        }
-    }
-
-    pub fn get(&self, id: &str) -> Option<FsRef> {
-        self.state.resources.read().unwrap().get(id).cloned()
-    }
-
-    pub fn alloc(&self) -> String {
-        let mut next = self.state.next_id.lock().unwrap();
-        *next += 1;
-        let id = next.to_string();
-        drop(next);
-        let resource = (self.state.factory)();
-        self.state
-            .resources
-            .write()
-            .unwrap()
-            .insert(id.clone(), resource);
-        id
-    }
-}
-
-impl FileSystem for DeviceAllocator {
-    fn open(&self, ctx: &FsContext, name: &str) -> Result<BoxFile> {
-        if !valid_path(name) {
-            return Err(Error::path("open", name, ErrorKind::NotFound));
-        }
-        let name = clean_path(name);
-        if name == "." {
-            let mut entries = vec![DirEntry::new("new", Metadata::file("new", 0o555, 0))];
-            entries.extend(
-                self.state
-                    .resources
-                    .read()
-                    .unwrap()
-                    .keys()
-                    .map(|id| DirEntry::new(id.clone(), Metadata::dir(id.clone(), 0o555))),
-            );
-            return Ok(directory_file(Metadata::dir(".", 0o555), entries));
-        }
-        if name == "new" {
-            return Ok(Box::new(NewDeviceHandle {
-                allocator: self.clone(),
-                data: None,
-                offset: 0,
-            }));
-        }
-        let (head, rest) = name.split_once('/').unwrap_or((name.as_str(), "."));
-        let resource = self
-            .get(head)
-            .ok_or_else(|| Error::path("open", head, ErrorKind::NotFound))?;
-        resource.open(ctx, rest)
-    }
-
-    fn stat(&self, ctx: &FsContext, name: &str) -> Result<Metadata> {
-        let mut file = self.open(ctx, name)?;
-        let stat = file.stat();
-        let _ = file.close();
-        stat
-    }
-}
-
-struct NewDeviceHandle {
-    allocator: DeviceAllocator,
-    data: Option<Vec<u8>>,
-    offset: u64,
-}
-
-impl FileHandle for NewDeviceHandle {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if self.data.is_none() {
-            self.data = Some(format!("{}\n", self.allocator.alloc()).into_bytes());
-        }
-        let data = self.data.as_ref().unwrap();
-        let start = self.offset as usize;
-        if start >= data.len() {
-            return Ok(0);
-        }
-        let n = buf.len().min(data.len() - start);
-        buf[..n].copy_from_slice(&data[start..start + n]);
-        self.offset += n as u64;
-        Ok(n)
-    }
-
-    fn stat(&self) -> Result<Metadata> {
-        Ok(Metadata::file(
-            format!("new-{}", self.allocator.kind),
-            0o555,
-            0,
-        ))
-    }
-}
-
-fn terminal_fs() -> FsRef {
-    let map = MapFs::new();
-    let pipe = PipeFs::new(false);
-    map.insert("data", fs_ref(pipe.clone()));
-    map.insert("program", fs_ref(pipe));
-    map.insert("winch", fs_ref(SignalFs::default()));
-    map.insert("ctl", fs_ref(ControlFile::new("ctl", |_| Ok(()))));
-    fs_ref(map)
-}
-
-fn vm_fs() -> FsRef {
-    let fs = MemFs::from_entries([
-        ("ctl", b"".to_vec()),
-        ("state", b"created\n".to_vec()),
-        ("console", b"".to_vec()),
-    ]);
-    fs_ref(fs)
-}
-
-fn worker_fs() -> FsRef {
-    let fs = MemFs::from_entries([
-        ("ctl", b"".to_vec()),
-        ("kind", b"worker\n".to_vec()),
-        ("state", b"created\n".to_vec()),
-    ]);
-    fs_ref(fs)
-}
-
-fn web_fs() -> MemFs {
-    MemFs::from_entries([
-        ("dom/ctl", b"".to_vec()),
-        ("caches/new", b"".to_vec()),
-        ("download/ctl", b"".to_vec()),
-        ("worker/new", b"".to_vec()),
-        ("opfs/new", b"".to_vec()),
-    ])
-}
-
-fn js_value_fs() -> MemFs {
-    MemFs::from_entries([
-        ("global", b"[object global]\n".to_vec()),
-        ("values", b"".to_vec()),
-    ])
-}
-
-fn download_fs() -> FsRef {
-    let fs = MemFs::from_entries([("ctl", b"".to_vec()), ("files", b"".to_vec())]);
-    fs_ref(fs)
+    devices::bind_devices(root)
 }
 
 #[derive(Clone, Debug)]
@@ -420,6 +216,9 @@ mod tests {
         );
         assert!(read_dir(runtime.namespace().as_ref(), "#task").is_ok());
         assert!(read_dir(runtime.namespace().as_ref(), "#pipe").is_ok());
+        assert!(read_dir(runtime.namespace().as_ref(), "#term").is_ok());
+        assert!(read_dir(runtime.namespace().as_ref(), "#vm").is_ok());
+        assert!(read_dir(runtime.namespace().as_ref(), "#net").is_ok());
     }
 
     #[test]
