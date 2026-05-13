@@ -19,11 +19,11 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - CBOR encode/decode helpers for the typed public API boundary.
 - Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net` surfaces.
 - Deterministic terminal, VM, and Plan 9-style network device state surfaces, including a retained terminal screen file.
-- Rust-native 9P import/export with hard-link and xattr read/list/write support plus browser MessagePort frame-serving/client helpers.
+- Rust-native 9P import/export with hard-link and xattr read/list/write support plus browser MessagePort frame-serving/client helpers and an async browser namespace mount client.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
-- Browser Worker/MessagePort JS glue for runtime message envelopes and transferred ports.
+- Browser Worker/MessagePort JS glue for runtime message envelopes, transferred ports, and CBOR request/task-message bridging into the Rust runtime host.
 - Browser Worker host facade and execution-worker helper for Worker-like startup, runtime port transfer, message routing, JS/WASM execution bootstrap, dynamic JS runner import, runner context, exit/error reporting, and cleanup.
-- Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests.
+- Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests and JS-side async namespace mount routing for real browser hosts.
 - Wasmi-backed WASI preview1 execution over Wanix task namespaces, fd tables, fd directory/positional I/O/allocation/renumber/advice/flags/timestamps/sync/truncate syscalls, poll/yield/signal imports, hard-link and other path mutation syscalls, and explicit unsupported socket imports.
 - Rust-owned WASI fixtures include checked-in compiled `.wasm` modules as well as focused WAT unit fixtures.
 - Native CLI acceptance commands for 9P loopback, deterministic devices, and runtime worker protocol flows, plus a Rust-native `serve-p9` stdin/stdout stream hook for local filesystem export.
@@ -52,4 +52,4 @@ wasm-pack build crates/wanix-web --target web --out-dir ../../target/wanix-web-p
 python3 -m http.server 4177 --bind 127.0.0.1
 ```
 
-Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build` command. The page sets `document.body.dataset.status` to `ok` after it initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, performs file API and 9P loopback operations, and starts representative WASI and Go-compatible JS adapter tasks.
+Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build` command. The page sets `document.body.dataset.status` to `ok` after it initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, performs file API and 9P loopback operations, exercises real browser storage adapters through the async JS mount table where available, and starts representative WASI and Go-compatible JS adapter tasks.

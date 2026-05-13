@@ -10,6 +10,7 @@ export { BindElement, SystemElement, TaskElement };
 export * from "./js-wasm-execution-worker.js";
 export * from "./js-wasm-worker-host.js";
 export * from "./p9-port.js";
+export * from "./mounts.js";
 export * from "./worker-host.js";
 export * from "./worker-runtime.js";
 export * from "./storage-file-system.js";

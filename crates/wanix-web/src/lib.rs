@@ -88,6 +88,18 @@ impl WanixSystem {
         self.api.read_dir(path)
     }
 
+    pub fn stat_native(&self, path: &str) -> Result<wanix_protocol::StatInfo> {
+        self.api.stat(path)
+    }
+
+    pub fn mkdir_native(&self, path: &str) -> Result<()> {
+        self.api.mkdir(path)
+    }
+
+    pub fn remove_native(&self, path: &str) -> Result<()> {
+        self.api.remove(path)
+    }
+
     pub fn bind_ramfs_native(&self, dst: &str) -> Result<()> {
         self.runtime
             .namespace()
@@ -184,6 +196,20 @@ impl WanixSystem {
             task.start()?;
         }
         Ok(task.id())
+    }
+
+    pub fn handle_runtime_request_native(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let request = wanix_protocol::runtime::decode_request(data)?;
+        let response = self.runtime.handle_runtime_request(request)?;
+        wanix_protocol::runtime::encode_response(&response)
+    }
+
+    pub fn handle_runtime_task_message_native(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let message = wanix_protocol::runtime::decode_task_message(data)?;
+        let response = self.runtime.handle_runtime_request(
+            wanix_protocol::runtime::RuntimeRequest::PostMessage(message),
+        )?;
+        wanix_protocol::runtime::encode_response(&response)
     }
 }
 
@@ -297,6 +323,21 @@ mod wasm {
                 .map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = stat)]
+        pub fn stat(&self, path: &str) -> std::result::Result<JsValue, JsValue> {
+            serde_wasm_bindgen::to_value(&self.stat_native(path).map_err(js_err)?).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = mkdir)]
+        pub fn mkdir(&self, path: &str) -> std::result::Result<(), JsValue> {
+            self.mkdir_native(path).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = remove)]
+        pub fn remove(&self, path: &str) -> std::result::Result<(), JsValue> {
+            self.remove_native(path).map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = bindRamFs)]
         pub fn bind_ramfs(&self, dst: &str) -> std::result::Result<(), JsValue> {
             self.bind_ramfs_native(dst).map_err(js_err)
@@ -310,6 +351,23 @@ mod wasm {
         #[wasm_bindgen(js_name = handle9pFrame)]
         pub fn handle_9p_frame(&self, frame: &[u8]) -> std::result::Result<Vec<u8>, JsValue> {
             self.handle_9p_frame_native(frame).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = handleRuntimeRequest)]
+        pub fn handle_runtime_request(
+            &self,
+            request: &[u8],
+        ) -> std::result::Result<Vec<u8>, JsValue> {
+            self.handle_runtime_request_native(request).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = handleRuntimeTaskMessage)]
+        pub fn handle_runtime_task_message(
+            &self,
+            message: &[u8],
+        ) -> std::result::Result<Vec<u8>, JsValue> {
+            self.handle_runtime_task_message_native(message)
+                .map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = setupNamespace)]

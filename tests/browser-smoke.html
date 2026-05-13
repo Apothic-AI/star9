@@ -2,6 +2,10 @@
 <meta charset="utf-8">
 <title>wanix-web smoke</title>
 
+<script>
+  window.__wanixSmokeStore = {};
+</script>
+
 <wanix-system
   id="smoke-system"
   pkg="../target/wanix-web-pkg/wanix_web.js"
@@ -17,8 +21,14 @@
   <wanix-bind
     kind="ns"
     type="ns"
-    dst="worker-store"
-    storage='{"backend":"worker","worker":"smoke-worker","path":"nested/root"}'
+    dst="cache-store"
+    storage='{"backend":"cache","cache":"wanix-smoke","path":"root"}'
+  ></wanix-bind>
+  <wanix-bind
+    kind="ns"
+    type="ns"
+    dst="dom-store"
+    storage='{"backend":"dom","node":"#status"}'
   ></wanix-bind>
   <wanix-bind
     kind="ns"
@@ -44,7 +54,7 @@
   const assert = (condition, message) => {
     if (!condition) throw new Error(message);
   };
-  const entriesOf = (path, system) => Array.from(system.readDir(path));
+  const entriesOf = async (path, system) => Array.from(await system.readDir(path));
   const numericTaskIds = (entries) =>
     entries
       .map((entry) => entry.replace(/\/$/, ""))
@@ -89,33 +99,41 @@
     const readyEvent = await waitForReady(systemElement);
     const system = readyEvent.detail.system;
 
-    const version = system.readText("#wanix/version").trim();
-    const inlineText = system.readText("inline.txt").trim();
-    const fetchedText = system.readText("fetched.txt").trim();
+    const version = (await system.readText("#wanix/version")).trim();
+    const inlineText = (await system.readText("inline.txt")).trim();
+    const fetchedText = (await system.readText("fetched.txt")).trim();
 
-    system.writeText("worker-store/state.txt", "storage-ok");
-    const storageText = system.readText("worker-store/state.txt");
-    const storageEntries = entriesOf("worker-store", system);
+    await system.writeText("cache-store/state.txt", "storage-ok");
+    const storageText = await system.readText("cache-store/state.txt");
+    const storageEntries = await entriesOf("cache-store", system);
 
-    system.writeText("shared-store/state.txt", "descriptor-ok");
-    const sharedMirrorText = system.readText("shared-store-2/state.txt");
-    const sharedEntries = entriesOf("shared-store-2", system);
+    await system.writeText("dom-store/textContent", "dom-storage-ok");
+    const domStorageText = await system.readText("dom-store/textContent");
+
+    await system.writeText("shared-store/state.txt", "descriptor-ok");
+    const sharedMirrorText = (await system.readText("shared-store-2/state.txt")).trim();
+    const sharedEntries = await entriesOf("shared-store-2", system);
 
     system.mountSelf9p("remote");
-    const remoteInlineText = system.readText("remote/inline.txt").trim();
-    const remoteStorageText = system.readText("remote/worker-store/state.txt");
-    const remoteSharedText = system.readText("remote/shared-store-2/state.txt");
-    const remoteFetchedText = system.readText("remote/fetched.txt").trim();
+    const remoteInlineText = (await system.readText("remote/inline.txt")).trim();
+    const remoteFetchedText = (await system.readText("remote/fetched.txt")).trim();
 
-    const taskEntriesBefore = entriesOf("#task", system);
+    if (navigator.storage && typeof navigator.storage.getDirectory === "function") {
+      await system.mountStorage("opfs-store", { backend: "opfs", root: "wanix-smoke" });
+      await system.writeText("opfs-store/state.txt", "opfs-ok");
+      const opfsText = await system.readText("opfs-store/state.txt");
+      assert(opfsText === "opfs-ok", `bad opfs text ${opfsText}`);
+    }
+
+    const taskEntriesBefore = await entriesOf("#task", system);
     const wasiTask = system.startWasi("repl.wasm");
-    const taskEntriesAfterWasi = entriesOf("#task", system);
+    const taskEntriesAfterWasi = await entriesOf("#task", system);
     const goTask = system.startGoJs("repl-gojs.wasm");
-    const taskEntriesAfterGo = entriesOf("#task", system);
-    const wasiCmd = system.readText(`#task/${wasiTask}/cmd`).trim();
-    const wasiExit = system.readText(`#task/${wasiTask}/exit`).trim();
-    const goCmd = system.readText(`#task/${goTask}/cmd`).trim();
-    const goExit = system.readText(`#task/${goTask}/exit`).trim();
+    const taskEntriesAfterGo = await entriesOf("#task", system);
+    const wasiCmd = (await system.readText(`#task/${wasiTask}/cmd`)).trim();
+    const wasiExit = (await system.readText(`#task/${wasiTask}/exit`)).trim();
+    const goCmd = (await system.readText(`#task/${goTask}/cmd`)).trim();
+    const goExit = (await system.readText(`#task/${goTask}/exit`)).trim();
 
     assert(version === "0.1.0", `bad version ${version}`);
     assert(inlineText === "inline-browser-ok", `bad inline text ${inlineText}`);
@@ -134,12 +152,8 @@
       `bad remote fetched text ${remoteFetchedText}`,
     );
     assert(
-      remoteStorageText === "storage-ok",
-      `bad remote storage text ${remoteStorageText}`,
-    );
-    assert(
-      remoteSharedText === "descriptor-ok",
-      `bad remote shared text ${remoteSharedText}`,
+      domStorageText === "dom-storage-ok",
+      `bad dom storage text ${domStorageText}`,
     );
     assert(
       storageEntries.includes("state.txt"),
@@ -179,8 +193,7 @@
         fetchedText,
         storageEntries,
         sharedEntries,
-        remoteStorageText,
-        remoteSharedText,
+        domStorageText,
         wasiTask,
         goTask,
         taskEntriesAfterGo,

@@ -1,4 +1,12 @@
 import { WanixElement } from "./base.js";
+import { attachWanixImportResponder } from "./p9-port.js";
+import {
+    AsyncMountTable,
+    createBrowserStorageAdapter,
+    createP9MountFromPort,
+    dirEntriesToNames,
+} from "./mounts.js";
+import { requestWanixImportPort } from "./worker-runtime.js";
 
 const DEFAULT_FACADE_URL = new URL("../../../target/wanix-web-pkg/wanix_web.js", import.meta.url).href;
 const facadeModules = new Map();
@@ -8,6 +16,8 @@ export class SystemElement extends WanixElement {
         super();
         this._facade = null;
         this._initStarted = false;
+        this._mounts = new AsyncMountTable();
+        this._importResponder = null;
         this.isReady = false;
         this.ready = new Promise((resolve, reject) => {
             this._resolveReady = resolve;
@@ -40,31 +50,85 @@ export class SystemElement extends WanixElement {
     }
 
     readText(path) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.readText(mount.path);
+        }
         return this.system.readText(path);
     }
 
     readFile(path) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.readFile(mount.path);
+        }
         return this.system.readFile(path);
     }
 
     writeText(path, value) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.writeText(mount.path, value);
+        }
         return this.system.writeText(path, value);
     }
 
     writeFile(path, value) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.writeFile(mount.path, value);
+        }
         return this.system.writeFile(path, value);
     }
 
     readDir(path) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.readDir(mount.path).then(dirEntriesToNames);
+        }
         return this.system.readDir(path);
     }
 
-    setupNamespace(taskId, bindings) {
-        return this.system.setupNamespace(taskId, bindings);
+    stat(path) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.stat(mount.path);
+        }
+        return this.system.stat(path);
     }
 
-    setupNamespaceJson(taskId, json) {
-        return this.system.setupNamespaceJson(taskId, json);
+    mkdir(path) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.mkdir(mount.path);
+        }
+        return this.system.mkdir(path);
+    }
+
+    remove(path) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.remove(mount.path);
+        }
+        return this.system.remove(path);
+    }
+
+    async setupNamespace(taskId, bindings) {
+        const nativeBindings = [];
+        for (const binding of bindings || []) {
+            if (binding?.storage) {
+                await this.mountStorage(binding.dst, binding.storage);
+            } else {
+                nativeBindings.push(binding);
+            }
+        }
+        if (nativeBindings.length > 0) {
+            this.system.setupNamespace(taskId, nativeBindings);
+        }
+    }
+
+    async setupNamespaceJson(taskId, json) {
+        return this.setupNamespace(taskId, JSON.parse(json));
     }
 
     bindRamFs(dst) {
@@ -73,6 +137,32 @@ export class SystemElement extends WanixElement {
 
     mountSelf9p(dst) {
         return this.system.mountSelf9p(dst);
+    }
+
+    async mountStorage(dst, descriptor, options = {}) {
+        const adapter = await createBrowserStorageAdapter(descriptor, {
+            globals: globalThis,
+            ...options,
+        });
+        this._mounts.mount(dst, adapter, {
+            kind: "storage",
+            source: descriptor?.backend || null,
+        });
+        return adapter;
+    }
+
+    async mountImportPort(dst, port, options = {}) {
+        const adapter = await createP9MountFromPort(port, options);
+        this._mounts.mount(dst, adapter, {
+            kind: "9p",
+            source: options.source || null,
+        });
+        return adapter;
+    }
+
+    async mountImport(dst, src, options = {}) {
+        const port = await requestWanixImportPort(src, options);
+        return this.mountImportPort(dst, port, { ...options, source: src });
     }
 
     startTask(kind, command) {
@@ -102,7 +192,7 @@ export class SystemElement extends WanixElement {
             }
 
             if (binding.storage || binding.kind === "ns") {
-                this.system.setupNamespace(taskId, [binding]);
+                await this.setupNamespace(taskId, [binding]);
                 continue;
             }
 
@@ -121,9 +211,9 @@ export class SystemElement extends WanixElement {
             }
 
             if (binding.kind === "import") {
-                throw new Error(
-                    "import bindings require a browser 9P MessagePort transport adapter",
-                );
+                const port = await plan.importPlaceholder.requestPort();
+                await this.mountImportPort(binding.dst, port, { source: binding.src });
+                continue;
             }
         }
     }
@@ -133,6 +223,7 @@ export class SystemElement extends WanixElement {
             const { WanixSystem } = await loadFacadeModule(this.facadeUrl);
             this._facade = new WanixSystem();
             await this.applyBindings(this.querySelectorAll(":scope > wanix-bind"), "1");
+            await this._maybeExportImportPort();
             this.isReady = true;
             this._resolveReady(this);
             this.dispatchEvent(
@@ -150,6 +241,22 @@ export class SystemElement extends WanixElement {
                 }),
             );
         }
+    }
+
+    disconnectedCallback() {
+        this._importResponder?.close();
+        this._importResponder = null;
+        this._mounts.close();
+    }
+
+    async _maybeExportImportPort() {
+        if (typeof window === "undefined" || !this.id || !this.hasAttribute("allow-origins")) {
+            return;
+        }
+        this._importResponder = await attachWanixImportResponder(window, this, {
+            allowOrigins: this.getAttribute("allow-origins") || "",
+            systemId: this.id,
+        });
     }
 }
 

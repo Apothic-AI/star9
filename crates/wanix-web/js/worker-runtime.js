@@ -153,11 +153,19 @@ export async function connectRuntimePort(target, options = {}) {
         descriptorKey: options.descriptorKey,
     });
 
+    const bridge =
+        system.facade &&
+        typeof system.facade.handleRuntimeRequest === "function" &&
+        options.wireToSystem !== false
+            ? wireRuntimeEndpointToSystem(endpoint, system.facade, options.bridge)
+            : null;
+
     return {
         descriptor,
         endpoint,
         port: localPort,
         bootstrap,
+        bridge,
         element: system.element,
         facade: system.facade,
     };
@@ -179,6 +187,53 @@ export async function wireWorkerRuntimeToSystem(worker, system, options = {}) {
 
 export function acceptWorkerRuntime(source, options = {}) {
     return acceptRuntimePort(source, options);
+}
+
+export function wireRuntimeEndpointToSystem(endpoint, facade, options = {}) {
+    if (!endpoint || typeof endpoint.onRequest !== "function" || typeof endpoint.sendResponse !== "function") {
+        throw new TypeError("expected a WorkerRuntimeEndpoint-like object");
+    }
+    if (!facade || typeof facade.handleRuntimeRequest !== "function") {
+        throw new TypeError("expected a WanixSystem facade with handleRuntimeRequest(bytes)");
+    }
+
+    const onRequest = endpoint.onRequest((message) => {
+        try {
+            endpoint.sendResponse(facade.handleRuntimeRequest(message.payload));
+        } catch (error) {
+            emitListeners(errorListeners, error);
+        }
+    });
+
+    const onTaskMessage =
+        typeof facade.handleRuntimeTaskMessage === "function"
+            ? endpoint.onTaskMessage((message) => {
+                try {
+                    const response = facade.handleRuntimeTaskMessage(message.payload);
+                    if (options.respondToTaskMessages === true) {
+                        endpoint.sendResponse(response);
+                    }
+                } catch (error) {
+                    emitListeners(errorListeners, error);
+                }
+            })
+            : () => {};
+
+    const errorListeners = new Set();
+    if (typeof options.onerror === "function") {
+        errorListeners.add(options.onerror);
+    }
+
+    return {
+        onError(listener) {
+            return addListener(errorListeners, listener, "runtime bridge error listener");
+        },
+        close() {
+            onRequest();
+            onTaskMessage();
+            errorListeners.clear();
+        },
+    };
 }
 
 export function requestWanixImportPort(src, options = {}) {

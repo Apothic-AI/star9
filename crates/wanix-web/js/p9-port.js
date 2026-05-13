@@ -53,6 +53,10 @@ export function createWanixP9FrameClient(target, options = {}) {
     return new WanixP9FramePortClient(target, options);
 }
 
+export async function createWanixP9NamespaceMount(target, options = {}) {
+    return WanixP9NamespaceMount.connect(target, options);
+}
+
 export async function attachWanixImportResponder(target, systemLike, options = {}) {
     const { element, facade } = await resolveWanixP9Facade(systemLike);
     return new WanixImportResponder(target, facade, {
@@ -316,12 +320,319 @@ export class WanixP9FramePortClient {
     }
 }
 
+export class WanixP9NamespaceMount {
+    static async connect(target, options = {}) {
+        const mount = new WanixP9NamespaceMount(target, options);
+        await mount.connect();
+        return mount;
+    }
+
+    constructor(target, options = {}) {
+        this.client =
+            target instanceof WanixP9FramePortClient
+                ? target
+                : new WanixP9FramePortClient(target, options.client);
+        this.closed = false;
+        this.msize = DEFAULT_MSIZE;
+        this.rootFid = 1;
+        this._ownsClient = !(target instanceof WanixP9FramePortClient);
+        this._nextFid = 2;
+        this._nextTag = 1;
+        this._textEncoder = options.textEncoder || new TextEncoder();
+        this._textDecoder = options.textDecoder || new TextDecoder();
+    }
+
+    async connect() {
+        const version = await this._call(MSG.TVERSION, (writer) => {
+            writer.u32(DEFAULT_MSIZE);
+            writer.string(VERSION);
+        });
+        if (version.type !== MSG.RVERSION) {
+            throw new Error(`expected 9P Rversion, got message type ${version.type}`);
+        }
+        const versionReader = new P9Reader(version.body);
+        this.msize = versionReader.u32();
+        const negotiated = versionReader.string();
+        versionReader.finish();
+        if (negotiated !== VERSION) {
+            throw new Error(`unsupported 9P version ${JSON.stringify(negotiated)}`);
+        }
+
+        const attach = await this._call(MSG.TATTACH, (writer) => {
+            writer.u32(this.rootFid);
+            writer.u32(NOFID);
+            writer.string("wanix");
+            writer.string("");
+            writer.u32(0);
+        });
+        this._expect(attach, MSG.RATTACH);
+        return this;
+    }
+
+    async stat(path = ".") {
+        const cleanPath = normalizeP9Path(path);
+        const fid = await this._walk(cleanPath);
+        try {
+            const response = await this._call(MSG.TGETATTR, (writer) => {
+                writer.u32(fid);
+                writer.u64(ATTR_BASIC);
+            });
+            this._expect(response, MSG.RGETATTR);
+            return metadataFromAttr(cleanPath, new P9Reader(response.body).attr());
+        } finally {
+            await this._clunk(fid);
+        }
+    }
+
+    async readFile(path) {
+        const cleanPath = normalizeP9Path(path);
+        const fid = await this._walk(cleanPath);
+        try {
+            await this._lopen(fid, OPEN_RDONLY);
+            const chunks = [];
+            let offset = 0;
+            const chunkSize = Math.max(1, Math.min(32 * 1024, this.msize - 11));
+            while (true) {
+                const response = await this._call(MSG.TREAD, (writer) => {
+                    writer.u32(fid);
+                    writer.u64(offset);
+                    writer.u32(chunkSize);
+                });
+                this._expect(response, MSG.RREAD);
+                const data = new P9Reader(response.body).countedData();
+                if (data.byteLength === 0) {
+                    return concatBytes(chunks);
+                }
+                chunks.push(data);
+                offset += data.byteLength;
+            }
+        } finally {
+            await this._clunk(fid);
+        }
+    }
+
+    async readText(path) {
+        return this._textDecoder.decode(await this.readFile(path));
+    }
+
+    async writeFile(path, bytes) {
+        const cleanPath = normalizeP9Path(path);
+        if (cleanPath === ".") {
+            throw new Error("cannot write remote 9P root as a file");
+        }
+        const data = toUint8Array(bytes, "9P writeFile bytes").slice();
+        const parent = parentPath(cleanPath);
+        const name = baseName(cleanPath);
+        const fid = await this._walk(parent);
+        try {
+            const create = await this._call(MSG.TLCREATE, (writer) => {
+                writer.u32(fid);
+                writer.string(name);
+                writer.u32(OPEN_RDWR | OPEN_TRUNC);
+                writer.u32(0o644);
+                writer.u32(0);
+            });
+            this._expect(create, MSG.RLCREATE);
+            await this._writeAll(fid, data);
+        } finally {
+            await this._clunk(fid);
+        }
+    }
+
+    async writeText(path, text) {
+        await this.writeFile(path, this._textEncoder.encode(String(text)));
+    }
+
+    async readDir(path = ".") {
+        const cleanPath = normalizeP9Path(path);
+        const fid = await this._walk(cleanPath);
+        try {
+            await this._lopen(fid, OPEN_RDONLY);
+            const entries = [];
+            let offset = 0;
+            while (true) {
+                const response = await this._call(MSG.TREADDIR, (writer) => {
+                    writer.u32(fid);
+                    writer.u64(offset);
+                    writer.u32(Math.max(1, Math.min(32 * 1024, this.msize - 11)));
+                });
+                this._expect(response, MSG.RREADDIR);
+                const chunk = new P9Reader(response.body).countedData();
+                if (chunk.byteLength === 0) {
+                    return entries;
+                }
+                const decoded = decodeDirents(chunk);
+                if (decoded.length === 0) {
+                    return entries;
+                }
+                entries.push(...decoded.map((entry) => ({
+                    name: entry.name,
+                    path: joinPath(cleanPath, entry.name),
+                    kind: entry.type === DT_DIR ? "dir" : entry.type === DT_LNK ? "symlink" : "file",
+                    type: entry.type === DT_DIR ? "dir" : entry.type === DT_LNK ? "symlink" : "file",
+                    size: 0,
+                })));
+                offset = decoded[decoded.length - 1].offset;
+            }
+        } finally {
+            await this._clunk(fid);
+        }
+    }
+
+    async mkdir(path) {
+        const cleanPath = normalizeP9Path(path);
+        if (cleanPath === ".") {
+            throw new Error("remote 9P root already exists");
+        }
+        const parent = await this._walk(parentPath(cleanPath));
+        try {
+            const response = await this._call(MSG.TMKDIR, (writer) => {
+                writer.u32(parent);
+                writer.string(baseName(cleanPath));
+                writer.u32(0o755);
+                writer.u32(0);
+            });
+            this._expect(response, MSG.RMKDIR);
+        } finally {
+            await this._clunk(parent);
+        }
+    }
+
+    async remove(path) {
+        const cleanPath = normalizeP9Path(path);
+        if (cleanPath === ".") {
+            throw new Error("refusing to remove remote 9P root");
+        }
+        let isDir = false;
+        try {
+            isDir = (await this.stat(cleanPath)).kind === "dir";
+        } catch {
+            isDir = false;
+        }
+        const parent = await this._walk(parentPath(cleanPath));
+        try {
+            const response = await this._call(MSG.TUNLINKAT, (writer) => {
+                writer.u32(parent);
+                writer.string(baseName(cleanPath));
+                writer.u32(isDir ? AT_REMOVEDIR : 0);
+            });
+            this._expect(response, MSG.RUNLINKAT);
+        } finally {
+            await this._clunk(parent);
+        }
+    }
+
+    close() {
+        this.closed = true;
+        if (this._ownsClient) {
+            this.client.close();
+        }
+    }
+
+    async _lopen(fid, flags) {
+        const response = await this._call(MSG.TLOPEN, (writer) => {
+            writer.u32(fid);
+            writer.u32(flags);
+        });
+        this._expect(response, MSG.RLOPEN);
+    }
+
+    async _writeAll(fid, data) {
+        const chunkSize = Math.max(1, Math.min(32 * 1024, this.msize - 23));
+        let offset = 0;
+        while (offset < data.byteLength) {
+            const chunk = data.slice(offset, offset + chunkSize);
+            const response = await this._call(MSG.TWRITE, (writer) => {
+                writer.u32(fid);
+                writer.u64(offset);
+                writer.countedData(chunk);
+            });
+            this._expect(response, MSG.RWRITE);
+            const count = new P9Reader(response.body).u32();
+            if (count !== chunk.byteLength) {
+                throw new Error(`short 9P write: wrote ${count} of ${chunk.byteLength}`);
+            }
+            offset += count;
+        }
+    }
+
+    async _walk(path) {
+        const fid = this._allocFid();
+        const names = path === "." ? [] : path.split("/");
+        const response = await this._call(MSG.TWALK, (writer) => {
+            writer.u32(this.rootFid);
+            writer.u32(fid);
+            writer.u16(names.length);
+            for (const name of names) {
+                writer.string(name);
+            }
+        });
+        this._expect(response, MSG.RWALK);
+        const reader = new P9Reader(response.body);
+        const qidCount = reader.u16();
+        for (let index = 0; index < qidCount; index += 1) {
+            reader.qid();
+        }
+        reader.finish();
+        if (qidCount !== names.length) {
+            await this._clunk(fid).catch(() => {});
+            throw new Error(`remote 9P path not found: ${path}`);
+        }
+        return fid;
+    }
+
+    async _clunk(fid) {
+        const response = await this._call(MSG.TCLUNK, (writer) => {
+            writer.u32(fid);
+        });
+        this._expect(response, MSG.RCLUNK);
+    }
+
+    async _call(type, buildBody) {
+        if (this.closed) {
+            throw new Error("9P namespace mount is closed");
+        }
+        const tag = this._allocTag();
+        const writer = new P9Writer();
+        buildBody?.(writer);
+        const frame = encodeP9Frame(type, tag, writer.finish());
+        const responseFrame = await this.client.request(frame);
+        const response = decodeP9Frame(responseFrame);
+        if (response.tag !== tag) {
+            throw new Error(`9P tag mismatch: expected ${tag}, got ${response.tag}`);
+        }
+        if (response.type === MSG.RLERROR) {
+            const ecode = new P9Reader(response.body).u32();
+            throw new Error(`remote 9P error ${ecode}`);
+        }
+        return response;
+    }
+
+    _expect(response, type) {
+        if (response.type !== type) {
+            throw new Error(`expected 9P message type ${type}, got ${response.type}`);
+        }
+    }
+
+    _allocFid() {
+        return this._nextFid++;
+    }
+
+    _allocTag() {
+        const tag = this._nextTag;
+        this._nextTag = this._nextTag === 0xfffe ? 1 : this._nextTag + 1;
+        return tag;
+    }
+}
+
 export class WanixImportResponder {
     constructor(target, facade, options = {}) {
         this.target = requireListenerTarget(target);
         this.facade = requireWanixP9Facade(facade);
         this.element = options.element || null;
         this.request = String(options.request || DEFAULT_WANIX_IMPORT_REQUEST);
+        this.allowOrigins = normalizeAllowOrigins(options.allowOrigins);
+        this.systemId = options.systemId || options.id || null;
         this.closed = false;
         this.started = false;
         this._servers = new Set();
@@ -384,6 +695,12 @@ export class WanixImportResponder {
         if (!isImportRequest(payload, this.request)) {
             return;
         }
+        if (!originAllowed(event?.origin, this.allowOrigins)) {
+            return;
+        }
+        if (this.systemId && typeof location !== "undefined" && location.hash.slice(1) !== this.systemId) {
+            return;
+        }
 
         let server = null;
         try {
@@ -413,6 +730,332 @@ export class WanixImportResponder {
             emitListeners(this._errorListeners, error);
         }
     }
+}
+
+const VERSION = "9P2000.L";
+const DEFAULT_MSIZE = 64 * 1024;
+const NOFID = 0xffffffff;
+const AT_REMOVEDIR = 0x200;
+const ATTR_BASIC = 0x67f;
+const OPEN_RDONLY = 0;
+const OPEN_RDWR = 2;
+const OPEN_TRUNC = 0o1000;
+const DT_DIR = 4;
+const DT_LNK = 10;
+
+const MSG = Object.freeze({
+    RLERROR: 7,
+    TLOPEN: 12,
+    RLOPEN: 13,
+    TLCREATE: 14,
+    RLCREATE: 15,
+    TGETATTR: 24,
+    RGETATTR: 25,
+    TREADDIR: 40,
+    RREADDIR: 41,
+    TVERSION: 100,
+    RVERSION: 101,
+    TATTACH: 104,
+    RATTACH: 105,
+    TWALK: 110,
+    RWALK: 111,
+    TREAD: 116,
+    RREAD: 117,
+    TWRITE: 118,
+    RWRITE: 119,
+    TCLUNK: 120,
+    RCLUNK: 121,
+    TMKDIR: 72,
+    RMKDIR: 73,
+    TUNLINKAT: 76,
+    RUNLINKAT: 77,
+});
+
+class P9Writer {
+    constructor() {
+        this.bytes = [];
+    }
+
+    u8(value) {
+        this.bytes.push(value & 0xff);
+    }
+
+    u16(value) {
+        this.bytes.push(value & 0xff, (value >> 8) & 0xff);
+    }
+
+    u32(value) {
+        this.bytes.push(
+            value & 0xff,
+            (value >> 8) & 0xff,
+            (value >> 16) & 0xff,
+            (value >> 24) & 0xff,
+        );
+    }
+
+    u64(value) {
+        let bigint = BigInt(value);
+        for (let index = 0; index < 8; index += 1) {
+            this.bytes.push(Number((bigint >> BigInt(index * 8)) & 0xffn));
+        }
+    }
+
+    string(value) {
+        const bytes = new TextEncoder().encode(String(value));
+        if (bytes.byteLength > 0xffff) {
+            throw new Error("9P string is too long");
+        }
+        this.u16(bytes.byteLength);
+        this.bytes.push(...bytes);
+    }
+
+    countedData(value) {
+        const bytes = toUint8Array(value, "9P counted data");
+        this.u32(bytes.byteLength);
+        this.bytes.push(...bytes);
+    }
+
+    finish() {
+        return Uint8Array.from(this.bytes);
+    }
+}
+
+class P9Reader {
+    constructor(bytes) {
+        this.bytes = toUint8Array(bytes, "9P response body");
+        this.offset = 0;
+    }
+
+    u8() {
+        this._require(1);
+        return this.bytes[this.offset++];
+    }
+
+    u16() {
+        this._require(2);
+        const value = this.bytes[this.offset] | (this.bytes[this.offset + 1] << 8);
+        this.offset += 2;
+        return value;
+    }
+
+    u32() {
+        this._require(4);
+        const value =
+            this.bytes[this.offset] |
+            (this.bytes[this.offset + 1] << 8) |
+            (this.bytes[this.offset + 2] << 16) |
+            (this.bytes[this.offset + 3] << 24);
+        this.offset += 4;
+        return value >>> 0;
+    }
+
+    u64() {
+        this._require(8);
+        let value = 0n;
+        for (let index = 0; index < 8; index += 1) {
+            value |= BigInt(this.bytes[this.offset + index]) << BigInt(index * 8);
+        }
+        this.offset += 8;
+        return Number(value);
+    }
+
+    string() {
+        const length = this.u16();
+        this._require(length);
+        const value = new TextDecoder().decode(this.bytes.slice(this.offset, this.offset + length));
+        this.offset += length;
+        return value;
+    }
+
+    countedData() {
+        const length = this.u32();
+        this._require(length);
+        const value = this.bytes.slice(this.offset, this.offset + length);
+        this.offset += length;
+        this.finish();
+        return value;
+    }
+
+    qid() {
+        return {
+            type: this.u8(),
+            version: this.u32(),
+            path: this.u64(),
+        };
+    }
+
+    attr() {
+        const attr = {
+            valid: this.u64(),
+            qid: this.qid(),
+            mode: this.u32(),
+            uid: this.u32(),
+            gid: this.u32(),
+            nlink: this.u64(),
+            rdev: this.u64(),
+            size: this.u64(),
+            blksize: this.u64(),
+            blocks: this.u64(),
+            atimeSeconds: this.u64(),
+            atimeNanoseconds: this.u64(),
+            mtimeSeconds: this.u64(),
+            mtimeNanoseconds: this.u64(),
+            ctimeSeconds: this.u64(),
+            ctimeNanoseconds: this.u64(),
+            btimeSeconds: this.u64(),
+            btimeNanoseconds: this.u64(),
+            gen: this.u64(),
+            dataVersion: this.u64(),
+        };
+        this.finish();
+        return attr;
+    }
+
+    finish() {
+        if (this.offset !== this.bytes.byteLength) {
+            throw new Error("trailing bytes in 9P message body");
+        }
+    }
+
+    _require(length) {
+        if (this.offset + length > this.bytes.byteLength) {
+            throw new Error("truncated 9P message body");
+        }
+    }
+}
+
+function encodeP9Frame(type, tag, body) {
+    const payload = toUint8Array(body, "9P frame body");
+    const frame = new Uint8Array(7 + payload.byteLength);
+    const size = frame.byteLength;
+    frame[0] = size & 0xff;
+    frame[1] = (size >> 8) & 0xff;
+    frame[2] = (size >> 16) & 0xff;
+    frame[3] = (size >> 24) & 0xff;
+    frame[4] = type & 0xff;
+    frame[5] = tag & 0xff;
+    frame[6] = (tag >> 8) & 0xff;
+    frame.set(payload, 7);
+    return frame;
+}
+
+function decodeP9Frame(frame) {
+    const bytes = cloneFrameBytes(frame, "9P response frame");
+    return {
+        type: bytes[4],
+        tag: frameTag(bytes),
+        body: bytes.slice(7),
+    };
+}
+
+function decodeDirents(data) {
+    const reader = new P9Reader(data);
+    const entries = [];
+    while (reader.offset < reader.bytes.byteLength) {
+        entries.push({
+            qid: reader.qid(),
+            offset: reader.u64(),
+            type: reader.u8(),
+            name: reader.string(),
+        });
+    }
+    return entries;
+}
+
+function metadataFromAttr(path, attr) {
+    const kind = (attr.mode & 0o170000) === 0o040000
+        ? "dir"
+        : (attr.mode & 0o170000) === 0o120000
+            ? "symlink"
+            : "file";
+    return {
+        name: baseName(path),
+        path,
+        kind,
+        type: kind,
+        size: attr.size,
+        mode: attr.mode,
+        uid: attr.uid,
+        gid: attr.gid,
+        modifiedMs: attr.mtimeSeconds * 1000 + Math.floor(attr.mtimeNanoseconds / 1_000_000),
+    };
+}
+
+function normalizeP9Path(path) {
+    if (path == null || path === "" || path === ".") {
+        return ".";
+    }
+    const value = String(path);
+    if (value.startsWith("/") || value.includes("\\")) {
+        throw new Error(`invalid Wanix path ${JSON.stringify(path)}`);
+    }
+    const parts = [];
+    for (const part of value.split("/")) {
+        if (!part || part === ".") {
+            continue;
+        }
+        if (part === "..") {
+            throw new Error(`path traversal is not allowed: ${JSON.stringify(path)}`);
+        }
+        parts.push(part);
+    }
+    return parts.length === 0 ? "." : parts.join("/");
+}
+
+function baseName(path) {
+    const cleanPath = normalizeP9Path(path);
+    if (cleanPath === ".") {
+        return ".";
+    }
+    return cleanPath.slice(cleanPath.lastIndexOf("/") + 1);
+}
+
+function parentPath(path) {
+    const cleanPath = normalizeP9Path(path);
+    if (cleanPath === "." || !cleanPath.includes("/")) {
+        return ".";
+    }
+    return cleanPath.slice(0, cleanPath.lastIndexOf("/"));
+}
+
+function joinPath(parent, child) {
+    const cleanParent = normalizeP9Path(parent);
+    const cleanChild = normalizeP9Path(child);
+    if (cleanParent === ".") {
+        return cleanChild;
+    }
+    if (cleanChild === ".") {
+        return cleanParent;
+    }
+    return `${cleanParent}/${cleanChild}`;
+}
+
+function concatBytes(chunks) {
+    const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return out;
+}
+
+function normalizeAllowOrigins(value) {
+    if (value == null) {
+        return null;
+    }
+    if (Array.isArray(value)) {
+        return value.map(String).filter(Boolean);
+    }
+    return String(value).split(/\s+/).filter(Boolean);
+}
+
+function originAllowed(origin, allowOrigins) {
+    if (!allowOrigins || allowOrigins.length === 0) {
+        return true;
+    }
+    return allowOrigins.includes("*") || allowOrigins.includes(origin);
 }
 
 function requireWanixP9Facade(facade) {

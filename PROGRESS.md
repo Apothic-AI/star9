@@ -2,6 +2,13 @@
 
 ## 2026-05-13
 
+- Added a browser-side async 9P namespace mount client on top of `WanixP9FramePortClient`, including 9P version/attach negotiation, walk/open/read/write/create/readdir/mkdir/remove operations, response decoding, and deterministic fake-MessagePort coverage proving remote read/write/list behavior through complete 9P frames.
+- Added `crates/wanix-web/js/mounts.js`, a browser-side async mount table and storage adapter resolver that lets `wanix-system` route operations to real OPFS/File System Access, Cache API, DOM, download, JS value, worker-backed, and 9P import mounts without pretending those async browser APIs satisfy the synchronous Rust `FileSystem` trait.
+- Wired `<wanix-bind kind="import">` through browser `wanix-import` MessagePort handoff into the async 9P mount client instead of leaving import bindings as frame-helper-only placeholders.
+- Extended `wanix-system` with async browser storage mounts, import-port mounts, import-source mounts, origin-gated import responder setup for exported systems, and read/write/list/stat/mkdir/remove dispatch through the browser mount table before falling back to the Rust wasm facade.
+- Added wasm facade methods for stat/mkdir/remove plus CBOR runtime request and task-message handling, allowing browser worker runtime endpoints to call into `RuntimeProtocolHost` without decoding Rust protocol messages in JavaScript.
+- Wired `worker-runtime.js` to optionally bridge WorkerRuntimeEndpoint request/task-message payloads into a `WanixSystem` facade and send encoded runtime responses back over the runtime port, with deterministic fake-worker coverage.
+- Updated browser smoke coverage to exercise real browser Cache API, DOM, JS-value, and optional OPFS storage through the async mount table while keeping Rust-backed file API, 9P loopback, and task startup checks.
 - Added Rust-native 9P stream helpers for reading, writing, and serving consecutive length-prefixed frames over native `Read`/`Write` boundaries, with tests for frame-boundary preservation, invalid size rejection, and multi-request stream serving through `NinePServer`.
 - Added a native `wanix serve-p9 [root]` CLI hook that exports a `LocalFs` root as 9P over stdin/stdout using the Rust stream helper, providing a concrete no-Go native serving boundary for examples and external import tests.
 - Added a checked-in compiled WASI fixture at `tests/fixtures/wasi-hard-link.wasm` with source WAT, and runtime coverage proving `WasmiWasiHandler` loads precompiled fixture bytes from a task namespace rather than only modules compiled from inline WAT during tests.

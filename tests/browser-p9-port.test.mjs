@@ -5,6 +5,7 @@ import {
     attachWanixImportResponder,
     createWanixP9FramePort,
     createWanixP9FrameClient,
+    createWanixP9NamespaceMount,
     serveWanixP9FramePort,
 } from "../crates/wanix-web/js/p9-port.js";
 
@@ -196,6 +197,30 @@ test("WanixP9FramePortClient reports unknown response tags", {
     assert.match(String(errors[0]), /unknown tag 99/);
 });
 
+test("WanixP9NamespaceMount reads, writes, and lists over MessagePort 9P", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const channel = new MessageChannel();
+    const server = new FakeNinePServer(channel.port1, {
+        "hello.txt": encoder.encode("hello"),
+    });
+    t.after(() => server.close());
+
+    const mount = await createWanixP9NamespaceMount(channel.port2);
+    t.after(() => mount.close());
+
+    assert.equal(await mount.readText("hello.txt"), "hello");
+    await mount.writeText("created.txt", "created");
+    assert.equal(await mount.readText("created.txt"), "created");
+    assert.deepEqual(
+        (await mount.readDir(".")).map((entry) => entry.name),
+        ["created.txt", "hello.txt"],
+    );
+});
+
 function p9Frame(type, tag, payload = []) {
     const frame = new Uint8Array(7 + payload.length);
     const size = frame.byteLength;
@@ -208,6 +233,219 @@ function p9Frame(type, tag, payload = []) {
     frame[6] = (tag >> 8) & 0xff;
     frame.set(payload, 7);
     return frame;
+}
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+class FakeNinePServer {
+    constructor(port, files = {}) {
+        this.port = port;
+        this.files = new Map(Object.entries(files));
+        this.fids = new Map();
+        this.port.addEventListener("message", (event) => {
+            this.port.postMessage(this.handle(event.data));
+        });
+        this.port.start();
+    }
+
+    close() {
+        this.port.close();
+    }
+
+    handle(frame) {
+        const request = new Reader(frame);
+        const size = request.u32();
+        assert.equal(size, frame.byteLength);
+        const type = request.u8();
+        const tag = request.u16();
+        const out = new Writer();
+
+        switch (type) {
+        case 100:
+            out.u32(request.u32());
+            out.string(request.string());
+            return frameFrom(101, tag, out.bytes());
+        case 104: {
+            const fid = request.u32();
+            this.fids.set(fid, ".");
+            return frameFrom(105, tag, qid());
+        }
+        case 110: {
+            const fid = request.u32();
+            const newfid = request.u32();
+            const count = request.u16();
+            let path = this.fids.get(fid) || ".";
+            const qids = [];
+            for (let index = 0; index < count; index += 1) {
+                path = join(path, request.string());
+                if (path !== "." && !this.files.has(path)) {
+                    break;
+                }
+                qids.push(qid());
+            }
+            this.fids.set(newfid, path);
+            out.u16(qids.length);
+            for (const value of qids) out.raw(value);
+            return frameFrom(111, tag, out.bytes());
+        }
+        case 12:
+            request.u32();
+            request.u32();
+            out.raw(qid());
+            out.u32(0);
+            return frameFrom(13, tag, out.bytes());
+        case 14: {
+            const fid = request.u32();
+            const name = request.string();
+            request.u32();
+            request.u32();
+            request.u32();
+            const path = join(this.fids.get(fid), name);
+            this.files.set(path, new Uint8Array());
+            this.fids.set(fid, path);
+            out.raw(qid());
+            out.u32(0);
+            return frameFrom(15, tag, out.bytes());
+        }
+        case 116: {
+            const fid = request.u32();
+            const offset = request.u64();
+            const count = request.u32();
+            const data = this.files.get(this.fids.get(fid)) || new Uint8Array();
+            out.counted(data.slice(offset, offset + count));
+            return frameFrom(117, tag, out.bytes());
+        }
+        case 118: {
+            const fid = request.u32();
+            const offset = request.u64();
+            const data = request.counted();
+            const path = this.fids.get(fid);
+            const current = this.files.get(path) || new Uint8Array();
+            const next = new Uint8Array(Math.max(current.byteLength, offset + data.byteLength));
+            next.set(current);
+            next.set(data, offset);
+            this.files.set(path, next);
+            out.u32(data.byteLength);
+            return frameFrom(119, tag, out.bytes());
+        }
+        case 40: {
+            const fid = request.u32();
+            const offset = request.u64();
+            const count = request.u32();
+            const dirents = [...this.files.keys()].sort().map((name, index) => {
+                const entry = new Writer();
+                entry.raw(qid());
+                entry.u64(index + 1);
+                entry.u8(8);
+                entry.string(name);
+                return entry.bytes();
+            }).filter((_, index) => index + 1 > offset);
+            let body = new Uint8Array();
+            for (const entry of dirents) {
+                if (body.byteLength + entry.byteLength > count) break;
+                const next = new Uint8Array(body.byteLength + entry.byteLength);
+                next.set(body);
+                next.set(entry, body.byteLength);
+                body = next;
+            }
+            out.counted(body);
+            return frameFrom(41, tag, out.bytes());
+        }
+        case 120:
+            this.fids.delete(request.u32());
+            return frameFrom(121, tag);
+        default:
+            out.u32(38);
+            return frameFrom(7, tag, out.bytes());
+        }
+    }
+}
+
+class Writer {
+    constructor() {
+        this._bytes = [];
+    }
+    u8(value) { this._bytes.push(value & 0xff); }
+    u16(value) { this._bytes.push(value & 0xff, (value >> 8) & 0xff); }
+    u32(value) {
+        this._bytes.push(value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff, (value >> 24) & 0xff);
+    }
+    u64(value) {
+        let bigint = BigInt(value);
+        for (let index = 0; index < 8; index += 1) {
+            this._bytes.push(Number((bigint >> BigInt(index * 8)) & 0xffn));
+        }
+    }
+    string(value) {
+        const bytes = encoder.encode(String(value));
+        this.u16(bytes.byteLength);
+        this.raw(bytes);
+    }
+    counted(value) {
+        this.u32(value.byteLength);
+        this.raw(value);
+    }
+    raw(value) {
+        this._bytes.push(...value);
+    }
+    bytes() {
+        return Uint8Array.from(this._bytes);
+    }
+}
+
+class Reader {
+    constructor(bytes) {
+        this.bytes = bytes;
+        this.offset = 0;
+    }
+    u8() { return this.bytes[this.offset++]; }
+    u16() {
+        const value = this.bytes[this.offset] | (this.bytes[this.offset + 1] << 8);
+        this.offset += 2;
+        return value;
+    }
+    u32() {
+        const value = this.bytes[this.offset] | (this.bytes[this.offset + 1] << 8) | (this.bytes[this.offset + 2] << 16) | (this.bytes[this.offset + 3] << 24);
+        this.offset += 4;
+        return value >>> 0;
+    }
+    u64() {
+        let value = 0n;
+        for (let index = 0; index < 8; index += 1) {
+            value |= BigInt(this.bytes[this.offset + index]) << BigInt(index * 8);
+        }
+        this.offset += 8;
+        return Number(value);
+    }
+    string() {
+        const length = this.u16();
+        const value = decoder.decode(this.bytes.slice(this.offset, this.offset + length));
+        this.offset += length;
+        return value;
+    }
+    counted() {
+        const length = this.u32();
+        const value = this.bytes.slice(this.offset, this.offset + length);
+        this.offset += length;
+        return value;
+    }
+}
+
+function frameFrom(type, tag, body = new Uint8Array()) {
+    return p9Frame(type, tag, body);
+}
+
+function qid() {
+    const out = new Writer();
+    out.u8(0);
+    out.u32(0);
+    out.u64(1);
+    return out.bytes();
+}
+
+function join(parent = ".", name = ".") {
+    return parent === "." ? name : `${parent}/${name}`;
 }
 
 function tagOf(frame) {

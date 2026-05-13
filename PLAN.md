@@ -6,9 +6,10 @@ Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the re
 
 Immediate protocol/runtime tranche:
 
-- Continue browser system and binding parity beyond the component-driven `wanix-system`/`wanix-bind`/`wanix-task` baseline, especially cross-document imports and richer task element behavior.
-- Keep the browser-side 9P import/export tranche at whole-frame `MessagePort` serving and tag-matched async client boundaries until a Rust-owned async client mount transport is designed and validated, while using Rust-owned length-prefixed stream helpers for native 9P serving/import paths.
-- Attach the browser host storage adapters to namespace mounts where the synchronous Rust `FileSystem` boundary can be satisfied, and continue import/execution glue on top of the custom elements, Worker/MessagePort helpers, JS-WASM worker bootstrap host, and host-neutral registries.
+- Continue browser system and binding parity beyond the component-driven `wanix-system`/`wanix-bind`/`wanix-task` baseline, now including cross-document import responders and browser-side async mount routing for 9P and host storage.
+- Build deeper browser-side 9P namespace coverage on the validated async `MessagePort` mount client, including more mutation/error parity and stress coverage, while using Rust-owned length-prefixed stream helpers for native 9P serving/import paths.
+- Continue attaching browser host storage adapters through the JS async mount table where browser APIs cannot satisfy the synchronous Rust `FileSystem` trait directly, while retaining Rust descriptor-backed stand-ins for native tests.
+- Continue browser worker orchestration on top of the runtime `MessagePort` bridge that can hand CBOR runtime requests/task messages to the Rust `RuntimeProtocolHost`.
 - Continue expanding the Wasmi-backed WASI preview1 syscall handler beyond the current fd directory, fd positional I/O/allocation/renumber, fd advice/flags/timestamps, fd sync/truncate, poll/yield/signal imports, path mutation including hard links, explicit unsupported socket imports, args/env, clock, and random baseline, and implement real browser/native JS-WASM execution drivers on top of the typed worker host and execution-worker bootstrap surfaces.
 - Continue backend hardening with HTTP remote metadata details, opt-in live transport coverage, browser SyncFs timer integration, backend-specific patch application, and live S3/R2 service coverage over the Rust object-store adapter and SigV4 signer boundaries.
 - Deepen remaining host-specific device behavior, especially real terminal screen protocol, VM execution, worker integration, and native/browser TCP adapters.

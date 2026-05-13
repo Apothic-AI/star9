@@ -91,6 +91,48 @@ test("acceptBrowserWorkerHost routes binary request and response envelopes over 
     assert.deepEqual(responses[0].payload, responsePayload);
 });
 
+test("spawnBrowserWorkerHost wires worker runtime requests into WanixSystem facade", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const worker = new FakeWorkerTarget();
+    const requests = [];
+    const systemElement = {
+        ready: Promise.resolve(),
+        system: {
+            readText() {
+                return "";
+            },
+            writeText() {},
+            setupNamespace() {},
+            handleRuntimeRequest(payload) {
+                requests.push(payload);
+                return new Uint8Array([payload[0] + 1]);
+            },
+        },
+    };
+
+    const host = await spawnBrowserWorkerHost(() => worker, { system: systemElement });
+    t.after(() => host.close());
+
+    const runtimePort = worker.posted[0].transfer[0];
+    const responses = [];
+    runtimePort.addEventListener("message", (event) => {
+        responses.push(decodeWorkerRuntimeEnvelope(event.data));
+    });
+    runtimePort.start();
+
+    runtimePort.postMessage(encodeWorkerRuntimeEnvelope("request", new Uint8Array([41])));
+
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0], new Uint8Array([41]));
+    assert.equal(responses.length, 1);
+    assert.equal(responses[0].kind, "response");
+    assert.deepEqual(responses[0].payload, new Uint8Array([42]));
+});
+
 test("BrowserWorkerHost observes task messages and cleans up owned worker targets", {
     concurrency: false,
 }, async (t) => {
