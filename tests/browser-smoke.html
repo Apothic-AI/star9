@@ -48,6 +48,7 @@
 
 <script type="module">
   import "../crates/wanix-web/js/wanix-elements.js";
+  import { createWanixP9FramePort } from "../crates/wanix-web/js/p9-port.js";
 
   const status = document.querySelector("#status");
   const systemElement = document.querySelector("#smoke-system");
@@ -114,6 +115,15 @@
     const sharedMirrorText = (await system.readText("shared-store-2/state.txt")).trim();
     const sharedEntries = await entriesOf("shared-store-2", system);
 
+    const portImport = await createWanixP9FramePort(system);
+    await system.mountImportPort("remote-port", portImport.port);
+    const remotePortInlineText = (await system.readText("remote-port/inline.txt")).trim();
+    await system.writeText("remote-port/port-created.txt", "port-ok");
+    const remotePortCreatedText = (await system.readText("port-created.txt")).trim();
+    const remotePortEntries = await entriesOf("remote-port", system);
+    system.unmount("remote-port");
+    portImport.server.close();
+
     system.mountSelf9p("remote");
     const remoteInlineText = (await system.readText("remote/inline.txt")).trim();
     const remoteFetchedText = (await system.readText("remote/fetched.txt")).trim();
@@ -170,6 +180,18 @@
       `bad remote fetched text ${remoteFetchedText}`,
     );
     assert(
+      remotePortInlineText === "inline-browser-ok",
+      `bad remote port inline text ${remotePortInlineText}`,
+    );
+    assert(
+      remotePortCreatedText === "port-ok",
+      `bad remote port created text ${remotePortCreatedText}`,
+    );
+    assert(
+      remotePortEntries.includes("port-created.txt"),
+      `missing remote port entry: ${remotePortEntries}`,
+    );
+    assert(
       domStorageText === "dom-storage-ok",
       `bad dom storage text ${domStorageText}`,
     );
@@ -221,6 +243,7 @@
         fetchedText,
         storageEntries,
         sharedEntries,
+        remotePortEntries,
         domStorageText,
         wasiTask,
         goTask,

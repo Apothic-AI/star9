@@ -166,6 +166,10 @@ export class SystemElement extends WanixElement {
         return this.mountImportPort(dst, port, { ...options, source: src });
     }
 
+    unmount(dst) {
+        return this._mounts.unmount(dst);
+    }
+
     startTask(kind, command) {
         return this.system.startTask(kind, command);
     }
