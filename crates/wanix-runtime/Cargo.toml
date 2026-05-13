@@ -14,5 +14,8 @@ wanix-task = { path = "../wanix-task" }
 wanix-vfs = { path = "../wanix-vfs" }
 wasmi.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+portable-pty.workspace = true
+
 [dev-dependencies]
 wat = "1"

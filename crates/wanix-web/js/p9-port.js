@@ -9,11 +9,11 @@ export async function resolveWanixP9Facade(systemLike) {
     }
 
     const element = isSystemElementLike(candidate) ? candidate : null;
-    if (element?.ready && typeof element.ready.then === "function") {
+    let facade = element ? readElementFacade(element) : candidate;
+    if (!isWanixP9FacadeLike(facade) && element?.ready && typeof element.ready.then === "function") {
         await element.ready;
+        facade = readElementFacade(element);
     }
-
-    const facade = element?.system || candidate;
     if (!isWanixP9FacadeLike(facade)) {
         throw new TypeError("expected a wanix-system element or WanixSystem facade with handle9pFrame(frame)");
     }
@@ -347,6 +347,9 @@ export class WanixP9FramePortClient {
         }
         this._pending.clear();
         this._notagPending.length = 0;
+        if (typeof this.target.close === "function") {
+            this.target.close();
+        }
         this.closed = true;
         return this;
     }
@@ -1194,6 +1197,14 @@ function originAllowed(origin, allowOrigins) {
         return true;
     }
     return allowOrigins.includes("*") || allowOrigins.includes(origin);
+}
+
+function readElementFacade(element) {
+    try {
+        return element?.system || null;
+    } catch {
+        return null;
+    }
 }
 
 function requireWanixP9Facade(facade) {

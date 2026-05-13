@@ -95,6 +95,17 @@ impl Namespace {
         self.bindings.read().unwrap().keys().cloned().collect()
     }
 
+    pub fn format_bindings(&self) -> String {
+        let bindings = self.bindings.read().unwrap();
+        let mut lines = Vec::new();
+        for (dst, targets) in bindings.iter() {
+            for target in targets {
+                lines.push(format!("{dst} -> fs:{}", target.path));
+            }
+        }
+        lines.join("\n")
+    }
+
     fn direct_targets(&self, name: &str) -> Option<Vec<BindTarget>> {
         self.bindings.read().unwrap().get(name).cloned()
     }

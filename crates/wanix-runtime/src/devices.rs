@@ -9,7 +9,19 @@ use wanix_fs::{
 use wanix_task::Task;
 use wanix_vfs::BindMode;
 
-pub(crate) fn bind_devices(root: &Task) -> Result<()> {
+#[derive(Clone)]
+pub(crate) struct RuntimeDevices {
+    vm: VmDevice,
+}
+
+impl RuntimeDevices {
+    pub(crate) fn set_vm_guest(&self, vm_id: &str, guest: FsRef) -> Result<()> {
+        self.vm.set_guest(vm_id, guest)
+    }
+}
+
+pub(crate) fn bind_devices(root: &Task) -> Result<RuntimeDevices> {
+    let vm = VmDevice::new();
     let devices: [(&str, FsRef); 11] = [
         (
             "#pipe",
@@ -28,7 +40,7 @@ pub(crate) fn bind_devices(root: &Task) -> Result<()> {
             fs_ref(DeviceAllocator::new("ramfs", |_| fs_ref(MemFs::new()))),
         ),
         ("#term", fs_ref(DeviceAllocator::new("term", terminal_fs))),
-        ("#vm", fs_ref(VmDevice::new())),
+        ("#vm", fs_ref(vm.clone())),
         (
             "#worker",
             fs_ref(DeviceAllocator::new("worker", |_| worker_fs())),
@@ -48,7 +60,7 @@ pub(crate) fn bind_devices(root: &Task) -> Result<()> {
     for (dst, fs) in devices {
         root.namespace().bind(fs, ".", dst, BindMode::Replace)?;
     }
-    Ok(())
+    Ok(RuntimeDevices { vm })
 }
 
 #[derive(Clone)]
@@ -173,21 +185,25 @@ fn terminal_fs(id: &str) -> FsRef {
     let screen = SharedLogFile::new("screen");
     let data = TerminalDataFile::new("data", screen.clone());
     let program = QueueFile::program("program");
+    let raw = QueueFile::loopback("raw");
     let winch = SignalFs::default();
 
     let ctl_state = state.clone();
     let ctl_size = size.clone();
     let ctl_data = data.clone();
     let ctl_program = program.clone();
+    let ctl_raw = raw.clone();
     let ctl = ControlFile::new("ctl", move |cmd| match cmd {
         "clear" => {
             ctl_data.clear();
             ctl_program.clear();
+            ctl_raw.clear();
             Ok(())
         }
         "reset" => {
             ctl_data.clear();
             ctl_program.clear();
+            ctl_raw.clear();
             ctl_size.set("80x24");
             ctl_state.set("ready");
             Ok(())
@@ -204,6 +220,7 @@ fn terminal_fs(id: &str) -> FsRef {
     fs.insert("data", fs_ref(data));
     fs.insert("screen", fs_ref(screen));
     fs.insert("program", fs_ref(program));
+    fs.insert("raw", fs_ref(raw));
     fs.insert("winch", fs_ref(winch));
     fs_ref(fs)
 }
@@ -272,6 +289,11 @@ impl VmDevice {
         if !new.is_empty() {
             aliases.insert(new.to_string(), id.to_string());
         }
+    }
+
+    fn set_guest(&self, id: &str, guest: FsRef) -> Result<()> {
+        self.resolve(id)?.set_guest(guest);
+        Ok(())
     }
 }
 
@@ -367,6 +389,7 @@ struct VmResource {
     alias: SharedTextFile,
     config: SharedTextFile,
     console: SharedLogFile,
+    guest: Arc<RwLock<Option<FsRef>>>,
 }
 
 impl VmResource {
@@ -379,6 +402,7 @@ impl VmResource {
             alias: SharedTextFile::writable("alias", ""),
             config: SharedTextFile::writable("config", ""),
             console: SharedLogFile::new("console"),
+            guest: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -388,13 +412,31 @@ impl VmResource {
         self.alias.set(next.clone());
         self.device.update_alias(&self.id, &old, &next);
     }
+
+    fn set_guest(&self, guest: FsRef) {
+        *self.guest.write().unwrap() = Some(guest);
+    }
+
+    fn guest(&self) -> Option<FsRef> {
+        self.guest.read().unwrap().clone()
+    }
 }
 
 impl FileSystem for VmResource {
-    fn open(&self, _ctx: &FsContext, name: &str) -> Result<BoxFile> {
+    fn open(&self, ctx: &FsContext, name: &str) -> Result<BoxFile> {
+        if name == "guest" || name.starts_with("guest/") {
+            let guest = self
+                .guest()
+                .ok_or_else(|| Error::path("open", name, ErrorKind::NotFound))?;
+            let rel = name
+                .strip_prefix("guest/")
+                .map(clean_path)
+                .unwrap_or_else(|| ".".to_string());
+            return guest.open(ctx, &rel);
+        }
         match name {
             "." => {
-                let entries = vec![
+                let mut entries = vec![
                     DirEntry::new("id", Metadata::file("id", 0o444, self.id.len() as u64 + 1)),
                     DirEntry::new(
                         "kind",
@@ -422,6 +464,9 @@ impl FileSystem for VmResource {
                         ),
                     ),
                 ];
+                if self.guest().is_some() {
+                    entries.push(DirEntry::new("guest", Metadata::dir("guest", 0o555)));
+                }
                 Ok(directory_file(Metadata::dir(".", 0o555), entries))
             }
             "id" => SharedTextFile::readonly("id", self.id.clone()).open(&FsContext::new(), "."),

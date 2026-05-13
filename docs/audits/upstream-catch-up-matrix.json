@@ -1,0 +1,74 @@
+{
+  "date": "2026-05-13",
+  "upstream_range": "b753801..2feaf3f",
+  "upstream_head": "2feaf3f",
+  "purpose": "Catch-up matrix for upstream Wanix changes accepted into wanix-rs.",
+  "accepted": [
+    {
+      "surface": "task export",
+      "upstream_commits": ["4ca5a1a", "2feaf3f"],
+      "rust_paths": ["crates/wanix-task/src/lib.rs", "crates/wanix-runtime/src/lib.rs"],
+      "evidence": ["task_export_is_optional_and_routes_filesystem_access", "runtime_installs_task_exports_and_vm_guests"]
+    },
+    {
+      "surface": "worker export handoff",
+      "upstream_commits": ["475238c", "4ca5a1a", "2feaf3f"],
+      "rust_paths": ["crates/wanix-web/js/system.js", "crates/wanix-web/js/worker-host.js", "tests/fixtures/browser/export-worker.mjs"],
+      "evidence": ["BrowserWorkerHost exposes ordinary worker messages for export handoff", "tests/browser-smoke.html"]
+    },
+    {
+      "surface": "VM guest filesystem mount",
+      "upstream_commits": ["0309526", "37ab057", "4ca5a1a"],
+      "rust_paths": ["crates/wanix-runtime/src/devices.rs", "crates/wanix-web/js/system.js"],
+      "evidence": ["runtime_installs_task_exports_and_vm_guests", "cargo run -p wanix-cli -- accept devices", "tests/browser-smoke.html"]
+    },
+    {
+      "surface": "task binds introspection",
+      "upstream_commits": ["d28ff62", "36d9f71"],
+      "rust_paths": ["crates/wanix-vfs/src/lib.rs", "crates/wanix-task/src/lib.rs"],
+      "evidence": ["binds_file_reports_namespace_bindings"]
+    },
+    {
+      "surface": "parent/root task behavior",
+      "upstream_commits": ["5583f81", "36d9f71"],
+      "rust_paths": ["crates/wanix-task/src/lib.rs"],
+      "evidence": ["later_rootless_allocations_default_to_root_parent"]
+    },
+    {
+      "surface": "native PTY execution",
+      "upstream_commits": ["024a248", "79874b8"],
+      "rust_paths": ["crates/wanix-runtime/src/execution.rs", "crates/wanix-cli/src/main.rs"],
+      "evidence": ["native_pty_execution_handler_routes_output_and_exit_state", "cargo run -p wanix-cli -- accept native"]
+    },
+    {
+      "surface": "raw terminal/workbench behavior",
+      "upstream_commits": ["3021bf5", "bedf6d9"],
+      "rust_paths": ["crates/wanix-runtime/src/devices.rs", "crates/wanix-web/js/terminal.js"],
+      "evidence": ["cargo run -p wanix-cli -- accept devices", "tests/browser-smoke.html"]
+    },
+    {
+      "surface": "JS API logger hook",
+      "upstream_commits": ["a2cc36b"],
+      "rust_paths": ["crates/wanix-web/js/system.js"],
+      "evidence": ["callWanixLogger is a no-op by default and contains logger failures"]
+    },
+    {
+      "surface": "representative examples",
+      "upstream_commits": ["5f319d3", "69f1519", "2feaf3f"],
+      "rust_paths": ["examples/basic-vm.html", "examples/vm-workbench.html", "examples/import-workbench.html", "examples/iframe-workbench.html", "examples/gojs-export.html"],
+      "evidence": ["tests/browser-smoke.html", "Playwright smoke for examples/*.html"]
+    }
+  ],
+  "not_ported": [
+    {
+      "surface": "Go/TinyGo/wasm_exec/Docker/Makefile build changes",
+      "classification": "legacy Go build infrastructure",
+      "reason": "wanix-rs builds and runs Rust-native artifacts and does not invoke Go runtime/build paths"
+    },
+    {
+      "surface": "localfs OpenRoot TinyGo fallback",
+      "classification": "legacy Go host compatibility",
+      "reason": "Rust LocalFs uses Rust std filesystem APIs and does not share TinyGo os.OpenRoot constraints"
+    }
+  ]
+}

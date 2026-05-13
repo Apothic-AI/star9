@@ -4,6 +4,12 @@
 
 Build a Rust-native Wanix runtime in a single sprint, using `../wanix` as the reference implementation to clone and port from without wrapping or depending on Go code.
 
+Immediate upstream catch-up tranche:
+
+- Port accepted upstream changes from `b753801..2feaf3f`: task exports, worker export handoff, VM guest mounts, bind introspection, root-parent task allocation, native PTY execution, raw terminal mode, logger hooks, and Rust-backed replacement examples.
+- Keep Go/TinyGo/Docker/Makefile/`wasm_exec` changes classified as legacy reference build infrastructure, not Rust port work.
+- Keep `docs/audits/upstream-catch-up-matrix.json`, conformance docs, and progress notes current as the catch-up work lands.
+
 Immediate protocol/runtime tranche:
 
 - Continue browser system and binding parity beyond the component-driven `wanix-system`/`wanix-bind`/`wanix-task` baseline, now including cross-document import responders and browser-side async mount routing for 9P and host storage.

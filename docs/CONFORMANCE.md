@@ -33,8 +33,11 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Namespace synthesized parent directories.
 - Namespace hidden `#` listings with direct hidden-path access.
 - Namespace create routing into writable bindings.
+- Namespace bind rendering for task-facing `binds` introspection.
 - Task allocation through `TaskFs`.
 - Task field reads and alias updates.
+- Task parent/root defaulting for rootless allocation after root creation.
+- Task export filesystem exposure through `#task/<id>/export`.
 - Task fd open, read, close, and invalid-fd behavior.
 - Task command, environment, cwd, exit-state setters, explicit standard fd installation, and fd listing behavior.
 - Child task namespace cloning.
@@ -45,7 +48,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Runtime protocol immutable snapshot APIs for workers, ports, handoff targets, and task messages.
 - Browser worker/message-port adapter coverage for typed runtime request/response dispatch, task message delivery, and lossless 9P frame transfer through a host-neutral port.
 - Browser Worker/MessagePort JS glue for tagged binary runtime envelopes, endpoint wrappers, port transfer helpers, system facade resolution, import-port requests, and CBOR runtime request/task-message bridging into a WanixSystem facade.
-- Browser 9P `MessagePort` helpers for complete binary frame request/response handling, tag-matched async client requests, async namespace read/write/list mounts, transferable served ports, `wanix-import` responder handoff, unknown-tag/error reporting, and non-binary frame error reporting with deterministic fake-port tests plus real Playwright smoke import over `MessagePort`.
+- Browser 9P `MessagePort` helpers for complete binary frame request/response handling, tag-matched async client requests, async namespace read/write/list mounts, transferable served ports, `wanix-import` responder handoff, cross-document import iframe lifetime/retry behavior, unknown-tag/error reporting, and non-binary frame error reporting with deterministic fake-port tests plus real Playwright smoke import over `MessagePort`.
 - Browser Worker host facade coverage for fake Worker-like startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
 - Browser JS/WASM Worker host bootstrap coverage for normalized execution messages, runtime descriptor transfer, task-message observation, existing-host wrapping, and cleanup.
 - Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, default dynamic JS runner import, direct WASI-style `.wasm` instantiation, task-message emission, exit/error reporting, and cleanup.
@@ -72,16 +75,18 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Runtime root bindings for core and device surfaces.
 - Device allocator resource creation.
 - Terminal device program/data queues, retained screen file, program LF-to-CRLF normalization, winch signal path, ctl clear/reset/noop behavior, state, size files, and browser `wanix-terminal` element integration.
-- VM device `new/<kind>` allocation, ctl start/stop/reset/alias/config behavior, alias lookup, state fields, console log, id, and kind files.
+- Terminal raw program queue behavior for browser/workbench callers that need byte-preserving input.
+- VM device `new/<kind>` allocation, ctl start/stop/reset/alias/config behavior, alias lookup, state fields, console log, id, kind files, and attached guest filesystem exposure through `#vm/<id>/guest`.
 - Network deterministic Plan 9-style connection resources for dial, bind, announce, listen accept, hangup/reset, status/local/remote, data flow, and invalid transitions.
 - WASI and Go-compatible JS execution adapter task starts.
+- Opt-in native PTY execution handler coverage for host process stdout, nonzero exit state, and missing-binary errors.
 - Native `WanixSystem` smoke operations.
 - Native CLI acceptance smoke for 9P loopback, deterministic device surfaces, compiled WASI preview1 fixtures, runtime worker protocol flows, and fd-backed worker stdout routing, plus a native stdin/stdout `serve-p9` export command built on Rust 9P stream framing.
 - Browser wasm smoke operations through `tests/browser-smoke.html`.
 
 ## Explicit Replacement Fixtures
 
-`tests/browser-smoke.html` replaces the representative browser examples as a Rust-backed acceptance path. It imports the browser custom element module, initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, mounts descriptor-backed storage, writes and reads files through the public API and 9P loopback import, lists directories, verifies task fields, drives `wanix-terminal`, starts WASI/Go JS adapter tasks, runs a real module-worker JS task, and runs a direct WASI-style `.wasm` task through the Wanix runtime path.
+`tests/browser-smoke.html` replaces the representative browser examples as a Rust-backed acceptance path. It imports the browser custom element module, initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, mounts descriptor-backed storage, writes and reads files through the public API and 9P loopback import, lists directories, verifies task fields, drives normalized and raw `wanix-terminal` paths, starts WASI/Go JS adapter tasks, runs a real module-worker JS task, runs a direct WASI-style `.wasm` task through the Wanix runtime path, and mounts a worker-exported 9P filesystem as both `#task/<id>/export` and `#vm/<id>/guest`.
 
 `tests/fixtures/api-operations.json` lists the public operation names used by the typed protocol boundary.
 
@@ -92,6 +97,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 `tests/fixtures/wasi-preview1-smoke.wasm` is a checked-in compiled WASI preview1 module, with source in `tests/fixtures/wasi-preview1-smoke.wat`, used by Rust, CLI, Node, and browser smoke coverage for clock resolution/time, args/env sizing, random bytes, stdout, and direct browser `.wasm` execution.
 
 `docs/audits/completion-gap-matrix.json` classifies the remaining host capability boundaries and preview1 import coverage. `tests/audit-matrix.test.mjs` validates that code-level unsupported markers have an audit classification.
+
+`docs/audits/upstream-catch-up-matrix.json` records the accepted and deliberately unported upstream changes from `b753801..2feaf3f`, including task exports, worker export handoff, VM guest mounts, native PTY execution, raw terminal mode, the logger hook, and Rust-backed example replacements.
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 

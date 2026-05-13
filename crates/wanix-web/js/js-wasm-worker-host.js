@@ -88,6 +88,13 @@ export class BrowserJsWasmWorkerHost {
         return this.host.onTaskMessage(listener);
     }
 
+    onTargetMessage(listener) {
+        if (typeof this.host.onTargetMessage !== "function") {
+            throw new TypeError("worker host does not expose target message listeners");
+        }
+        return this.host.onTargetMessage(listener);
+    }
+
     onError(listener) {
         return this.host.onError(listener);
     }
@@ -217,6 +224,7 @@ function validateWorkerHost(host) {
         "onRequest",
         "onResponse",
         "onTaskMessage",
+        "onTargetMessage",
         "onError",
     ];
 

@@ -60,3 +60,13 @@ Required browser storage behaviors: read, write, list, stat, mkdir, remove, erro
 ## Native And Browser Network
 
 The default `#net` device is deterministic and offline. Real native TCP and browser transport adapters must be opt-in and should not replace deterministic tests as the default conformance oracle.
+
+## Native PTY Execution
+
+Host process execution is opt-in. Run it only on native hosts where spawning `/bin/sh` through a pseudo terminal is acceptable:
+
+```sh
+cargo run -p wanix-cli -- accept native
+```
+
+This validates the Rust native PTY handler's stdout routing and exit-state propagation without making host process execution part of the default offline gate.

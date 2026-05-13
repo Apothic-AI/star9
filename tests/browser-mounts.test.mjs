@@ -27,6 +27,25 @@ test("AsyncMountTable resolves longest mounted prefix and closes unmounted adapt
     assert.equal(root.closed, true);
 });
 
+test("AsyncMountTable keeps shared adapters open until their final mount is removed", async () => {
+    const adapter = fakeAdapter();
+    const table = new AsyncMountTable();
+
+    table.mount("task-export", adapter);
+    table.mount("vm-guest", adapter);
+
+    assert.equal(table.unmount("task-export"), true);
+    assert.equal(adapter.closed, false);
+    assert.equal(table.unmount("vm-guest"), true);
+    assert.equal(adapter.closed, true);
+
+    adapter.closed = false;
+    table.mount("task-export", adapter);
+    table.mount("vm-guest", adapter);
+    table.close();
+    assert.equal(adapter.closed, true);
+});
+
 test("BrowserDebouncedSyncScheduler debounces browser timers and flushes once", async () => {
     const clock = new FakeClock();
     const calls = [];

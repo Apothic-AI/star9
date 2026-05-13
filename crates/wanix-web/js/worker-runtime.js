@@ -244,21 +244,68 @@ export function requestWanixImportPort(src, options = {}) {
     const targetOrigin = options.targetOrigin || "*";
     const request = options.request || "wanix-import";
     const url = String(src);
+    const timeoutMs = Number(options.timeoutMs ?? options.timeout ?? 5000);
+    const retryMs = Math.max(0, Number(options.retryMs ?? options.retryIntervalMs ?? 50));
 
     return new Promise((resolve, reject) => {
         const iframe = document.createElement("iframe");
-        iframe.style.display = "none";
-        iframe.src = new URL(url, document.baseURI).href;
-        iframe.onload = () => {
-            const channel = new MessageChannel();
-            channel.port1.onmessage = (event) => {
+        const ports = [];
+        let retryTimer = null;
+        let timeoutTimer = null;
+        let settled = false;
+
+        const cleanup = (removeFrame = true) => {
+            settled = true;
+            if (retryTimer !== null) {
+                clearInterval(retryTimer);
+                retryTimer = null;
+            }
+            if (timeoutTimer !== null) {
+                clearTimeout(timeoutTimer);
+                timeoutTimer = null;
+            }
+            for (const port of ports) {
+                if (typeof port.close === "function") {
+                    port.close();
+                }
+            }
+            if (removeFrame) {
                 iframe.remove();
+            }
+        };
+
+        const resolveOnce = (value) => {
+            if (settled) {
+                return;
+            }
+            cleanup(false);
+            resolve(attachImportFrameLifetime(value, iframe));
+        };
+
+        const rejectOnce = (error) => {
+            if (settled) {
+                return;
+            }
+            cleanup();
+            reject(error);
+        };
+
+        const sendRequest = () => {
+            if (settled || !iframe.contentWindow) {
+                return;
+            }
+            const channel = new MessageChannel();
+            ports.push(channel.port1);
+            channel.port1.onmessage = (event) => {
                 try {
-                    resolve(requireMessagePort(event.data));
+                    resolveOnce(requireMessagePort(event.data));
                 } catch (error) {
-                    reject(error);
+                    rejectOnce(error);
                 }
             };
+            if (typeof channel.port1.start === "function") {
+                channel.port1.start();
+            }
             try {
                 iframe.contentWindow.postMessage(
                     {
@@ -269,16 +316,43 @@ export function requestWanixImportPort(src, options = {}) {
                     [channel.port2],
                 );
             } catch (error) {
-                iframe.remove();
-                reject(error);
+                rejectOnce(error);
+            }
+        };
+
+        iframe.style.display = "none";
+        iframe.src = new URL(url, document.baseURI).href;
+        iframe.onload = () => {
+            if (timeoutMs >= 0) {
+                timeoutTimer = setTimeout(() => {
+                    rejectOnce(new Error(`timed out waiting for Wanix import port from ${JSON.stringify(url)}`));
+                }, timeoutMs);
+            }
+            sendRequest();
+            if (retryMs > 0) {
+                retryTimer = setInterval(sendRequest, retryMs);
             }
         };
         iframe.onerror = () => {
-            iframe.remove();
-            reject(new Error(`Failed to load import binding source ${JSON.stringify(url)}`));
+            rejectOnce(new Error(`Failed to load import binding source ${JSON.stringify(url)}`));
         };
         document.body.append(iframe);
     });
+}
+
+function attachImportFrameLifetime(port, iframe) {
+    const messagePort = requireMessagePort(port);
+    const close = typeof messagePort.close === "function" ? messagePort.close.bind(messagePort) : null;
+    let closed = false;
+    messagePort.close = () => {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        iframe.remove();
+        close?.();
+    };
+    return messagePort;
 }
 
 export class BinaryMessageEndpoint {

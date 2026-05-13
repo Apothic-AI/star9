@@ -8,7 +8,8 @@ use wanix_core::{
     Result,
 };
 use wanix_fs::{
-    directory_file, fs_ref, read_file, BoxFile, ControlFile, FileHandle, FileSystem, MapFs, Node,
+    directory_file, fs_ref, read_file, BoxFile, ControlFile, FileHandle, FileSystem, FsRef, MapFs,
+    Node,
 };
 use wanix_vfs::{BindMode, Namespace};
 
@@ -69,6 +70,7 @@ struct TaskInner {
     state: Mutex<TaskState>,
     fds: Mutex<FdTable>,
     worker: Mutex<Option<String>>,
+    export: Mutex<Option<FsRef>>,
 }
 
 #[derive(Clone, Default)]
@@ -116,6 +118,7 @@ impl Task {
                     next: 3,
                 }),
                 worker: Mutex::new(None),
+                export: Mutex::new(None),
             }),
         }
     }
@@ -134,6 +137,14 @@ impl Task {
 
     pub fn parent(&self) -> Option<Task> {
         self.inner.parent.lock().unwrap().clone()
+    }
+
+    pub fn root(&self) -> Task {
+        let mut task = self.clone();
+        while let Some(parent) = task.parent() {
+            task = parent;
+        }
+        task
     }
 
     pub fn kind(&self) -> String {
@@ -174,6 +185,18 @@ impl Task {
 
     pub fn worker(&self) -> Option<String> {
         self.inner.worker.lock().unwrap().clone()
+    }
+
+    pub fn set_export(&self, fs: FsRef) {
+        *self.inner.export.lock().unwrap() = Some(fs);
+    }
+
+    pub fn clear_export(&self) {
+        *self.inner.export.lock().unwrap() = None;
+    }
+
+    pub fn export(&self) -> Option<FsRef> {
+        self.inner.export.lock().unwrap().clone()
     }
 
     pub fn set_cmd(&self, cmd: impl Into<String>) {
@@ -360,14 +383,20 @@ impl FileSystem for Task {
         }
         let name = clean_path(name);
         if name == "." {
-            let fields = [
+            let mut fields = vec![
                 "ctl", "id", "kind", "cmd", "alias", "env", "dir", "exit", "fd", "ns",
             ];
+            fields.push("binds");
+            if self.export().is_some() {
+                fields.push("export");
+            }
             let entries = fields
                 .into_iter()
                 .map(|field| {
-                    let meta = if field == "fd" || field == "ns" {
+                    let meta = if field == "fd" || field == "ns" || field == "export" {
                         Metadata::dir(field, 0o555)
+                    } else if field == "id" || field == "kind" || field == "binds" {
+                        Metadata::file(field, 0o444, 0)
                     } else {
                         Metadata::file(field, 0o666, 0)
                     };
@@ -375,6 +404,16 @@ impl FileSystem for Task {
                 })
                 .collect();
             return Ok(directory_file(Metadata::dir(".", 0o555), entries));
+        }
+        if name == "export" || name.starts_with("export/") {
+            let export = self
+                .export()
+                .ok_or_else(|| Error::path("open", name.clone(), ErrorKind::NotFound))?;
+            let rel = name
+                .strip_prefix("export/")
+                .map(clean_path)
+                .unwrap_or_else(|| ".".to_string());
+            return export.open(ctx, &rel);
         }
         if name == "ns" || name.starts_with("ns/") {
             let rel = name
@@ -429,6 +468,19 @@ impl FileSystem for Task {
                 offset: 0,
             }));
         }
+        if name == "binds" {
+            let mut data = self.namespace().format_bindings();
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            return Ok(Box::new(TaskFieldHandle {
+                task: self.clone(),
+                name: name.clone(),
+                data: data.into_bytes(),
+                written: Vec::new(),
+                offset: 0,
+            }));
+        }
         Err(Error::path("open", name, ErrorKind::NotFound))
     }
 
@@ -461,7 +513,7 @@ impl FileHandle for TaskFieldHandle {
     }
 
     fn write(&mut self, data: &[u8]) -> Result<usize> {
-        if matches!(self.name.as_str(), "id" | "kind") {
+        if matches!(self.name.as_str(), "id" | "kind" | "binds") {
             return Err(ErrorKind::PermissionDenied.into());
         }
         self.written.extend_from_slice(data);
@@ -471,7 +523,7 @@ impl FileHandle for TaskFieldHandle {
     fn stat(&self) -> Result<Metadata> {
         Ok(Metadata::file(
             self.name.clone(),
-            if matches!(self.name.as_str(), "id" | "kind") {
+            if matches!(self.name.as_str(), "id" | "kind" | "binds") {
                 0o444
             } else {
                 0o666
@@ -597,6 +649,7 @@ impl TaskFs {
             .get(kind)
             .cloned()
             .ok_or(ErrorKind::NotFound)?;
+        let parent = parent.or_else(|| self.inner.resources.read().unwrap().get("1").cloned());
         let mut next = self.inner.next_id.lock().unwrap();
         *next += 1;
         let id = *next;
@@ -857,5 +910,56 @@ mod tests {
             wanix_fs::read_file(child.namespace().as_ref(), "mnt/file").unwrap(),
             b"value"
         );
+    }
+
+    #[test]
+    fn later_rootless_allocations_default_to_root_parent() {
+        let fs = TaskFs::new();
+        let root = fs.alloc("auto", None).unwrap();
+        let child = fs.alloc("auto", None).unwrap();
+        assert_eq!(child.parent().unwrap().id(), root.id());
+        assert_eq!(child.root().id(), root.id());
+    }
+
+    #[test]
+    fn task_export_is_optional_and_routes_filesystem_access() {
+        let fs = TaskFs::new();
+        let task = fs.alloc("auto", None).unwrap();
+        assert!(wanix_fs::stat(&task, "export").is_err());
+
+        let export = wanix_fs::fs_ref(MemFs::from_entries([
+            ("hello.txt", b"hello".to_vec()),
+            ("dir/item.txt", b"item".to_vec()),
+        ]));
+        task.set_export(export);
+
+        assert_eq!(read_file(&task, "export/hello.txt").unwrap(), b"hello");
+        assert_eq!(
+            wanix_fs::read_dir(&task, "export/dir")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            vec!["item.txt"]
+        );
+
+        let mut alias = open(&task, "alias").unwrap();
+        alias.write(b"exported").unwrap();
+        alias.close().unwrap();
+        assert_eq!(
+            read_file(&fs.lookup("exported").unwrap(), "export/hello.txt").unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn binds_file_reports_namespace_bindings() {
+        let task = TaskFs::new().alloc("auto", None).unwrap();
+        let mem = wanix_fs::fs_ref(MemFs::from_entries([("file", b"value".to_vec())]));
+        task.namespace()
+            .bind(mem, ".", "mnt", BindMode::Replace)
+            .unwrap();
+        let binds = String::from_utf8(read_file(&task, "binds").unwrap()).unwrap();
+        assert_eq!(binds, "mnt -> fs:.\n");
     }
 }

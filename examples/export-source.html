@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wanix export source</title>
+
+<wanix-system id="source" pkg="../target/wanix-web-pkg/wanix_web.js" allow-origins="*">
+  <wanix-bind kind="ns" dst="." src="#ramfs"></wanix-bind>
+  <wanix-bind kind="file" dst="shared.txt">source-export-ok</wanix-bind>
+</wanix-system>
+
+<script type="module">
+  import "../crates/wanix-web/js/wanix-elements.js";
+</script>

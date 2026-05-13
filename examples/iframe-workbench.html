@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wanix iframe import workbench</title>
+
+<wanix-system id="client" pkg="../target/wanix-web-pkg/wanix_web.js">
+  <wanix-bind kind="ns" dst="." src="#ramfs"></wanix-bind>
+</wanix-system>
+
+<iframe id="exporter" src="./export-source.html#source"></iframe>
+
+<pre id="out">starting</pre>
+
+<script type="module">
+  import "../crates/wanix-web/js/wanix-elements.js";
+
+  const client = document.querySelector("#client");
+  const iframe = document.querySelector("#exporter");
+  const iframeReady =
+    iframe.contentDocument && iframe.contentDocument.readyState !== "loading"
+      ? Promise.resolve()
+      : new Promise((resolve) => iframe.addEventListener("load", resolve, { once: true }));
+  await Promise.all([client.ready, iframeReady]);
+  await client.mountImport("remote", "./export-source.html#source", { targetOrigin: "*" });
+  document.querySelector("#out").textContent =
+    (await client.readText("remote/shared.txt")).trim();
+</script>

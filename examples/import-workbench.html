@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wanix import workbench</title>
+
+<wanix-system id="client" pkg="../target/wanix-web-pkg/wanix_web.js">
+  <wanix-bind kind="ns" dst="." src="#ramfs"></wanix-bind>
+</wanix-system>
+
+<pre id="out">starting</pre>
+
+<script type="module">
+  import "../crates/wanix-web/js/wanix-elements.js";
+
+  const client = document.querySelector("#client");
+  await client.ready;
+  await client.mountImport("remote", "./export-source.html#source");
+  document.querySelector("#out").textContent =
+    (await client.readText("remote/shared.txt")).trim();
+</script>

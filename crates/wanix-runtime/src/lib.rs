@@ -13,6 +13,8 @@ use wanix_protocol::p9::{LoopbackTransport, NinePClientFs, NinePServer, NinePTra
 use wanix_task::{Task, TaskFs};
 use wanix_vfs::{BindMode, Namespace};
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use execution::NativePtyExecutionHandler;
 pub use execution::{ExecutionRegistry, FnExecutionHandler, NativeExecutionHandler};
 pub use wasi::WasmiWasiHandler;
 pub use worker::{RuntimeProtocolHost, WorkerHost};
@@ -23,6 +25,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Runtime {
     root: Task,
     task_fs: TaskFs,
+    devices: devices::RuntimeDevices,
     execution_registry: ExecutionRegistry,
     protocol_host: RuntimeProtocolHost,
 }
@@ -32,12 +35,13 @@ impl Runtime {
         let task_fs = TaskFs::new();
         let root = task_fs.alloc("auto", None)?;
         bind_core(&root, task_fs.clone())?;
-        bind_devices(&root)?;
+        let devices = bind_devices(&root)?;
         let execution_registry = ExecutionRegistry::new();
         let protocol_host = RuntimeProtocolHost::new(root.clone(), task_fs.clone());
         Ok(Self {
             root,
             task_fs,
+            devices,
             execution_registry,
             protocol_host,
         })
@@ -107,6 +111,15 @@ impl Runtime {
     pub fn loopback_9p_client(&self) -> Result<NinePClientFs> {
         NinePClientFs::connect(Arc::new(LoopbackTransport::new(self.export_9p())))
     }
+
+    pub fn set_task_export(&self, task_id: &str, fs: FsRef) -> Result<()> {
+        self.task_fs.lookup(task_id)?.set_export(fs);
+        Ok(())
+    }
+
+    pub fn set_vm_guest(&self, vm_id: &str, fs: FsRef) -> Result<()> {
+        self.devices.set_vm_guest(vm_id, fs)
+    }
 }
 
 pub fn new_root() -> Result<Task> {
@@ -130,7 +143,7 @@ fn bind_core(root: &Task, task_fs: TaskFs) -> Result<()> {
     Ok(())
 }
 
-fn bind_devices(root: &Task) -> Result<()> {
+fn bind_devices(root: &Task) -> Result<devices::RuntimeDevices> {
     devices::bind_devices(root)
 }
 
@@ -570,5 +583,150 @@ mod tests {
             read_file(runtime.namespace().as_ref(), "remote/tmp/file").unwrap(),
             b"over-9p"
         );
+    }
+
+    #[test]
+    fn runtime_installs_task_exports_and_vm_guests() {
+        let runtime = Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        runtime
+            .set_task_export(
+                &task.id(),
+                fs_ref(MemFs::from_entries([(
+                    "exported.txt",
+                    b"task-export".to_vec(),
+                )])),
+            )
+            .unwrap();
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "#task/2/export/exported.txt").unwrap(),
+            b"task-export"
+        );
+
+        let vm_id =
+            String::from_utf8(read_file(runtime.namespace().as_ref(), "#vm/new/v86").unwrap())
+                .unwrap()
+                .trim()
+                .to_string();
+        assert!(
+            wanix_fs::stat(runtime.namespace().as_ref(), &format!("#vm/{vm_id}/guest")).is_err()
+        );
+        runtime
+            .set_vm_guest(
+                &vm_id,
+                fs_ref(MemFs::from_entries([("guest.txt", b"vm-guest".to_vec())])),
+            )
+            .unwrap();
+        assert_eq!(
+            read_file(
+                runtime.namespace().as_ref(),
+                &format!("#vm/{vm_id}/guest/guest.txt")
+            )
+            .unwrap(),
+            b"vm-guest"
+        );
+        let entries = read_dir(runtime.namespace().as_ref(), &format!("#vm/{vm_id}"))
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert!(entries.contains(&"guest".to_string()));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_pty_execution_handler_routes_output_and_exit_state() {
+        let runtime = Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        runtime.execution_registry().register_kind(
+            ProtocolExecutionKind::Native,
+            NativePtyExecutionHandler::new(),
+        );
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ProtocolExecutionKind::Native,
+                    module: "/bin/sh".into(),
+                    args: vec!["-c".into(), "printf native-ok".into()],
+                    env: Vec::new(),
+                    cwd: None,
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(task.exit(), "0");
+        let stdout = task
+            .with_fd_mut(1, |file| {
+                file.seek(std::io::SeekFrom::Start(0))?;
+                read_handle(file)
+            })
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap();
+        assert!(stdout.contains("native-ok"), "{stdout:?}");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_pty_execution_handler_reports_nonzero_and_spawn_errors() {
+        let runtime = Runtime::new().unwrap();
+        runtime.execution_registry().register_kind(
+            ProtocolExecutionKind::Native,
+            NativePtyExecutionHandler::new(),
+        );
+
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ProtocolExecutionKind::Native,
+                    module: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exit 7".into()],
+                    env: Vec::new(),
+                    cwd: None,
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(status, ExitStatus::ExitCode(7));
+        assert_eq!(task.exit(), "7");
+
+        let missing = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let err = runtime
+            .execution_registry()
+            .execute(
+                &missing,
+                &ExecutionSpec {
+                    kind: ProtocolExecutionKind::Native,
+                    module: "/definitely/missing/wanix-command".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: None,
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("native pty spawn failed"));
     }
 }

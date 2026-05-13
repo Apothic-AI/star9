@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wanix worker export</title>
+
+<wanix-system id="wanix" pkg="../target/wanix-web-pkg/wanix_web.js">
+  <wanix-bind kind="ns" dst="." src="#ramfs"></wanix-bind>
+</wanix-system>
+
+<pre id="out">starting</pre>
+
+<script type="module">
+  import "../crates/wanix-web/js/wanix-elements.js";
+
+  const system = document.querySelector("#wanix");
+  await system.ready;
+  const task = await system.startBrowserWorker("../tests/fixtures/browser/export-worker.mjs", {
+    workerId: "example-export",
+    module: "../tests/fixtures/js-wasm-execution-runner.mjs",
+  });
+  await waitFor(() => task.exportMounts.length === 1);
+  const text = (await system.readText(`#task/${task.taskId}/export/guest.txt`)).trim();
+  document.querySelector("#out").textContent = `task=${task.taskId}\nexport=${text}`;
+
+  async function waitFor(predicate) {
+    while (!predicate()) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+</script>

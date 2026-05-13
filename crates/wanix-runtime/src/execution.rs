@@ -1,6 +1,17 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{Read, SeekFrom, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
+
+#[cfg(not(target_arch = "wasm32"))]
+use wanix_core::ErrorKind;
 use wanix_core::{Error, FileMode, FsContext, Result};
 use wanix_fs::{BoxFile, FileSystem, Node};
 use wanix_protocol::runtime::{
@@ -33,6 +44,123 @@ impl FnExecutionHandler {
 impl NativeExecutionHandler for FnExecutionHandler {
     fn execute(&self, task: &Task, spec: &ExecutionSpec) -> Result<ExitStatus> {
         (self.handler)(task, spec)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug)]
+pub struct NativePtyExecutionHandler {
+    rows: u16,
+    cols: u16,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativePtyExecutionHandler {
+    pub fn new() -> Self {
+        Self { rows: 24, cols: 80 }
+    }
+
+    pub fn with_size(rows: u16, cols: u16) -> Self {
+        Self { rows, cols }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for NativePtyExecutionHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeExecutionHandler for NativePtyExecutionHandler {
+    fn execute(&self, task: &Task, spec: &ExecutionSpec) -> Result<ExitStatus> {
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+
+        if spec.module.trim().is_empty() {
+            return Err(Error::path("exec", &spec.module, ErrorKind::Invalid));
+        }
+
+        let mut command = CommandBuilder::new(&spec.module);
+        command.args(&spec.args);
+        for entry in &spec.env {
+            command.env(&entry.name, &entry.value);
+        }
+        if let Some(cwd) = spec.cwd.as_deref().filter(|cwd| !cwd.trim().is_empty()) {
+            command.cwd(cwd);
+        }
+
+        let pty = native_pty_system();
+        let pair = pty
+            .openpty(PtySize {
+                rows: self.rows,
+                cols: self.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|err| Error::Message(format!("native pty open failed: {err}")))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|err| Error::Message(format!("native pty reader failed: {err}")))?;
+        let (output_tx, output_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut buf = [0_u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if output_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut child = pair
+            .slave
+            .spawn_command(command)
+            .map_err(|err| Error::Message(format!("native pty spawn failed: {err}")))?;
+
+        {
+            let mut writer = pair
+                .master
+                .take_writer()
+                .map_err(|err| Error::Message(format!("native pty writer failed: {err}")))?;
+            let stdin = read_task_fd(task, 0)?;
+            if !stdin.is_empty() {
+                writer
+                    .write_all(&stdin)
+                    .map_err(|err| Error::Message(format!("native pty stdin failed: {err}")))?;
+            }
+        }
+
+        let status = child
+            .wait()
+            .map_err(|err| Error::Message(format!("native pty wait failed: {err}")))?;
+        let mut output = Vec::new();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            match output_rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(chunk) => output.extend_from_slice(&chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) if !output.is_empty() => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            while let Ok(chunk) = output_rx.try_recv() {
+                output.extend_from_slice(&chunk);
+            }
+        }
+        if !output.is_empty() {
+            append_task_fd(task, 1, &output)?;
+        }
+
+        Ok(match status.signal() {
+            Some(signal) => ExitStatus::Signal(signal.to_string()),
+            None => ExitStatus::ExitCode(status.exit_code() as i32),
+        })
     }
 }
 
@@ -253,6 +381,7 @@ fn execution_kind_name(kind: ExecutionKind) -> &'static str {
     match kind {
         ExecutionKind::Wasi => "wasi",
         ExecutionKind::JsWasm => "js_wasm",
+        ExecutionKind::Native => "native",
     }
 }
 
@@ -262,4 +391,40 @@ fn unsupported_execution(spec: &ExecutionSpec) -> Error {
         execution_kind_name(spec.kind),
         spec.module
     ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_task_fd(task: &Task, fd: u32) -> Result<Vec<u8>> {
+    task.with_fd_mut(fd, |file| {
+        let _ = file.seek(SeekFrom::Start(0));
+        let mut out = Vec::new();
+        let mut buf = [0_u8; 8192];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(out)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn append_task_fd(task: &Task, fd: u32, data: &[u8]) -> Result<()> {
+    task.with_fd_mut(fd, |file| {
+        let _ = file.seek(SeekFrom::End(0));
+        let written = file.write(data)?;
+        if written != data.len() {
+            return Err(ErrorKind::UnexpectedEof.into());
+        }
+        file.sync().or_else(|err| {
+            if err.kind() == ErrorKind::NotSupported {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        })
+    })
 }

@@ -33,7 +33,8 @@ export class AsyncMountTable {
             return false;
         });
         for (const mount of removed) {
-            if (typeof mount.adapter.close === "function") {
+            const stillMounted = this._mounts.some((other) => other.adapter === mount.adapter);
+            if (!stillMounted && typeof mount.adapter.close === "function") {
                 mount.adapter.close();
             }
         }
@@ -64,9 +65,11 @@ export class AsyncMountTable {
     }
 
     close() {
+        const closed = new Set();
         for (const mount of this._mounts) {
-            if (typeof mount.adapter.close === "function") {
+            if (!closed.has(mount.adapter) && typeof mount.adapter.close === "function") {
                 mount.adapter.close();
+                closed.add(mount.adapter);
             }
         }
         this._mounts = [];

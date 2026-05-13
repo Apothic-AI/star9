@@ -43,6 +43,7 @@
     storage='{"backend":"js-value","value":"window.__wanixSmokeStore"}'
   ></wanix-bind>
   <wanix-terminal id="smoke-terminal"></wanix-terminal>
+  <wanix-terminal id="smoke-raw-terminal" raw></wanix-terminal>
 </wanix-system>
 
 <pre id="status">running</pre>
@@ -101,7 +102,9 @@
     const readyEvent = await waitForReady(systemElement);
     const system = readyEvent.detail.system;
     const terminalElement = document.querySelector("#smoke-terminal");
+    const rawTerminalElement = document.querySelector("#smoke-raw-terminal");
     await waitForReady(terminalElement);
+    await waitForReady(rawTerminalElement);
 
     const version = (await system.readText("#wanix/version")).trim();
     const inlineText = (await system.readText("inline.txt")).trim();
@@ -121,6 +124,10 @@
     const terminalState = await terminalElement.writeData("browser-screen");
     await terminalElement.resize(100, 30);
     const terminalResized = await terminalElement.refresh();
+    await terminalElement.writeProgram("\nnormal\n");
+    const normalizedProgram = await system.readText(terminalElement.path("program"));
+    await rawTerminalElement.writeProgram("\nraw\n");
+    const rawProgram = await system.readText(rawTerminalElement.path("raw"));
     await terminalElement.reset();
     const terminalReset = await terminalElement.refresh();
 
@@ -185,6 +192,22 @@
     const directWasmStdout = directWasmTask.messages.find((message) => message === "compiled-wasi-ok\n");
     directWasmTask.close();
 
+    const vmId = (await system.readText("#vm/new/v86")).trim();
+    const exportWorker = await system.startBrowserWorker(`./fixtures/browser/export-worker.mjs?vm=${vmId}`, {
+      workerId: "smoke-export-worker",
+      module: "../../../tests/fixtures/js-wasm-execution-runner.mjs",
+      args: [],
+      env: [{ name: "FIXTURE_EXIT_CODE", value: "0" }],
+      cwd: "tmp",
+    });
+    await waitFor(() => exportWorker.exportMounts.length === 1, "worker export mount");
+    const taskExportText = (await system.readText(`#task/${exportWorker.taskId}/export/guest.txt`)).trim();
+    const vmGuestText = (await system.readText(`#vm/${vmId}/guest/guest.txt`)).trim();
+    await system.writeText(`#task/${exportWorker.taskId}/export/export-created.txt`, "export-write-ok");
+    const taskExportCreated = (await system.readText(`#task/${exportWorker.taskId}/export/export-created.txt`)).trim();
+    const taskExportEntries = await entriesOf(`#task/${exportWorker.taskId}/export`, system);
+    exportWorker.close();
+
     assert(version === "0.1.0", `bad version ${version}`);
     assert(inlineText === "inline-browser-ok", `bad inline text ${inlineText}`);
     assert(fetchedText === "registered-browser-ok", `bad fetched text ${fetchedText}`);
@@ -227,6 +250,8 @@
     );
     assert(terminalState.screen === "browser-screen", `bad terminal screen ${terminalState.screen}`);
     assert(terminalResized.size === "100x30", `bad terminal resize ${terminalResized.size}`);
+    assert(normalizedProgram === "\r\nnormal\r\n", `bad normalized program ${JSON.stringify(normalizedProgram)}`);
+    assert(rawProgram === "\nraw\n", `bad raw program ${JSON.stringify(rawProgram)}`);
     assert(terminalReset.screen === "", `terminal reset did not clear screen ${terminalReset.screen}`);
     assert(terminalReset.size === "80x24", `terminal reset did not restore size ${terminalReset.size}`);
     assert(Boolean(wasiTask) && Boolean(goTask) && wasiTask !== goTask, "bad task ids");
@@ -250,6 +275,13 @@
       `bad direct wasm cmd ${directWasmCmd}`,
     );
     assert(directWasmStdout === "compiled-wasi-ok\n", `bad direct wasm stdout ${directWasmStdout}`);
+    assert(taskExportText === "worker-export-ok", `bad task export text ${taskExportText}`);
+    assert(vmGuestText === "worker-export-ok", `bad vm guest text ${vmGuestText}`);
+    assert(taskExportCreated === "export-write-ok", `bad task export write ${taskExportCreated}`);
+    assert(
+      taskExportEntries.includes("export-created.txt"),
+      `missing task export entry: ${taskExportEntries}`,
+    );
     assert(
       numericTaskIds(taskEntriesAfterWasi).includes(Number(wasiTask)),
       `missing wasi task entry: ${taskEntriesAfterWasi}`,
@@ -283,6 +315,9 @@
         workerExit,
         directWasmTask: directWasmTask.taskId,
         directWasmExit,
+        exportTask: exportWorker.taskId,
+        vmId,
+        taskExportEntries,
         terminalSize: terminalReset.size,
         handedPort,
         taskEntriesAfterGo,

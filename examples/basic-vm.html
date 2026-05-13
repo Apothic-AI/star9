@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wanix basic VM</title>
+
+<wanix-system id="wanix" pkg="../target/wanix-web-pkg/wanix_web.js">
+  <wanix-bind kind="ns" dst="." src="#ramfs"></wanix-bind>
+</wanix-system>
+
+<pre id="out">starting</pre>
+
+<script type="module">
+  import "../crates/wanix-web/js/wanix-elements.js";
+
+  const system = document.querySelector("#wanix");
+  await system.ready;
+  const vm = (await system.readText("#vm/new/v86")).trim();
+  await system.writeExistingText(`#vm/${vm}/alias`, "demo");
+  await system.writeExistingText(`#vm/${vm}/ctl`, "start");
+  document.querySelector("#out").textContent = [
+    `vm=${vm}`,
+    `state=${(await system.readText(`#vm/${vm}/state`)).trim()}`,
+    `alias=${(await system.readText(`#vm/${vm}/alias`)).trim()}`,
+  ].join("\n");
+</script>

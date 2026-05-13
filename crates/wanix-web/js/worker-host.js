@@ -29,8 +29,10 @@ export class BrowserWorkerHost {
         this._requestListeners = new Set();
         this._responseListeners = new Set();
         this._taskListeners = new Set();
+        this._targetMessageListeners = new Set();
         this._errorListeners = new Set();
 
+        this._handleTargetMessage = this._handleTargetMessage.bind(this);
         this._handleTargetError = this._handleTargetError.bind(this);
         this._handleTargetMessageError = this._handleTargetMessageError.bind(this);
 
@@ -45,6 +47,9 @@ export class BrowserWorkerHost {
         }
         if (typeof options.ontaskmessage === "function") {
             this.onTaskMessage(options.ontaskmessage);
+        }
+        if (typeof options.ontargetmessage === "function") {
+            this.onTargetMessage(options.ontargetmessage);
         }
         if (typeof options.onerror === "function") {
             this.onError(options.onerror);
@@ -83,6 +88,10 @@ export class BrowserWorkerHost {
         return addListener(this._taskListeners, listener, "worker host task listener");
     }
 
+    onTargetMessage(listener) {
+        return addListener(this._targetMessageListeners, listener, "worker target message listener");
+    }
+
     onError(listener) {
         return addListener(this._errorListeners, listener, "worker host error listener");
     }
@@ -94,8 +103,9 @@ export class BrowserWorkerHost {
 
         if (!this.endpoint) {
             const target = await this._resolveTarget();
-            const connection = await connectRuntimePort(target, this._connectOptions);
             this.target = target;
+            this._attachTargetListeners();
+            const connection = await connectRuntimePort(target, this._connectOptions);
             this.endpoint = connection.endpoint;
             this.port = connection.port;
             this.descriptor = connection.descriptor;
@@ -205,6 +215,7 @@ export class BrowserWorkerHost {
         if (!this.target || this._targetListenersActive) {
             return;
         }
+        this.target.addEventListener("message", this._handleTargetMessage);
         this.target.addEventListener("error", this._handleTargetError);
         this.target.addEventListener("messageerror", this._handleTargetMessageError);
         this._targetListenersActive = true;
@@ -214,9 +225,14 @@ export class BrowserWorkerHost {
         if (!this.target || !this._targetListenersActive) {
             return;
         }
+        this.target.removeEventListener("message", this._handleTargetMessage);
         this.target.removeEventListener("error", this._handleTargetError);
         this.target.removeEventListener("messageerror", this._handleTargetMessageError);
         this._targetListenersActive = false;
+    }
+
+    _handleTargetMessage(event) {
+        emitListeners(this._targetMessageListeners, event);
     }
 
     _handleTargetError(event) {

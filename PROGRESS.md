@@ -2,6 +2,19 @@
 
 ## 2026-05-13
 
+- Updated local `../wanix` to upstream `origin/main` at `2feaf3f` and recorded the accepted/rejected delta in `docs/audits/upstream-catch-up-matrix.json`.
+- Added task export storage and `#task/<id>/export` exposure, plus runtime helpers for installing task exports.
+- Added namespace bind rendering and `#task/<id>/binds` introspection with deterministic output.
+- Aligned rootless task allocation after root creation so new tasks default to the root parent, while explicit parents still take precedence.
+- Added VM guest filesystem attachment through `Runtime::set_vm_guest` and `#vm/<id>/guest`, preserving deterministic VM lifecycle behavior.
+- Added a native-target `NativePtyExecutionHandler` using `portable-pty`, plus opt-in CLI acceptance through `wanix accept native`.
+- Added a raw terminal queue and browser `wanix-terminal raw` support while preserving normalized `program` writes by default.
+- Extended browser Worker host glue to surface ordinary worker messages and wired `{ export: MessagePort }` handoff into browser-side task exports and optional VM guest mounts.
+- Added a browser worker export fixture and expanded browser smoke to cover worker-exported 9P read/write/list, VM guest mounting, and raw terminal behavior.
+- Added a no-op-by-default browser logger hook for `wanix-system` public operations with Node coverage for logger failure containment.
+- Added Rust-backed representative example replacements for basic VM, VM workbench, import workbench, iframe workbench, and GoJS-style worker export behavior.
+- Hardened cross-document `wanix-import` requests so hidden iframe exports stay alive for the lifetime of the imported 9P mount, retry until the responder is ready, and close with the mount port.
+- Verified Rust-backed basic VM, VM workbench, import workbench, iframe workbench, and worker-export examples through Playwright against the generated wasm package.
 - Added `docs/audits/completion-gap-matrix.json` plus `tests/audit-matrix.test.mjs`, classifying preview1 import coverage, remaining host capability boundaries, and source-level unsupported markers.
 - Completed the missing WASI `clock_res_get` import, tightened `clock_time_get` clock-id validation, and added compiled preview1 smoke coverage through `tests/fixtures/wasi-preview1-smoke.wasm`.
 - Expanded CLI acceptance with `accept wasi`, executing the compiled preview1 fixture through `WasmiWasiHandler` with fd-backed stdout.

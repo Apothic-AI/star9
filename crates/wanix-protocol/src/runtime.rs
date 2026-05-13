@@ -75,6 +75,7 @@ pub struct EnvironmentEntry {
 pub enum ExecutionKind {
     Wasi,
     JsWasm,
+    Native,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

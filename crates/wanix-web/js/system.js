@@ -12,6 +12,18 @@ import { requestWanixImportPort } from "./worker-runtime.js";
 const DEFAULT_FACADE_URL = new URL("../../../target/wanix-web-pkg/wanix_web.js", import.meta.url).href;
 const facadeModules = new Map();
 
+export function callWanixLogger(logger, operation, args = []) {
+    if (typeof logger !== "function") {
+        return false;
+    }
+    try {
+        logger(String(operation), ...Array.from(args || []));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export class SystemElement extends WanixElement {
     constructor() {
         super();
@@ -19,6 +31,7 @@ export class SystemElement extends WanixElement {
         this._initStarted = false;
         this._mounts = new AsyncMountTable();
         this._importResponder = null;
+        this.logger = () => null;
         this.isReady = false;
         this.ready = new Promise((resolve, reject) => {
             this._resolveReady = resolve;
@@ -51,6 +64,7 @@ export class SystemElement extends WanixElement {
     }
 
     readText(path) {
+        this._log("readText", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.readText(mount.path);
@@ -59,6 +73,7 @@ export class SystemElement extends WanixElement {
     }
 
     readFile(path) {
+        this._log("readFile", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.readFile(mount.path);
@@ -67,6 +82,7 @@ export class SystemElement extends WanixElement {
     }
 
     writeText(path, value) {
+        this._log("writeText", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.writeText(mount.path, value);
@@ -75,6 +91,7 @@ export class SystemElement extends WanixElement {
     }
 
     writeFile(path, value) {
+        this._log("writeFile", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.writeFile(mount.path, value);
@@ -83,6 +100,7 @@ export class SystemElement extends WanixElement {
     }
 
     writeExistingText(path, value) {
+        this._log("writeExistingText", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.writeText(mount.path, value);
@@ -91,6 +109,7 @@ export class SystemElement extends WanixElement {
     }
 
     writeExistingFile(path, value) {
+        this._log("writeExistingFile", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.writeFile(mount.path, value);
@@ -99,6 +118,7 @@ export class SystemElement extends WanixElement {
     }
 
     readDir(path) {
+        this._log("readDir", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.readDir(mount.path).then(dirEntriesToNames);
@@ -107,6 +127,7 @@ export class SystemElement extends WanixElement {
     }
 
     stat(path) {
+        this._log("stat", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.stat(mount.path);
@@ -115,6 +136,7 @@ export class SystemElement extends WanixElement {
     }
 
     mkdir(path) {
+        this._log("mkdir", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.mkdir(mount.path);
@@ -123,6 +145,7 @@ export class SystemElement extends WanixElement {
     }
 
     remove(path) {
+        this._log("remove", path);
         const mount = this._mounts.resolve(path);
         if (mount) {
             return mount.adapter.remove(mount.path);
@@ -149,52 +172,108 @@ export class SystemElement extends WanixElement {
     }
 
     bindRamFs(dst) {
+        this._log("bindRamFs", dst);
         return this.system.bindRamFs(dst);
     }
 
     mountSelf9p(dst) {
+        this._log("mountSelf9p", dst);
         return this.system.mountSelf9p(dst);
     }
 
     async mountStorage(dst, descriptor, options = {}) {
+        this._log("mountStorage", dst);
         const adapter = await createBrowserStorageAdapter(descriptor, {
             globals: globalThis,
             ...options,
         });
-        this._mounts.mount(dst, adapter, {
+        this.mountAdapter(dst, adapter, {
             kind: "storage",
             source: descriptor?.backend || null,
         });
         return adapter;
     }
 
+    mountAdapter(dst, adapter, options = {}) {
+        this._log("mountAdapter", dst);
+        return this._mounts.mount(dst, adapter, options);
+    }
+
     async mountImportPort(dst, port, options = {}) {
+        this._log("mountImportPort", dst);
         const adapter = await createP9MountFromPort(port, options);
-        this._mounts.mount(dst, adapter, {
+        this.mountAdapter(dst, adapter, {
             kind: "9p",
             source: options.source || null,
         });
         return adapter;
     }
 
+    async createExportMount(port, options = {}) {
+        this._log("createExportMount", options.source || "");
+        const ready = options.waitForReady === false ? null : await waitForExportReady(port, options);
+        const adapter = await createP9MountFromPort(port, options);
+        adapter.readySignal = ready;
+        return adapter;
+    }
+
+    mountTaskExportAdapter(taskId, adapter, options = {}) {
+        const id = requireNonEmptyString(taskId, "task id");
+        return this.mountAdapter(`#task/${id}/export`, adapter, {
+            kind: "worker-export",
+            source: options.source || null,
+        });
+    }
+
+    async mountWorkerExport(taskId, port, options = {}) {
+        const adapter = await this.createExportMount(port, {
+            source: options.source || "worker-export",
+            ...options,
+        });
+        this.mountTaskExportAdapter(taskId, adapter, options);
+        return adapter;
+    }
+
+    mountVmGuestAdapter(vmId, adapter, options = {}) {
+        const id = requireNonEmptyString(vmId, "VM id");
+        return this.mountAdapter(`#vm/${id}/guest`, adapter, {
+            kind: "vm-guest",
+            source: options.source || null,
+        });
+    }
+
+    async mountVmGuest(vmId, port, options = {}) {
+        const adapter = await this.createExportMount(port, {
+            source: options.source || "vm-guest",
+            ...options,
+        });
+        this.mountVmGuestAdapter(vmId, adapter, options);
+        return adapter;
+    }
+
     async mountImport(dst, src, options = {}) {
+        this._log("mountImport", dst, src);
         const port = await requestWanixImportPort(src, options);
         return this.mountImportPort(dst, port, { ...options, source: src });
     }
 
     unmount(dst) {
+        this._log("unmount", dst);
         return this._mounts.unmount(dst);
     }
 
     startTask(kind, command) {
+        this._log("startTask", kind, command);
         return this.system.startTask(kind, command);
     }
 
     startWasi(command) {
+        this._log("startWasi", command);
         return this.system.startWasi(command);
     }
 
     startGoJs(command) {
+        this._log("startGoJs", command);
         return this.system.startGoJs(command);
     }
 
@@ -229,6 +308,7 @@ export class SystemElement extends WanixElement {
     }
 
     async startBrowserWorker(source, options = {}) {
+        this._log("startBrowserWorker", source);
         const workerId = String(options.workerId || options.worker_id || `browser-worker-${Date.now()}`);
         const worker = this.spawnWorker(workerId, options.parentTaskId || options.parent_task_id || "1");
         const execution = normalizeExecutionSpec({
@@ -328,6 +408,10 @@ export class SystemElement extends WanixElement {
         this._mounts.close();
     }
 
+    _log(operation, ...args) {
+        callWanixLogger(this.logger, operation, args);
+    }
+
     async _maybeExportImportPort() {
         if (typeof window === "undefined" || !this.id || !this.hasAttribute("allow-origins")) {
             return;
@@ -361,6 +445,7 @@ class BrowserWorkerTaskController {
         this.worker = worker;
         this.host = host;
         this.messages = [];
+        this.exportMounts = [];
         this.sequence = 0;
         this.exitCode = null;
         this._cleanup = [];
@@ -380,6 +465,13 @@ class BrowserWorkerTaskController {
                 this._handleTaskMessage(message);
             }),
         );
+        if (typeof this.host.onTargetMessage === "function") {
+            this._cleanup.push(
+                this.host.onTargetMessage((event) => {
+                    this._handleWorkerMessage(event);
+                }),
+            );
+        }
         return this;
     }
 
@@ -402,6 +494,42 @@ class BrowserWorkerTaskController {
         if (typeof payload === "string") {
             this.system.recordWorkerStdout(this.taskId, this.workerId, sequence, message.payload, false);
         }
+    }
+
+    _handleWorkerMessage(event) {
+        const payload = event?.data ?? event;
+        if (!payload || typeof payload !== "object" || payload.export == null) {
+            return;
+        }
+        void this._installExport(payload).catch((error) => {
+            this.messages.push({
+                type: "wanix-worker-export-error",
+                error: errorMessage(error),
+            });
+        });
+    }
+
+    async _installExport(payload) {
+        const adapter = await this.system.createExportMount(payload.export, {
+            source: "worker-export",
+            waitForReady: true,
+            readyTimeoutMs: payload.readyTimeoutMs,
+        });
+        this.system.mountTaskExportAdapter(this.taskId, adapter, {
+            source: "worker-export",
+        });
+        const record = {
+            type: "wanix-worker-export-ready",
+            task_id: this.taskId,
+            vm: payload.vm == null ? null : String(payload.vm),
+        };
+        if (payload.vm != null) {
+            this.system.mountVmGuestAdapter(String(payload.vm), adapter, {
+                source: "worker-export",
+            });
+        }
+        this.exportMounts.push(record);
+        this.messages.push(record);
     }
 }
 
@@ -432,6 +560,9 @@ function normalizeExecutionKind(kind) {
     const value = String(kind).trim().toLowerCase().replace(/-/g, "_");
     if (value === "wasi") {
         return "wasi";
+    }
+    if (value === "native" || value === "process" || value === "pty") {
+        return "native";
     }
     if (value === "js" || value === "js_wasm" || value === "gojs" || value === "go_js") {
         return "js_wasm";
@@ -475,6 +606,53 @@ function isExecutionExitPayload(payload) {
     return payload && typeof payload === "object" && payload.type === "wanix-js-wasm-execution-exit";
 }
 
+function waitForExportReady(port, options = {}) {
+    const messagePort = requireMessagePortLike(port);
+    const timeoutMs = Number(options.readyTimeoutMs ?? 1000);
+    return new Promise((resolve, reject) => {
+        let timeout = null;
+        const cleanup = () => {
+            if (timeout !== null) {
+                clearTimeout(timeout);
+            }
+            messagePort.removeEventListener("message", onMessage);
+        };
+        const onMessage = (event) => {
+            cleanup();
+            resolve(event?.data);
+        };
+        messagePort.addEventListener("message", onMessage);
+        if (timeoutMs >= 0) {
+            timeout = setTimeout(() => {
+                cleanup();
+                reject(new Error(`timed out waiting for worker export ready signal after ${timeoutMs}ms`));
+            }, timeoutMs);
+        }
+        messagePort.start();
+    });
+}
+
+function requireMessagePortLike(port) {
+    if (
+        !port ||
+        typeof port.postMessage !== "function" ||
+        typeof port.addEventListener !== "function" ||
+        typeof port.removeEventListener !== "function" ||
+        typeof port.start !== "function"
+    ) {
+        throw new TypeError("expected a MessagePort-like worker export port");
+    }
+    return port;
+}
+
+function requireNonEmptyString(value, label) {
+    const normalized = String(value ?? "").trim();
+    if (!normalized) {
+        throw new TypeError(`${label} must not be empty`);
+    }
+    return normalized;
+}
+
 function toUint8Array(value) {
     if (value instanceof Uint8Array) {
         return value;
@@ -489,4 +667,8 @@ function toUint8Array(value) {
         return Uint8Array.from(value);
     }
     return new TextEncoder().encode(String(value));
+}
+
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
 }

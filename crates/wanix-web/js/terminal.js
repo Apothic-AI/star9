@@ -14,6 +14,7 @@ export class TerminalElement extends WanixElement {
     async _awake() {
         try {
             this.termId = String(this.getAttribute("term-id") || "").trim();
+            this.raw = this.hasAttribute("raw");
             if (!this.termId) {
                 this.termId = (await this._system.readText("#term/new")).trim();
                 this.setAttribute("term-id", this.termId);
@@ -47,7 +48,7 @@ export class TerminalElement extends WanixElement {
     }
 
     async writeProgram(text) {
-        await this._system.writeExistingText(this.path("program"), String(text));
+        await this._system.writeExistingText(this.path(this.raw ? "raw" : "program"), String(text));
         return this.refresh();
     }
 

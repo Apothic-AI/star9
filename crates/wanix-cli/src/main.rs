@@ -14,8 +14,9 @@ use wanix_protocol::{
     },
     WanixApi,
 };
-use wanix_runtime::Runtime;
-use wanix_runtime::WasmiWasiHandler;
+#[cfg(not(target_arch = "wasm32"))]
+use wanix_runtime::NativePtyExecutionHandler;
+use wanix_runtime::{Runtime, WasmiWasiHandler};
 
 #[derive(Parser)]
 #[command(name = "wanix")]
@@ -57,6 +58,7 @@ enum AcceptanceCommand {
     Devices,
     Wasi,
     Worker,
+    Native,
     All,
 }
 
@@ -124,6 +126,7 @@ fn render_acceptance_output(suite: AcceptanceCommand) -> Result<String> {
         AcceptanceCommand::Devices => render_device_acceptance(),
         AcceptanceCommand::Wasi => render_wasi_acceptance(),
         AcceptanceCommand::Worker => render_worker_acceptance(),
+        AcceptanceCommand::Native => render_native_acceptance(),
         AcceptanceCommand::All => Ok(format!(
             "{}{}{}{}",
             render_p9_acceptance()?,
@@ -176,12 +179,18 @@ fn render_device_acceptance() -> Result<String> {
     let term_id = read_trimmed(ns_ref, "#term/new")?;
     let mut program_reader = open(ns_ref, &format!("#term/{term_id}/program"))?;
     let mut program_writer = open(ns_ref, &format!("#term/{term_id}/program"))?;
+    let mut raw_reader = open(ns_ref, &format!("#term/{term_id}/raw"))?;
+    let mut raw_writer = open(ns_ref, &format!("#term/{term_id}/raw"))?;
     program_writer.write(b"run")?;
     let first_program = read_once(program_reader.as_mut())?;
     program_writer.write(b"\nnext\n")?;
     let second_program = read_once(program_reader.as_mut())?;
+    raw_writer.write(b"\nraw\n")?;
+    let raw_program = read_once(raw_reader.as_mut())?;
     program_reader.close()?;
     program_writer.close()?;
+    raw_reader.close()?;
+    raw_writer.close()?;
 
     let mut data_reader = open(ns_ref, &format!("#term/{term_id}/data"))?;
     let mut data_writer = open(ns_ref, &format!("#term/{term_id}/data"))?;
@@ -206,12 +215,20 @@ fn render_device_acceptance() -> Result<String> {
     let vm_id = read_trimmed(ns_ref, "#vm/new/firecracker")?;
     write_handle(ns_ref, &format!("#vm/{vm_id}/alias"), b"guest-a")?;
     write_handle(ns_ref, &format!("#vm/{vm_id}/config"), b"mem=128M cpu=1")?;
+    runtime.set_vm_guest(
+        &vm_id,
+        fs_ref(MemFs::from_entries([(
+            "etc/issue",
+            b"wanix guest".to_vec(),
+        )])),
+    )?;
     write_handle(ns_ref, &format!("#vm/{vm_id}/ctl"), b"start")?;
     write_handle(ns_ref, &format!("#vm/{vm_id}/ctl"), b"stop")?;
     let vm_kind = read_trimmed(ns_ref, &format!("#vm/{vm_id}/kind"))?;
     let vm_alias = read_trimmed(ns_ref, &format!("#vm/{vm_id}/alias"))?;
     let vm_state = read_trimmed(ns_ref, &format!("#vm/{vm_id}/state"))?;
     let vm_console = escape_text(&read_text(ns_ref, &format!("#vm/{vm_id}/console"))?);
+    let vm_guest = read_trimmed(ns_ref, &format!("#vm/{vm_id}/guest/etc/issue"))?;
 
     let listener_id = read_trimmed(ns_ref, "#net/new")?;
     let client_id = read_trimmed(ns_ref, "#net/new")?;
@@ -246,12 +263,13 @@ fn render_device_acceptance() -> Result<String> {
 
     Ok(format!(
         concat!(
-            "device term id={} program={} data={} screen={} winch={} state={} size={}\n",
-            "device vm id={} kind={} alias={} state={} console={}\n",
+            "device term id={} program={} raw={} data={} screen={} winch={} state={} size={}\n",
+            "device vm id={} kind={} alias={} state={} guest={} console={}\n",
             "device net listener={} client={} accepted={} client_status={} accepted_status={} data={} reply={} closed={}\n"
         ),
         term_id,
         escape_text(&(first_program + &second_program)),
+        escape_text(&raw_program),
         escape_text(&term_data),
         escape_text(&term_screen),
         escape_text(&winch),
@@ -261,6 +279,7 @@ fn render_device_acceptance() -> Result<String> {
         vm_kind,
         vm_alias,
         vm_state,
+        vm_guest,
         vm_console,
         listener_id,
         client_id,
@@ -270,6 +289,40 @@ fn render_device_acceptance() -> Result<String> {
         escape_text(&payload),
         escape_text(&reply),
         closed,
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_native_acceptance() -> Result<String> {
+    let runtime = Runtime::new()?;
+    runtime
+        .execution_registry()
+        .register_kind(ExecutionKind::Native, NativePtyExecutionHandler::new());
+    let task = runtime.task_fs().alloc("auto", Some(runtime.root()))?;
+    let status = runtime.execution_registry().execute(
+        &task,
+        &ExecutionSpec {
+            kind: ExecutionKind::Native,
+            module: "/bin/sh".into(),
+            args: vec!["-c".into(), "printf native-pty-ok".into()],
+            env: Vec::new(),
+            cwd: None,
+            stdio: StdioSet::default(),
+            fds: Vec::new(),
+        },
+    )?;
+    let stdout = escape_text(&read_task_fd(&task, 1)?);
+    Ok(format!(
+        "native module=/bin/sh exit={} stdout={}\n",
+        render_status(&status),
+        stdout
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn render_native_acceptance() -> Result<String> {
+    Err(wanix_core::Error::Message(
+        "native acceptance requires a non-wasm host".into(),
     ))
 }
 
@@ -528,8 +581,8 @@ mod tests {
         assert_eq!(
             render_device_acceptance().unwrap(),
             concat!(
-                "device term id=1 program=run\\r\\nnext\\r\\n data=screen screen=screen winch=120x40 state=ready size=80x24\n",
-                "device vm id=1 kind=firecracker alias=guest-a state=stopped console=start\\nstop\\n\n",
+                "device term id=1 program=run\\r\\nnext\\r\\n raw=\\nraw\\n data=screen screen=screen winch=120x40 state=ready size=80x24\n",
+                "device vm id=1 kind=firecracker alias=guest-a state=stopped guest=wanix guest console=start\\nstop\\n\n",
                 "device net listener=1 client=2 accepted=3 client_status=connected local=local:10001 remote=service:7 accepted_status=connected local=service:7 remote=local:10001 data=payload reply=reply closed=closed local=local:10001 remote=service:7\n"
             )
         );

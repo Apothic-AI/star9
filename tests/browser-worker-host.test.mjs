@@ -181,6 +181,52 @@ test("BrowserWorkerHost observes task messages and cleans up owned worker target
     assert.equal(worker.terminateCalls, 1);
 });
 
+test("BrowserWorkerHost exposes ordinary worker messages for export handoff", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const worker = new FakeWorkerTarget();
+    const host = await spawnBrowserWorkerHost(() => worker, {});
+    t.after(() => host.close());
+
+    const targetMessages = [];
+    const cleanup = host.onTargetMessage((event) => targetMessages.push(event.data));
+    worker.dispatchMessage({ export: "port-placeholder", vm: "7" });
+
+    assert.deepEqual(targetMessages, [{ export: "port-placeholder", vm: "7" }]);
+    cleanup();
+    worker.dispatchMessage({ export: "ignored" });
+    assert.equal(targetMessages.length, 1);
+});
+
+test("callWanixLogger is a no-op by default and contains logger failures", async (t) => {
+    const originalHTMLElement = globalThis.HTMLElement;
+    globalThis.HTMLElement = class HTMLElement {};
+    t.after(() => {
+        if (originalHTMLElement === undefined) {
+            delete globalThis.HTMLElement;
+        } else {
+            globalThis.HTMLElement = originalHTMLElement;
+        }
+    });
+    const { callWanixLogger } = await import("../crates/wanix-web/js/system.js");
+    const calls = [];
+    assert.equal(callWanixLogger(null, "readText", ["file"]), false);
+    assert.equal(
+        callWanixLogger((operation, path) => calls.push([operation, path]), "readText", ["file"]),
+        true,
+    );
+    assert.deepEqual(calls, [["readText", "file"]]);
+    assert.equal(
+        callWanixLogger(() => {
+            throw new Error("logger failed");
+        }, "writeText", ["file"]),
+        false,
+    );
+});
+
 function createSystemFacade() {
     return {
         readText() {
@@ -300,5 +346,11 @@ class FakeWorkerTarget {
 
     terminate() {
         this.terminateCalls += 1;
+    }
+
+    dispatchMessage(data) {
+        for (const listener of this._listeners.get("message") ?? []) {
+            listener({ data });
+        }
     }
 }
