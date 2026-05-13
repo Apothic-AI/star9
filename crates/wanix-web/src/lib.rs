@@ -14,6 +14,11 @@ use wanix_core::{Error, FileMode, Result};
 use wanix_fs::{fs_ref, MemFs, TarFs};
 use wanix_protocol::{
     p9::{NinePClientFs, NinePServer},
+    runtime::{
+        ExecutionSpec, ExitStatus, PortDescriptor, PortHandoff, PortOpenRequest, RuntimeRequest,
+        RuntimeResponse, StdioData, StdioStream, TaskMessage, TaskMessagePayload, WorkerHandle,
+        WorkerSpawnRequest, WorkerStartRequest,
+    },
     WanixApi,
 };
 use wanix_runtime::{ExecutionAdapter, Runtime};
@@ -211,6 +216,125 @@ impl WanixSystem {
         )?;
         wanix_protocol::runtime::encode_response(&response)
     }
+
+    pub fn spawn_worker_native(
+        &self,
+        worker_id: impl Into<String>,
+        parent_task_id: Option<String>,
+    ) -> Result<WorkerHandle> {
+        let response = self
+            .runtime
+            .handle_runtime_request(RuntimeRequest::SpawnWorker(WorkerSpawnRequest {
+                worker: WorkerHandle {
+                    worker_id: worker_id.into(),
+                    task_id: String::new(),
+                },
+                parent_task_id,
+            }))?;
+        match response {
+            RuntimeResponse::Worker(worker) => Ok(worker),
+            _ => Err(Error::Message(
+                "runtime returned non-worker response".into(),
+            )),
+        }
+    }
+
+    pub fn start_worker_native(
+        &self,
+        worker: WorkerHandle,
+        execution: ExecutionSpec,
+    ) -> Result<()> {
+        let response = self
+            .runtime
+            .handle_runtime_request(RuntimeRequest::StartWorker(WorkerStartRequest {
+                worker,
+                execution,
+            }))?;
+        match response {
+            RuntimeResponse::Unit => Ok(()),
+            _ => Err(Error::Message("runtime returned non-unit response".into())),
+        }
+    }
+
+    pub fn open_worker_port_native(
+        &self,
+        worker: WorkerHandle,
+        port: PortDescriptor,
+    ) -> Result<PortDescriptor> {
+        let response = self
+            .runtime
+            .handle_runtime_request(RuntimeRequest::OpenPort(PortOpenRequest { worker, port }))?;
+        match response {
+            RuntimeResponse::Port(port) => Ok(port),
+            _ => Err(Error::Message("runtime returned non-port response".into())),
+        }
+    }
+
+    pub fn handoff_worker_port_native(
+        &self,
+        worker: WorkerHandle,
+        target_task_id: impl Into<String>,
+        port: PortDescriptor,
+    ) -> Result<PortDescriptor> {
+        let response = self
+            .runtime
+            .handle_runtime_request(RuntimeRequest::HandoffPort(PortHandoff {
+                worker,
+                target_task_id: target_task_id.into(),
+                port,
+            }))?;
+        match response {
+            RuntimeResponse::Port(port) => Ok(port),
+            _ => Err(Error::Message("runtime returned non-port response".into())),
+        }
+    }
+
+    pub fn post_worker_exit_native(
+        &self,
+        task_id: impl Into<String>,
+        worker_id: Option<String>,
+        sequence: u64,
+        code: i32,
+    ) -> Result<()> {
+        self.post_worker_task_message_native(TaskMessage {
+            task_id: task_id.into(),
+            worker_id,
+            sequence,
+            payload: TaskMessagePayload::Exit(ExitStatus::ExitCode(code)),
+        })
+    }
+
+    pub fn post_worker_stdout_native(
+        &self,
+        task_id: impl Into<String>,
+        worker_id: Option<String>,
+        sequence: u64,
+        data: &[u8],
+        eof: bool,
+    ) -> Result<()> {
+        self.post_worker_task_message_native(TaskMessage {
+            task_id: task_id.into(),
+            worker_id,
+            sequence,
+            payload: TaskMessagePayload::StdioData(StdioData {
+                stream: StdioStream::Stdout,
+                data: data.to_vec(),
+                eof,
+            }),
+        })
+    }
+
+    pub fn post_worker_task_message_native(&self, message: TaskMessage) -> Result<()> {
+        let response = self
+            .runtime
+            .handle_runtime_request(RuntimeRequest::PostMessage(message))?;
+        match response {
+            RuntimeResponse::TaskMessage(_) => Ok(()),
+            _ => Err(Error::Message(
+                "runtime returned non-task-message response".into(),
+            )),
+        }
+    }
 }
 
 fn task_alloc_kind(kind: &str) -> &str {
@@ -367,6 +491,91 @@ mod wasm {
             message: &[u8],
         ) -> std::result::Result<Vec<u8>, JsValue> {
             self.handle_runtime_task_message_native(message)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = spawnWorker)]
+        pub fn spawn_worker(
+            &self,
+            worker_id: &str,
+            parent_task_id: &str,
+        ) -> std::result::Result<JsValue, JsValue> {
+            let parent = (!parent_task_id.trim().is_empty()).then(|| parent_task_id.to_string());
+            serde_wasm_bindgen::to_value(
+                &self
+                    .spawn_worker_native(worker_id.to_string(), parent)
+                    .map_err(js_err)?,
+            )
+            .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = startWorker)]
+        pub fn start_worker(
+            &self,
+            worker: JsValue,
+            execution: JsValue,
+        ) -> std::result::Result<(), JsValue> {
+            let worker: WorkerHandle = serde_wasm_bindgen::from_value(worker).map_err(js_err)?;
+            let execution: ExecutionSpec =
+                serde_wasm_bindgen::from_value(execution).map_err(js_err)?;
+            self.start_worker_native(worker, execution).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = openWorkerPort)]
+        pub fn open_worker_port(
+            &self,
+            worker: JsValue,
+            port: JsValue,
+        ) -> std::result::Result<JsValue, JsValue> {
+            let worker: WorkerHandle = serde_wasm_bindgen::from_value(worker).map_err(js_err)?;
+            let port: PortDescriptor = serde_wasm_bindgen::from_value(port).map_err(js_err)?;
+            serde_wasm_bindgen::to_value(
+                &self.open_worker_port_native(worker, port).map_err(js_err)?,
+            )
+            .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = handoffWorkerPort)]
+        pub fn handoff_worker_port(
+            &self,
+            worker: JsValue,
+            target_task_id: &str,
+            port: JsValue,
+        ) -> std::result::Result<JsValue, JsValue> {
+            let worker: WorkerHandle = serde_wasm_bindgen::from_value(worker).map_err(js_err)?;
+            let port: PortDescriptor = serde_wasm_bindgen::from_value(port).map_err(js_err)?;
+            serde_wasm_bindgen::to_value(
+                &self
+                    .handoff_worker_port_native(worker, target_task_id, port)
+                    .map_err(js_err)?,
+            )
+            .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = recordWorkerExit)]
+        pub fn record_worker_exit(
+            &self,
+            task_id: &str,
+            worker_id: &str,
+            sequence: u64,
+            code: i32,
+        ) -> std::result::Result<(), JsValue> {
+            let worker = (!worker_id.trim().is_empty()).then(|| worker_id.to_string());
+            self.post_worker_exit_native(task_id, worker, sequence, code)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = recordWorkerStdout)]
+        pub fn record_worker_stdout(
+            &self,
+            task_id: &str,
+            worker_id: &str,
+            sequence: u64,
+            data: &[u8],
+            eof: bool,
+        ) -> std::result::Result<(), JsValue> {
+            let worker = (!worker_id.trim().is_empty()).then(|| worker_id.to_string());
+            self.post_worker_stdout_native(task_id, worker, sequence, data, eof)
                 .map_err(js_err)
         }
 
@@ -582,6 +791,92 @@ mod tests {
         assert_eq!(gojs.cmd(), "repl-gojs.wasm");
         assert_eq!(wasi.exit(), "started");
         assert_eq!(gojs.exit(), "started");
+    }
+
+    #[test]
+    fn worker_runtime_facade_records_lifecycle_messages_and_ports() {
+        use wanix_protocol::runtime::{
+            EnvironmentEntry, ExecutionKind, ExecutionSpec, PortDescriptor, StdioSet,
+        };
+
+        let system = WanixSystem::new().unwrap();
+        let parent = alloc_task(&system);
+        let target = alloc_task(&system);
+
+        let worker = system
+            .spawn_worker_native("browser-worker", Some(parent.clone()))
+            .unwrap();
+        system
+            .start_worker_native(
+                worker.clone(),
+                ExecutionSpec {
+                    kind: ExecutionKind::JsWasm,
+                    module: "runner.mjs".into(),
+                    args: vec!["--smoke".into()],
+                    env: vec![EnvironmentEntry {
+                        name: "FIXTURE_EXIT_CODE".into(),
+                        value: "0".into(),
+                    }],
+                    cwd: Some("tmp".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        let task = system.runtime().root().lookup(&worker.task_id).unwrap();
+        assert_eq!(task.parent().unwrap().id(), parent);
+        assert_eq!(task.cmd(), "runner.mjs --smoke");
+        assert_eq!(task.env(), ["FIXTURE_EXIT_CODE=0"]);
+        assert_eq!(task.dir(), "tmp");
+        assert_eq!(task.worker().as_deref(), Some("browser-worker"));
+        assert_eq!(task.exit(), "started");
+
+        let port = system
+            .open_worker_port_native(
+                worker.clone(),
+                PortDescriptor {
+                    port_id: "events".into(),
+                    name: "event-bus".into(),
+                },
+            )
+            .unwrap();
+        let handed = system
+            .handoff_worker_port_native(worker.clone(), target.clone(), port.clone())
+            .unwrap();
+        assert_eq!(handed, port);
+
+        system
+            .post_worker_stdout_native(
+                &worker.task_id,
+                Some(worker.worker_id.clone()),
+                1,
+                b"hello\n",
+                false,
+            )
+            .unwrap();
+        system
+            .post_worker_exit_native(&worker.task_id, Some(worker.worker_id.clone()), 2, 0)
+            .unwrap();
+
+        assert_eq!(task.exit(), "0");
+        let host = system.runtime().protocol_host();
+        let worker_snapshot = host
+            .worker_snapshot("browser-worker")
+            .unwrap()
+            .expect("worker snapshot");
+        assert_eq!(
+            worker_snapshot.parent_task_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(worker_snapshot.lifecycle, "0");
+        let port_snapshot = host.port_snapshot("events").expect("port snapshot");
+        assert_eq!(port_snapshot.owner_task_id, target);
+        assert_eq!(port_snapshot.handoff_targets, [target]);
+        let messages = host
+            .task_messages_snapshot(&worker.task_id)
+            .expect("task message snapshot");
+        assert_eq!(messages.messages.len(), 2);
     }
 
     #[test]

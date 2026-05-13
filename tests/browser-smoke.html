@@ -135,6 +135,24 @@
     const goCmd = (await system.readText(`#task/${goTask}/cmd`)).trim();
     const goExit = (await system.readText(`#task/${goTask}/exit`)).trim();
 
+    const workerTask = await system.startBrowserWorker("./fixtures/browser/execution-worker.mjs", {
+      workerId: "smoke-exec-worker",
+      module: "../../../tests/fixtures/js-wasm-execution-runner.mjs",
+      args: ["--browser-smoke"],
+      env: [{ name: "FIXTURE_EXIT_CODE", value: "0" }],
+      cwd: "tmp",
+    });
+    await waitFor(() => workerTask.exitCode === 0, "worker task exit");
+    const workerPort = system.openWorkerPort(workerTask.worker, {
+      port_id: "smoke-events",
+      name: "smoke-events",
+    });
+    const handedPort = system.handoffWorkerPort(workerTask.worker, goTask, workerPort);
+    const workerExit = (await system.readText(`#task/${workerTask.taskId}/exit`)).trim();
+    const workerCmd = (await system.readText(`#task/${workerTask.taskId}/cmd`)).trim();
+    const workerMessages = workerTask.messages.slice();
+    workerTask.close();
+
     assert(version === "0.1.0", `bad version ${version}`);
     assert(inlineText === "inline-browser-ok", `bad inline text ${inlineText}`);
     assert(fetchedText === "registered-browser-ok", `bad fetched text ${fetchedText}`);
@@ -168,6 +186,16 @@
     assert(goCmd === "repl-gojs.wasm", `bad go cmd ${goCmd}`);
     assert(wasiExit === "started", `bad wasi exit ${wasiExit}`);
     assert(goExit === "started", `bad go exit ${goExit}`);
+    assert(workerExit === "0", `bad worker exit ${workerExit}`);
+    assert(
+      workerCmd === "../../../tests/fixtures/js-wasm-execution-runner.mjs --browser-smoke",
+      `bad worker cmd ${workerCmd}`,
+    );
+    assert(
+      workerMessages.some((message) => message && message.args && message.args.includes("--browser-smoke")),
+      `missing worker payload: ${JSON.stringify(workerMessages)}`,
+    );
+    assert(handedPort.port_id === "smoke-events", `bad handed port ${JSON.stringify(handedPort)}`);
     assert(
       numericTaskIds(taskEntriesAfterWasi).includes(Number(wasiTask)),
       `missing wasi task entry: ${taskEntriesAfterWasi}`,
@@ -196,6 +224,9 @@
         domStorageText,
         wasiTask,
         goTask,
+        workerTask: workerTask.taskId,
+        workerExit,
+        handedPort,
         taskEntriesAfterGo,
       },
       null,
@@ -205,5 +236,14 @@
     document.body.dataset.status = "error";
     status.textContent = err && err.stack ? err.stack : String(err);
     throw err;
+  }
+
+  async function waitFor(predicate, label, timeoutMs = 10000) {
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`timed out waiting for ${label}`);
   }
 </script>

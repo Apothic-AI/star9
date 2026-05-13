@@ -197,6 +197,46 @@ test("WanixP9FramePortClient reports unknown response tags", {
     assert.match(String(errors[0]), /unknown tag 99/);
 });
 
+test("WanixP9FramePortClient aborts requests with Tflush and ignores late responses", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const channel = new MessageChannel();
+    const sent = [];
+    channel.port1.addEventListener("message", (event) => {
+        sent.push(event.data);
+    });
+    channel.port1.start();
+
+    const errors = [];
+    const client = createWanixP9FrameClient(channel.port2);
+    client.onError((error) => errors.push(error));
+    t.after(() => client.close());
+
+    const controller = new AbortController();
+    const pending = client.request(p9Frame(116, 42, [1, 2, 3, 4]), {
+        signal: controller.signal,
+    });
+
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0], p9Frame(116, 42, [1, 2, 3, 4]));
+
+    controller.abort(new Error("cancelled read"));
+    await assert.rejects(pending, /cancelled read/);
+
+    assert.equal(sent.length, 2);
+    const flush = sent[1];
+    assert.equal(flush[4], 108);
+    assert.notEqual(tagOf(flush), 42);
+    assert.equal(flush[7] | (flush[8] << 8), 42);
+
+    channel.port1.postMessage(p9Frame(117, 42, [0, 0, 0, 0]));
+    channel.port1.postMessage(p9Frame(109, tagOf(flush)));
+    assert.deepEqual(errors, []);
+});
+
 test("WanixP9NamespaceMount reads, writes, and lists over MessagePort 9P", {
     concurrency: false,
 }, async (t) => {

@@ -182,6 +182,7 @@ export class WanixP9FramePortClient {
         this.started = false;
         this._pending = new Map();
         this._notagPending = [];
+        this._cancelledTags = new Set();
         this._responseListeners = new Set();
         this._errorListeners = new Set();
 
@@ -229,15 +230,32 @@ export class WanixP9FramePortClient {
         return this;
     }
 
-    request(frame) {
+    request(frame, options = {}) {
         if (this.closed) {
             return Promise.reject(new Error("9P frame client is closed"));
         }
         const request = cloneFrameBytes(frame, "9P request frame");
         const tag = frameTag(request);
         return new Promise((resolve, reject) => {
-            const pending = { reject, request, resolve, tag };
+            const pending = {
+                reject,
+                request,
+                resolve,
+                signal: options.signal || null,
+                tag,
+                onAbort: null,
+            };
             this._trackPending(tag, pending);
+            if (pending.signal) {
+                if (pending.signal.aborted) {
+                    this._cancelPending(tag, pending, abortReason(pending.signal));
+                    return;
+                }
+                pending.onAbort = () => {
+                    this._cancelPending(tag, pending, abortReason(pending.signal));
+                };
+                pending.signal.addEventListener("abort", pending.onAbort, { once: true });
+            }
             try {
                 this.endpoint.post(request);
             } catch (error) {
@@ -253,10 +271,12 @@ export class WanixP9FramePortClient {
         }
         this.stop();
         const error = new Error("9P frame client closed");
-        for (const pending of this._pending.values()) {
+        for (const [tag, pending] of [...this._pending.entries()]) {
+            this._untrackPending(tag, pending);
             pending.reject(error);
         }
-        for (const pending of this._notagPending) {
+        for (const pending of [...this._notagPending]) {
+            this._untrackPending(0xffff, pending);
             pending.reject(error);
         }
         this._pending.clear();
@@ -277,6 +297,10 @@ export class WanixP9FramePortClient {
     }
 
     _untrackPending(tag, pending) {
+        if (pending?.signal && pending.onAbort) {
+            pending.signal.removeEventListener("abort", pending.onAbort);
+            pending.onAbort = null;
+        }
         if (tag === 0xffff) {
             const index = this._notagPending.indexOf(pending);
             if (index >= 0) {
@@ -289,6 +313,31 @@ export class WanixP9FramePortClient {
         }
     }
 
+    _cancelPending(tag, pending, reason) {
+        this._untrackPending(tag, pending);
+        if (tag !== 0xffff) {
+            this._cancelledTags.add(tag);
+            try {
+                this.flush(tag);
+            } catch (error) {
+                this._emitError(error);
+            }
+        }
+        pending.reject(reason);
+    }
+
+    flush(oldtag) {
+        if (this.closed) {
+            throw new Error("9P frame client is closed");
+        }
+        const tag = this._allocSyntheticTag(oldtag);
+        this._cancelledTags.add(tag);
+        const writer = new P9Writer();
+        writer.u16(oldtag);
+        this.endpoint.post(encodeP9Frame(MSG.TFLUSH, tag, writer.finish()));
+        return tag;
+    }
+
     _handleMessage(message) {
         let response = null;
         try {
@@ -297,10 +346,17 @@ export class WanixP9FramePortClient {
             const pending =
                 tag === 0xffff ? this._notagPending.shift() : this._pending.get(tag);
             if (!pending) {
+                if (this._cancelledTags.delete(tag)) {
+                    return;
+                }
                 throw new Error(`received 9P response for unknown tag ${tag}`);
             }
             if (tag !== 0xffff) {
                 this._pending.delete(tag);
+            }
+            if (pending.signal && pending.onAbort) {
+                pending.signal.removeEventListener("abort", pending.onAbort);
+                pending.onAbort = null;
             }
             pending.resolve(response);
             emitListeners(this._responseListeners, {
@@ -317,6 +373,19 @@ export class WanixP9FramePortClient {
 
     _emitError(error) {
         emitListeners(this._errorListeners, error);
+    }
+
+    _allocSyntheticTag(avoidTag = null) {
+        for (let tag = 1; tag < 0xffff; tag += 1) {
+            if (
+                tag !== avoidTag &&
+                !this._pending.has(tag) &&
+                !this._cancelledTags.has(tag)
+            ) {
+                return tag;
+            }
+        }
+        throw new Error("no free 9P tag available");
     }
 }
 
@@ -757,6 +826,8 @@ const MSG = Object.freeze({
     RVERSION: 101,
     TATTACH: 104,
     RATTACH: 105,
+    TFLUSH: 108,
+    RFLUSH: 109,
     TWALK: 110,
     RWALK: 111,
     TREAD: 116,
@@ -1130,6 +1201,13 @@ function validateFrameShape(frame, label) {
     if (declared !== frame.byteLength) {
         throw new TypeError(`expected ${label} length prefix to match frame size`);
     }
+}
+
+function abortReason(signal) {
+    if (signal && "reason" in signal && signal.reason !== undefined) {
+        return signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
+    }
+    return new Error("9P request aborted");
 }
 
 function isImportRequest(payload, request) {

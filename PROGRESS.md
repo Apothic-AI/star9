@@ -2,6 +2,13 @@
 
 ## 2026-05-13
 
+- Added high-level worker lifecycle methods to the `WanixSystem` native/wasm facade for worker spawn/start, port open/handoff, stdout recording, and exit recording through `RuntimeProtocolHost`.
+- Added `SystemElement.startBrowserWorker(...)`, which spawns a real browser `Worker`, transfers the runtime port, sends the JS/WASM execution bootstrap, records task messages back into the Rust runtime, opens/hands off ports, and exposes deterministic controller cleanup.
+- Added a browser module-worker fixture and expanded `tests/browser-smoke.html` so Playwright now starts a real worker-backed JS/WASM task, observes a runner message, records exit status through `#task/<id>/exit`, opens and hands off a worker port, and cleans up the host.
+- Added native `wanix-web` worker lifecycle coverage proving the facade updates task parent/cmd/env/cwd/worker/exit state, records stdout/exit messages, and tracks port handoff snapshots.
+- Added AbortSignal-aware browser 9P requests: `WanixP9FramePortClient.request(frame, { signal })` now sends `Tflush`, rejects locally, removes abort listeners, avoids synthetic tag collisions, and ignores late original and `Rflush` replies.
+- Added deterministic fake-MessagePort coverage for browser 9P abort/flush behavior.
+- Fixed the browser worker facade to pass `BigInt` sequence IDs to wasm-bindgen `u64` exports, matching the generated wasm boundary during the real Playwright smoke.
 - Added a browser-side async 9P namespace mount client on top of `WanixP9FramePortClient`, including 9P version/attach negotiation, walk/open/read/write/create/readdir/mkdir/remove operations, response decoding, and deterministic fake-MessagePort coverage proving remote read/write/list behavior through complete 9P frames.
 - Added `crates/wanix-web/js/mounts.js`, a browser-side async mount table and storage adapter resolver that lets `wanix-system` route operations to real OPFS/File System Access, Cache API, DOM, download, JS value, worker-backed, and 9P import mounts without pretending those async browser APIs satisfy the synchronous Rust `FileSystem` trait.
 - Wired `<wanix-bind kind="import">` through browser `wanix-import` MessagePort handoff into the async 9P mount client instead of leaving import bindings as frame-helper-only placeholders.

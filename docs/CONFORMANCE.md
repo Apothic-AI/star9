@@ -79,7 +79,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 ## Explicit Replacement Fixtures
 
-`tests/browser-smoke.html` replaces the representative browser examples as a Rust-backed acceptance path. It imports the browser custom element module, initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, mounts descriptor-backed storage, writes and reads files through the public API and 9P loopback import, lists directories, verifies task fields, and starts WASI/Go JS adapter tasks.
+`tests/browser-smoke.html` replaces the representative browser examples as a Rust-backed acceptance path. It imports the browser custom element module, initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, mounts descriptor-backed storage, writes and reads files through the public API and 9P loopback import, lists directories, verifies task fields, starts WASI/Go JS adapter tasks, and runs a real module-worker JS/WASM task through the Wanix runtime path.
 
 `tests/fixtures/api-operations.json` lists the public operation names used by the typed protocol boundary.
 
@@ -97,7 +97,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, and explicit direct-WASM rejection without a real browser worker or Go shim.
 
-`tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, tag-matched async client requests, import responder port handoff, and error reporting for unknown tags and non-binary requests.
+`tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, tag-matched async client requests, AbortSignal-to-`Tflush` cancellation, import responder port handoff, and error reporting for unknown tags and non-binary requests.
 
 ## Remaining Oracle Areas
 
@@ -108,9 +108,9 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - HTTP filesystem broader live-service behavior against real servers.
 - Cloudflare/S3 live-service coverage such as bucket-specific behavior and opt-in live tests over `S3ObjectStore` plus `AwsSigV4Signer`.
 - Cross-document/browser MessagePort namespace mounting for remote 9P imports beyond the current async browser read/write/list mount baseline, especially richer mutation/error parity under browser smoke.
-- Additional 9P edge cases such as true async flush cancellation and remote conflict/error parity.
+- Additional 9P edge cases such as server-side operation cancellation after `Tflush` and remote conflict/error parity.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters inside task/WASI-visible Rust namespaces where async browser APIs meet the synchronous Rust filesystem trait boundary. The current browser-side async mount table covers `wanix-system` operations.
-- Broader browser Worker startup and real execution orchestration on top of the JS Worker host facade, JS/WASM bootstrap host, CBOR runtime bridge, and host-neutral typed runtime adapter.
+- Broader browser Worker execution orchestration beyond the current real module-worker smoke path, especially fd/stdio namespace handoff for representative workloads.
 - Terminal browser element protocol details beyond the host-neutral data/program/screen file protocol.
 - Real VM execution and native/browser TCP transport adapters beyond deterministic state-machine resources.
 - Real WASI socket behavior beyond the current explicit unsupported preview1 imports.
