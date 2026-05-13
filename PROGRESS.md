@@ -6,7 +6,7 @@
 - Added `SystemElement.startBrowserWorker(...)`, which spawns a real browser `Worker`, transfers the runtime port, sends the JS/WASM execution bootstrap, records task messages back into the Rust runtime, opens/hands off ports, and exposes deterministic controller cleanup.
 - Added a browser module-worker fixture and expanded `tests/browser-smoke.html` so Playwright now starts a real worker-backed JS/WASM task, observes a runner message, records exit status through `#task/<id>/exit`, opens and hands off a worker port, and cleans up the host.
 - Added native `wanix-web` worker lifecycle coverage proving the facade updates task parent/cmd/env/cwd/worker/exit state, records stdout/exit messages, and tracks port handoff snapshots.
-- Routed runtime `StdioData` and `FdData` task messages through the task fd table when descriptors are installed, with runtime tests reading fd 1 back after worker stdout/fd messages.
+- Routed runtime `StdioData` and `FdData` task messages through the task fd table when descriptors are installed, with runtime tests and CLI worker acceptance reading fd 1 back after worker stdout/fd messages.
 - Added AbortSignal-aware browser 9P requests: `WanixP9FramePortClient.request(frame, { signal })` now sends `Tflush`, rejects locally, removes abort listeners, avoids synthetic tag collisions, and ignores late original and `Rflush` replies.
 - Added deterministic fake-MessagePort coverage for browser 9P abort/flush behavior.
 - Fixed the browser worker facade to pass `BigInt` sequence IDs to wasm-bindgen `u64` exports, matching the generated wasm boundary during the real Playwright smoke.

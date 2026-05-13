@@ -128,7 +128,7 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 
 - `cargo test --workspace` passes.
 - Rust conformance tests cover the core filesystem, namespace, task, and API semantics.
-- Native CLI acceptance commands cover 9P loopback, deterministic devices, and runtime worker protocol smoke paths.
-- Browser smoke tests prove that `wanix-system` can initialize, bind filesystems, open a handle, run file API operations, and start representative WASI/Go-compatible JS tasks.
+- Native CLI acceptance commands cover 9P loopback, deterministic devices, runtime worker protocol smoke paths, and fd-backed stdout routing.
+- Browser smoke tests prove that `wanix-system` can initialize, bind filesystems, open a handle, run file API operations, mount browser storage/9P imports, start representative WASI/Go-compatible JS tasks, and run a real module-worker JS/WASM task through Wanix worker paths.
 - Existing examples have Rust-backed equivalents or explicit replacement tests.
 - The public Rust API is documented enough to guide continued development from this repository alone.

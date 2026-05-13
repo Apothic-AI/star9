@@ -74,7 +74,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Network deterministic Plan 9-style connection resources for dial, bind, announce, listen accept, hangup/reset, status/local/remote, data flow, and invalid transitions.
 - WASI and Go-compatible JS execution adapter task starts.
 - Native `WanixSystem` smoke operations.
-- Native CLI acceptance smoke for 9P loopback, deterministic device surfaces, and runtime worker protocol flows, plus a native stdin/stdout `serve-p9` export command built on Rust 9P stream framing.
+- Native CLI acceptance smoke for 9P loopback, deterministic device surfaces, runtime worker protocol flows, and fd-backed worker stdout routing, plus a native stdin/stdout `serve-p9` export command built on Rust 9P stream framing.
 - Browser wasm smoke operations through `tests/browser-smoke.html`.
 
 ## Explicit Replacement Fixtures

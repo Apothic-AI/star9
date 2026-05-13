@@ -1,3 +1,4 @@
+use std::io::SeekFrom;
 use std::sync::Arc;
 use std::{io, path::PathBuf};
 
@@ -8,8 +9,8 @@ use wanix_protocol::{
     p9::{serve_frame_stream, LoopbackTransport, NinePClientFs, NinePServer},
     runtime::{
         EnvironmentEntry, ExecutionKind, ExecutionSpec, PortDescriptor, PortHandoff,
-        PortOpenRequest, RuntimeRequest, RuntimeResponse, StdioSet, WorkerHandle,
-        WorkerSpawnRequest, WorkerStartRequest,
+        PortOpenRequest, RuntimeRequest, RuntimeResponse, StdioData, StdioSet, StdioStream,
+        TaskMessage, TaskMessagePayload, WorkerHandle, WorkerSpawnRequest, WorkerStartRequest,
     },
     WanixApi,
 };
@@ -319,13 +320,24 @@ fn render_worker_acceptance() -> Result<String> {
             port: opened.clone(),
         }))?,
     )?;
+    let _ = host.handle_request(RuntimeRequest::PostMessage(TaskMessage {
+        task_id: source.task_id.clone(),
+        worker_id: Some(source.worker_id.clone()),
+        sequence: 1,
+        payload: TaskMessagePayload::StdioData(StdioData {
+            stream: StdioStream::Stdout,
+            data: b"accepted".to_vec(),
+            eof: false,
+        }),
+    }))?;
 
     let source_task = runtime.task_fs().lookup(&source.task_id)?;
     let target_task = runtime.task_fs().lookup(&target.task_id)?;
+    let stdout = escape_text(&read_task_fd(&source_task, 1)?);
 
     Ok(format!(
         concat!(
-            "worker source={} task={} task_worker={} cmd={} dir={} env={} exit={} fds={}\n",
+            "worker source={} task={} task_worker={} cmd={} dir={} env={} exit={} fds={} stdout={}\n",
             "worker target={} task={} parent={}\n",
             "worker port={} name={} handed_to={}\n"
         ),
@@ -337,6 +349,7 @@ fn render_worker_acceptance() -> Result<String> {
         source_task.env().join(","),
         source_task.exit(),
         format_fds(&source_task.fd_entries()),
+        stdout,
         target.worker_id,
         target.task_id,
         target_task
@@ -369,6 +382,13 @@ fn read_once(file: &mut dyn wanix_fs::FileHandle) -> Result<String> {
     let mut buf = [0_u8; 256];
     let n = file.read(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf[..n]).into_owned())
+}
+
+fn read_task_fd(task: &wanix_task::Task, fd: u32) -> Result<String> {
+    task.with_fd_mut(fd, |file| {
+        file.seek(SeekFrom::Start(0))?;
+        read_once(file)
+    })
 }
 
 fn write_handle(fsys: &dyn FileSystem, path: &str, data: &[u8]) -> Result<()> {
@@ -453,7 +473,7 @@ mod tests {
         assert_eq!(
             render_worker_acceptance().unwrap(),
             concat!(
-                "worker source=worker-a task=2 task_worker=worker-a cmd=cli-worker.wasm --smoke dir=/work env=MODE=acceptance exit=started fds=0:stdin,1:stdout,2:stderr\n",
+                "worker source=worker-a task=2 task_worker=worker-a cmd=cli-worker.wasm --smoke dir=/work env=MODE=acceptance exit=started fds=0:stdin,1:stdout,2:stderr stdout=accepted\n",
                 "worker target=worker-b task=3 parent=1\n",
                 "worker port=events name=event-bus handed_to=3\n"
             )

@@ -1130,6 +1130,7 @@ dependencies = [
  "wanix-fs",
  "wanix-protocol",
  "wanix-runtime",
+ "wanix-task",
  "wanix-vfs",
 ]
 
