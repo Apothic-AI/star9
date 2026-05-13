@@ -2,6 +2,7 @@
 
 ## 2026-05-13
 
+- Added WASI `poll_oneoff`, `sched_yield`, and `proc_raise` imports, including clock subscription event encoding, fd read/write readiness event encoding, deterministic zero-time clock polling tests, no-op scheduler yield behavior, and explicit unsupported signal-raise behavior.
 - Added task fd-table renumbering plus WASI `fd_renumber` support, matching the reference behavior of moving an existing source fd into an existing destination fd after closing the destination, with focused task tests and WAT coverage proving the source fd is invalidated and the destination reads from the moved handle.
 - Extended the Wasmi WASI preview1 handler with `fd_advise`, `fd_fdstat_set_flags`, `fd_fdstat_set_rights`, `fd_filestat_set_times`, and `path_filestat_set_times`, including valid-fd no-op behavior where the reference surface is advisory, conservative unsupported append flag updates, mtime mapping through `chtimes`, invalid timestamp-flag validation, and WAT coverage.
 - Extended the Wasmi WASI preview1 handler with positional fd syscalls `fd_pread`, `fd_pwrite`, `fd_tell`, and `fd_allocate`, preserving file offsets across positional I/O/allocation, syncing successful positional writes, validating invalid offsets, and covering the behavior with WAT fixtures over MemFs-backed task namespaces.

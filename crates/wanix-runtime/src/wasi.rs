@@ -46,6 +46,15 @@ const FSTFLAGS_MTIM: i32 = 4;
 const FSTFLAGS_MTIM_NOW: i32 = 8;
 const FSTFLAGS_ALL: i32 = FSTFLAGS_ATIM | FSTFLAGS_ATIM_NOW | FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW;
 
+const EVENTTYPE_CLOCK: u8 = 0;
+const EVENTTYPE_FD_READ: u8 = 1;
+const EVENTTYPE_FD_WRITE: u8 = 2;
+const CLOCKID_REALTIME: u32 = 0;
+const CLOCKID_MONOTONIC: u32 = 1;
+const SUBCLOCKFLAGS_SUBSCRIPTION_CLOCK_ABSTIME: u16 = 1;
+const SUBSCRIPTION_SIZE: i32 = 48;
+const EVENT_SIZE: i32 = 32;
+
 const RIGHTS_FD_READ: i64 = 1 << 1;
 const RIGHTS_FD_WRITE: i64 = 1 << 6;
 
@@ -131,6 +140,15 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "proc_exit", proc_exit)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "proc_raise", proc_raise)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "sched_yield", sched_yield)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "poll_oneoff", poll_oneoff)
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "fd_write", fd_write)
@@ -272,6 +290,102 @@ fn environ_get(mut caller: Caller<'_, WasiState>, env_ptr: i32, env_buf_ptr: i32
 
 fn proc_exit(_caller: Caller<'_, WasiState>, code: i32) -> std::result::Result<(), wasmi::Error> {
     Err(wasmi::Error::i32_exit(code))
+}
+
+fn proc_raise(_sig: i32) -> i32 {
+    ERRNO_NOTSUP
+}
+
+fn sched_yield() -> i32 {
+    ERRNO_SUCCESS
+}
+
+fn poll_oneoff(
+    mut caller: Caller<'_, WasiState>,
+    in_ptr: i32,
+    out_ptr: i32,
+    nsubscriptions: i32,
+    nevents_ptr: i32,
+) -> i32 {
+    if nsubscriptions <= 0 {
+        return ERRNO_INVAL;
+    }
+    let task = caller.data().task.clone();
+    for index in 0..nsubscriptions {
+        let subscription = match in_ptr.checked_add(index.saturating_mul(SUBSCRIPTION_SIZE)) {
+            Some(ptr) => ptr,
+            None => return ERRNO_INVAL,
+        };
+        let event = match out_ptr.checked_add(index.saturating_mul(EVENT_SIZE)) {
+            Some(ptr) => ptr,
+            None => return ERRNO_INVAL,
+        };
+        let userdata = match read_u64(&mut caller, subscription) {
+            Ok(userdata) => userdata,
+            Err(()) => return ERRNO_INVAL,
+        };
+        let event_type = match read_u8(&mut caller, subscription + 8) {
+            Ok(event_type) => event_type,
+            Err(()) => return ERRNO_INVAL,
+        };
+        match event_type {
+            EVENTTYPE_CLOCK => {
+                let clock_id = match read_u32(&mut caller, subscription + 16) {
+                    Ok(clock_id) => clock_id,
+                    Err(()) => return ERRNO_INVAL,
+                };
+                let timeout = match read_u64(&mut caller, subscription + 24) {
+                    Ok(timeout) => timeout,
+                    Err(()) => return ERRNO_INVAL,
+                };
+                let flags = match read_u16(&mut caller, subscription + 36) {
+                    Ok(flags) => flags,
+                    Err(()) => return ERRNO_INVAL,
+                };
+                if flags & !SUBCLOCKFLAGS_SUBSCRIPTION_CLOCK_ABSTIME != 0 {
+                    return ERRNO_INVAL;
+                }
+                let now = match wasi_clock_now_nanos(clock_id) {
+                    Ok(now) => now,
+                    Err(errno) => return errno,
+                };
+                let sleep_nanos = if flags & SUBCLOCKFLAGS_SUBSCRIPTION_CLOCK_ABSTIME != 0 {
+                    timeout.saturating_sub(now)
+                } else {
+                    timeout
+                };
+                if sleep_nanos > 0 {
+                    std::thread::sleep(Duration::from_nanos(sleep_nanos));
+                }
+                if write_event(&mut caller, event, userdata, EVENTTYPE_CLOCK, 0).is_err() {
+                    return ERRNO_INVAL;
+                }
+            }
+            EVENTTYPE_FD_READ | EVENTTYPE_FD_WRITE => {
+                let fd = match read_u32(&mut caller, subscription + 16) {
+                    Ok(fd) => fd,
+                    Err(()) => return ERRNO_INVAL,
+                };
+                let nbytes = if event_type == EVENTTYPE_FD_READ {
+                    match task.with_fd_mut(fd, |file| file.stat()) {
+                        Ok(meta) => meta.size,
+                        Err(err) => return errno_from_error(&err),
+                    }
+                } else {
+                    match task.fd_path(fd) {
+                        Ok(_) => 1_u64 << 31,
+                        Err(err) => return errno_from_error(&err),
+                    }
+                };
+                if write_event(&mut caller, event, userdata, event_type, nbytes).is_err() {
+                    return ERRNO_INVAL;
+                }
+            }
+            _ => return ERRNO_NOTSUP,
+        }
+    }
+    write_u32(&mut caller, nevents_ptr, nsubscriptions as u32)
+        .map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
 fn fd_write(
@@ -908,6 +1022,22 @@ fn clock_time_get(
     write_u64(&mut caller, time_ptr, nanos).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
+fn wasi_clock_now_nanos(clock_id: u32) -> std::result::Result<u64, i32> {
+    match clock_id {
+        CLOCKID_REALTIME => Ok(SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .min(u64::MAX as u128) as u64),
+        CLOCKID_MONOTONIC => Ok(SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .min(u64::MAX as u128) as u64),
+        _ => Err(ERRNO_INVAL),
+    }
+}
+
 fn ensure_default_preopen(task: &Task) -> Result<()> {
     if task.fd_path(3).is_ok() {
         return Ok(());
@@ -1238,9 +1368,24 @@ fn write_bytes(
     Ok(())
 }
 
+fn read_u8(caller: &mut Caller<'_, WasiState>, ptr: i32) -> std::result::Result<u8, ()> {
+    let bytes = read_bytes(caller, ptr, 1)?;
+    Ok(bytes[0])
+}
+
+fn read_u16(caller: &mut Caller<'_, WasiState>, ptr: i32) -> std::result::Result<u16, ()> {
+    let bytes = read_bytes(caller, ptr, 2)?;
+    Ok(u16::from_le_bytes(bytes.try_into().unwrap()))
+}
+
 fn read_u32(caller: &mut Caller<'_, WasiState>, ptr: i32) -> std::result::Result<u32, ()> {
     let bytes = read_bytes(caller, ptr, 4)?;
     Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+}
+
+fn read_u64(caller: &mut Caller<'_, WasiState>, ptr: i32) -> std::result::Result<u64, ()> {
+    let bytes = read_bytes(caller, ptr, 8)?;
+    Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
 }
 
 fn write_u32(
@@ -1251,12 +1396,37 @@ fn write_u32(
     write_bytes(caller, ptr, &value.to_le_bytes())
 }
 
+fn write_u16(
+    caller: &mut Caller<'_, WasiState>,
+    ptr: i32,
+    value: u16,
+) -> std::result::Result<(), ()> {
+    write_bytes(caller, ptr, &value.to_le_bytes())
+}
+
 fn write_u64(
     caller: &mut Caller<'_, WasiState>,
     ptr: i32,
     value: u64,
 ) -> std::result::Result<(), ()> {
     write_bytes(caller, ptr, &value.to_le_bytes())
+}
+
+fn write_event(
+    caller: &mut Caller<'_, WasiState>,
+    ptr: i32,
+    userdata: u64,
+    event_type: u8,
+    nbytes: u64,
+) -> std::result::Result<(), ()> {
+    write_u64(caller, ptr, userdata)?;
+    write_u16(caller, ptr + 8, ERRNO_SUCCESS as u16)?;
+    write_bytes(caller, ptr + 10, &[event_type])?;
+    if event_type == EVENTTYPE_FD_READ || event_type == EVENTTYPE_FD_WRITE {
+        write_u64(caller, ptr + 16, nbytes)?;
+        write_u16(caller, ptr + 24, 0)?;
+    }
+    Ok(())
 }
 
 fn write_fdstat(
@@ -1339,6 +1509,148 @@ mod tests {
             errno_from_error(&ErrorKind::NotEmpty.into()),
             ERRNO_NOTEMPTY
         );
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_supports_poll_yield_and_raise_imports() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "poll_oneoff"
+                (func $poll_oneoff (param i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "sched_yield"
+                (func $sched_yield (result i32)))
+              (import "wasi_snapshot_preview1" "proc_raise"
+                (func $proc_raise (param i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_errno (param $errno i32) (param $want i32) (param $code i32)
+                local.get $errno
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_i32 (param $actual i32) (param $want i32) (param $code i32)
+                local.get $actual
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_i64 (param $actual i64) (param $want i64) (param $code i32)
+                local.get $actual
+                local.get $want
+                i64.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (i64.store (i32.const 64) (i64.const 1234))
+                (i32.store8 (i32.const 72) (i32.const 0))
+                (i32.store (i32.const 80) (i32.const 1))
+                (i64.store (i32.const 88) (i64.const 0))
+                (i32.store16 (i32.const 100) (i32.const 0))
+
+                (call $assert_ok
+                  (call $poll_oneoff
+                    (i32.const 64)
+                    (i32.const 128)
+                    (i32.const 1)
+                    (i32.const 32))
+                  (i32.const 10))
+                (call $assert_i32
+                  (i32.load (i32.const 32))
+                  (i32.const 1)
+                  (i32.const 11))
+                (call $assert_i64
+                  (i64.load (i32.const 128))
+                  (i64.const 1234)
+                  (i32.const 12))
+                (call $assert_i32
+                  (i32.load16_u (i32.const 136))
+                  (i32.const 0)
+                  (i32.const 13))
+                (call $assert_i32
+                  (i32.load8_u (i32.const 138))
+                  (i32.const 0)
+                  (i32.const 14))
+
+                (call $assert_ok
+                  (call $sched_yield)
+                  (i32.const 15))
+                (call $assert_errno
+                  (call $proc_raise (i32.const 2))
+                  (i32.const 58)
+                  (i32.const 16))
+                (call $assert_errno
+                  (call $poll_oneoff
+                    (i32.const 64)
+                    (i32.const 128)
+                    (i32.const 0)
+                    (i32.const 32))
+                  (i32.const 28)
+                  (i32.const 17)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([("program.wasm", program)])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
     }
 
     #[test]
