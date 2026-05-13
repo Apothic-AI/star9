@@ -44,7 +44,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Runtime protocol immutable snapshot APIs for workers, ports, handoff targets, and task messages.
 - Browser worker/message-port adapter coverage for typed runtime request/response dispatch, task message delivery, and lossless 9P frame transfer through a host-neutral port.
 - Browser Worker/MessagePort JS glue for tagged binary runtime envelopes, endpoint wrappers, port transfer helpers, system facade resolution, and import-port requests.
-- Browser 9P `MessagePort` serving helpers for complete binary frame request/response handling, transferable served ports, `wanix-import` responder handoff, and non-binary frame error reporting with deterministic fake-port tests.
+- Browser 9P `MessagePort` helpers for complete binary frame request/response handling, tag-matched async client requests, transferable served ports, `wanix-import` responder handoff, unknown-tag/error reporting, and non-binary frame error reporting with deterministic fake-port tests.
 - Browser Worker host facade coverage for fake Worker-like startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
 - Browser JS/WASM Worker host bootstrap coverage for normalized execution messages, runtime descriptor transfer, task-message observation, existing-host wrapping, and cleanup.
 - Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, default dynamic JS runner import, explicit direct-WASM unsupported errors, task-message emission, exit/error reporting, and cleanup.
@@ -97,7 +97,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, and explicit direct-WASM rejection without a real browser worker or Go shim.
 
-`tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, import responder port handoff, and error reporting for non-binary requests.
+`tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, tag-matched async client requests, import responder port handoff, and error reporting for unknown tags and non-binary requests.
 
 ## Remaining Oracle Areas
 

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
     attachWanixImportResponder,
     createWanixP9FramePort,
+    createWanixP9FrameClient,
     serveWanixP9FramePort,
 } from "../crates/wanix-web/js/p9-port.js";
 
@@ -18,7 +19,7 @@ test("serveWanixP9FramePort handles binary request frames and posts binary respo
     const facade = {
         handle9pFrame(frame) {
             requests.push(frame);
-            return new Uint8Array([4, 5, 6, frame[0] ?? 0]);
+            return p9Frame(101, tagOf(frame), [frame[4]]);
         },
     };
 
@@ -31,13 +32,13 @@ test("serveWanixP9FramePort handles binary request frames and posts binary respo
     });
     channel.port2.start();
 
-    const request = new Uint8Array([1, 2, 3, 4]);
+    const request = p9Frame(100, 7, [9]);
     channel.port2.postMessage(request);
 
     assert.equal(requests.length, 1);
     assert.deepEqual(requests[0], request);
     assert.equal(responses.length, 1);
-    assert.deepEqual(responses[0], new Uint8Array([4, 5, 6, 1]));
+    assert.deepEqual(responses[0], p9Frame(101, 7, [100]));
 });
 
 test("serveWanixP9FramePort reports non-binary request frames through error listeners", {
@@ -81,7 +82,7 @@ test("attachWanixImportResponder transfers a served MessagePort-like 9P endpoint
     const responder = await attachWanixImportResponder(target, {
         handle9pFrame(frame) {
             frames.push(frame);
-            return new Uint8Array([7, 7, frame.byteLength]);
+            return p9Frame(111, tagOf(frame), [tagOf(frame)]);
         },
     });
     responder.onRequest(({ server }) => {
@@ -112,12 +113,12 @@ test("attachWanixImportResponder transfers a served MessagePort-like 9P endpoint
         responses.push(event.data);
     });
     port.start();
-    port.postMessage(new Uint8Array([8, 9, 10, 11]));
+    port.postMessage(p9Frame(110, 9, [1, 2]));
 
     assert.equal(frames.length, 1);
-    assert.deepEqual(frames[0], new Uint8Array([8, 9, 10, 11]));
+    assert.deepEqual(frames[0], p9Frame(110, 9, [1, 2]));
     assert.equal(responses.length, 1);
-    assert.deepEqual(responses[0], new Uint8Array([7, 7, 4]));
+    assert.deepEqual(responses[0], p9Frame(111, 9, [9]));
     assert.equal(servedServers.length, 1);
     responder.close();
     assert.equal(servedServers[0].closed, true);
@@ -131,7 +132,7 @@ test("createWanixP9FramePort creates a transferable served endpoint", {
 
     const created = await createWanixP9FramePort({
         handle9pFrame(frame) {
-            return new Uint8Array([frame[0] ?? 0, 42]);
+            return p9Frame(121, tagOf(frame), [42]);
         },
     });
     t.after(() => {
@@ -144,13 +145,74 @@ test("createWanixP9FramePort creates a transferable served endpoint", {
         responses.push(event.data);
     });
     created.port.start();
-    created.port.postMessage(new Uint8Array([3]));
+    created.port.postMessage(p9Frame(120, 11));
 
     assert.equal(created.server.started, true);
     assert.equal(created.server.closed, false);
     assert.equal(responses.length, 1);
-    assert.deepEqual(responses[0], new Uint8Array([3, 42]));
+    assert.deepEqual(responses[0], p9Frame(121, 11, [42]));
 });
+
+test("WanixP9FramePortClient resolves responses by 9P tag", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const channel = new MessageChannel();
+    const server = await serveWanixP9FramePort(channel.port1, {
+        handle9pFrame(frame) {
+            return p9Frame(frame[4] + 1, tagOf(frame), [frame.at(-1)]);
+        },
+    });
+    t.after(() => server.close());
+
+    const client = createWanixP9FrameClient(channel.port2);
+    t.after(() => client.close());
+
+    const first = await client.request(p9Frame(30, 21, [1]));
+    const second = await client.request(p9Frame(32, 22, [2]));
+
+    assert.deepEqual(first, p9Frame(31, 21, [1]));
+    assert.deepEqual(second, p9Frame(33, 22, [2]));
+});
+
+test("WanixP9FramePortClient reports unknown response tags", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const channel = new MessageChannel();
+    const errors = [];
+    const client = createWanixP9FrameClient(channel.port1);
+    client.onError((error) => errors.push(error));
+    t.after(() => client.close());
+
+    channel.port2.start();
+    channel.port2.postMessage(p9Frame(41, 99));
+
+    assert.equal(errors.length, 1);
+    assert.match(String(errors[0]), /unknown tag 99/);
+});
+
+function p9Frame(type, tag, payload = []) {
+    const frame = new Uint8Array(7 + payload.length);
+    const size = frame.byteLength;
+    frame[0] = size & 0xff;
+    frame[1] = (size >> 8) & 0xff;
+    frame[2] = (size >> 16) & 0xff;
+    frame[3] = (size >> 24) & 0xff;
+    frame[4] = type & 0xff;
+    frame[5] = tag & 0xff;
+    frame[6] = (tag >> 8) & 0xff;
+    frame.set(payload, 7);
+    return frame;
+}
+
+function tagOf(frame) {
+    return frame[5] | (frame[6] << 8);
+}
 
 function installFakeMessageChannel() {
     const originalMessageChannel = globalThis.MessageChannel;

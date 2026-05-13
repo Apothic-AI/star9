@@ -19,7 +19,7 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - CBOR encode/decode helpers for the typed public API boundary.
 - Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net` surfaces.
 - Deterministic terminal, VM, and Plan 9-style network device state surfaces, including a retained terminal screen file.
-- Rust-native 9P import/export with xattr read/list/write support and browser MessagePort frame-serving helpers.
+- Rust-native 9P import/export with xattr read/list/write support and browser MessagePort frame-serving/client helpers.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
 - Browser Worker/MessagePort JS glue for runtime message envelopes and transferred ports.
 - Browser Worker host facade and execution-worker helper for Worker-like startup, runtime port transfer, message routing, JS/WASM execution bootstrap, dynamic JS runner import, runner context, exit/error reporting, and cleanup.

@@ -49,6 +49,10 @@ export async function createWanixP9FramePort(systemLike, options = {}) {
     };
 }
 
+export function createWanixP9FrameClient(target, options = {}) {
+    return new WanixP9FramePortClient(target, options);
+}
+
 export async function attachWanixImportResponder(target, systemLike, options = {}) {
     const { element, facade } = await resolveWanixP9Facade(systemLike);
     return new WanixImportResponder(target, facade, {
@@ -163,6 +167,155 @@ export class WanixP9FramePortServer {
     }
 }
 
+export class WanixP9FramePortClient {
+    constructor(target, options = {}) {
+        this.endpoint = new BinaryMessageEndpoint(target, {
+            autoStart: false,
+            transfer: options.transfer,
+        });
+        this.target = this.endpoint.target;
+        this.closed = false;
+        this.started = false;
+        this._pending = new Map();
+        this._notagPending = [];
+        this._responseListeners = new Set();
+        this._errorListeners = new Set();
+
+        this.endpoint.onMessage((message) => {
+            this._handleMessage(message);
+        });
+        this.endpoint.onError((error) => {
+            this._emitError(error);
+        });
+
+        if (typeof options.onresponse === "function") {
+            this.onResponse(options.onresponse);
+        }
+        if (typeof options.onerror === "function") {
+            this.onError(options.onerror);
+        }
+        if (options.autoStart !== false) {
+            this.start();
+        }
+    }
+
+    onResponse(listener) {
+        return addListener(this._responseListeners, listener, "9P frame client response listener");
+    }
+
+    onError(listener) {
+        return addListener(this._errorListeners, listener, "9P frame client error listener");
+    }
+
+    start() {
+        if (this.closed || this.started) {
+            return this;
+        }
+        this.endpoint.start();
+        this.started = true;
+        return this;
+    }
+
+    stop() {
+        if (!this.started) {
+            return this;
+        }
+        this.endpoint.stop();
+        this.started = false;
+        return this;
+    }
+
+    request(frame) {
+        if (this.closed) {
+            return Promise.reject(new Error("9P frame client is closed"));
+        }
+        const request = cloneFrameBytes(frame, "9P request frame");
+        const tag = frameTag(request);
+        return new Promise((resolve, reject) => {
+            const pending = { reject, request, resolve, tag };
+            this._trackPending(tag, pending);
+            try {
+                this.endpoint.post(request);
+            } catch (error) {
+                this._untrackPending(tag, pending);
+                reject(error);
+            }
+        });
+    }
+
+    close() {
+        if (this.closed) {
+            return this;
+        }
+        this.stop();
+        const error = new Error("9P frame client closed");
+        for (const pending of this._pending.values()) {
+            pending.reject(error);
+        }
+        for (const pending of this._notagPending) {
+            pending.reject(error);
+        }
+        this._pending.clear();
+        this._notagPending.length = 0;
+        this.closed = true;
+        return this;
+    }
+
+    _trackPending(tag, pending) {
+        if (tag === 0xffff) {
+            this._notagPending.push(pending);
+            return;
+        }
+        if (this._pending.has(tag)) {
+            throw new Error(`duplicate 9P request tag ${tag}`);
+        }
+        this._pending.set(tag, pending);
+    }
+
+    _untrackPending(tag, pending) {
+        if (tag === 0xffff) {
+            const index = this._notagPending.indexOf(pending);
+            if (index >= 0) {
+                this._notagPending.splice(index, 1);
+            }
+            return;
+        }
+        if (this._pending.get(tag) === pending) {
+            this._pending.delete(tag);
+        }
+    }
+
+    _handleMessage(message) {
+        let response = null;
+        try {
+            response = cloneFrameBytes(message.bytes, "9P response frame");
+            const tag = frameTag(response);
+            const pending =
+                tag === 0xffff ? this._notagPending.shift() : this._pending.get(tag);
+            if (!pending) {
+                throw new Error(`received 9P response for unknown tag ${tag}`);
+            }
+            if (tag !== 0xffff) {
+                this._pending.delete(tag);
+            }
+            pending.resolve(response);
+            emitListeners(this._responseListeners, {
+                event: message.event,
+                request: pending.request,
+                response,
+                tag,
+                target: this.target,
+            });
+        } catch (error) {
+            this._emitError(error);
+        }
+    }
+
+    _emitError(error) {
+        emitListeners(this._errorListeners, error);
+    }
+}
+
 export class WanixImportResponder {
     constructor(target, facade, options = {}) {
         this.target = requireListenerTarget(target);
@@ -270,7 +423,9 @@ function requireWanixP9Facade(facade) {
 }
 
 function cloneFrameBytes(value, label) {
-    return toUint8Array(value, label).slice();
+    const frame = toUint8Array(value, label).slice();
+    validateFrameShape(frame, label);
+    return frame;
 }
 
 function toUint8Array(value, label) {
@@ -315,6 +470,22 @@ function requireMessagePort(port) {
 function requireMessageChannel() {
     if (typeof MessageChannel !== "function") {
         throw new TypeError("MessageChannel is not available in this environment");
+    }
+}
+
+function frameTag(frame) {
+    validateFrameShape(frame, "9P frame");
+    return frame[5] | (frame[6] << 8);
+}
+
+function validateFrameShape(frame, label) {
+    if (frame.byteLength < 7) {
+        throw new TypeError(`expected ${label} to be a complete 9P frame`);
+    }
+    const declared =
+        frame[0] | (frame[1] << 8) | (frame[2] << 16) | (frame[3] << 24);
+    if (declared !== frame.byteLength) {
+        throw new TypeError(`expected ${label} length prefix to match frame size`);
     }
 }
 
