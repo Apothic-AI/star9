@@ -1,16 +1,21 @@
 //! Browser/WASM entry points for the Rust Wanix runtime.
 
+mod bindings;
 mod descriptors;
 pub mod message_port;
 pub mod p9_transport;
 mod storage;
 pub mod worker;
 
-use wanix_core::Result;
-use wanix_protocol::WanixApi;
+use std::io::Cursor;
+
+use wanix_core::{Error, FileMode, Result};
+use wanix_fs::{fs_ref, MemFs, TarFs};
+use wanix_protocol::{p9::NinePClientFs, WanixApi};
 use wanix_runtime::{ExecutionAdapter, Runtime};
 use wanix_vfs::BindMode;
 
+pub use bindings::*;
 pub use descriptors::*;
 pub use storage::*;
 
@@ -18,6 +23,7 @@ pub use storage::*;
 pub struct WanixSystem {
     runtime: Runtime,
     api: WanixApi,
+    binding_registry: BrowserBindingRegistry,
     storage_registry: BrowserStorageRegistry,
 }
 
@@ -25,10 +31,12 @@ impl WanixSystem {
     fn build() -> Result<Self> {
         let runtime = Runtime::new()?;
         let api = WanixApi::new(runtime.root());
+        let binding_registry = BrowserBindingRegistry::new();
         let storage_registry = BrowserStorageRegistry::new();
         Ok(Self {
             runtime,
             api,
+            binding_registry,
             storage_registry,
         })
     }
@@ -39,6 +47,10 @@ impl WanixSystem {
 
     pub fn api(&self) -> WanixApi {
         self.api.clone()
+    }
+
+    pub fn binding_registry(&self) -> BrowserBindingRegistry {
+        self.binding_registry.clone()
     }
 
     pub fn storage_registry(&self) -> BrowserStorageRegistry {
@@ -58,12 +70,9 @@ impl WanixSystem {
     }
 
     pub fn bind_ramfs_native(&self, dst: &str) -> Result<()> {
-        self.runtime.namespace().bind(
-            wanix_fs::fs_ref(wanix_fs::MemFs::new()),
-            ".",
-            dst,
-            BindMode::Replace,
-        )
+        self.runtime
+            .namespace()
+            .bind(fs_ref(MemFs::new()), ".", dst, BindMode::Replace)
     }
 
     pub fn mount_self_9p_native(&self, dst: &str) -> Result<()> {
@@ -94,10 +103,39 @@ impl WanixSystem {
                     )?;
                 }
                 WebBindingKind::File => {
-                    self.api.write_file(&binding.dst, b"")?;
+                    let data = match binding.src.as_deref() {
+                        Some(src) => self
+                            .binding_registry
+                            .file_bytes(src)
+                            .ok_or_else(|| missing_binding_source("file", src))?,
+                        None => (&b""[..]).into(),
+                    };
+                    wanix_fs::write_file(
+                        task.namespace().as_ref(),
+                        &binding.dst,
+                        data.as_ref(),
+                        FileMode::from_perm(0o644),
+                    )?;
                 }
-                WebBindingKind::Archive | WebBindingKind::Import => {
-                    return Err(wanix_core::ErrorKind::NotSupported.into());
+                WebBindingKind::Archive => {
+                    let src = binding.src.as_deref().expect("archive src validated");
+                    let archive = self
+                        .binding_registry
+                        .archive_bytes(src)
+                        .ok_or_else(|| missing_binding_source("archive", src))?;
+                    let fs = fs_ref(TarFs::from_reader(Cursor::new(archive.as_ref()))?);
+                    task.namespace()
+                        .bind(fs, ".", &binding.dst, BindMode::After)?;
+                }
+                WebBindingKind::Import => {
+                    let src = binding.src.as_deref().expect("import src validated");
+                    let transport = self
+                        .binding_registry
+                        .import_transport(src)
+                        .ok_or_else(|| missing_binding_source("import", src))?;
+                    let fs = fs_ref(NinePClientFs::connect(transport)?);
+                    task.namespace()
+                        .bind(fs, ".", &binding.dst, BindMode::After)?;
                 }
             }
         }
@@ -121,6 +159,10 @@ impl WanixSystem {
         ExecutionAdapter::go_js(command).start(&task)?;
         Ok(task.id())
     }
+}
+
+fn missing_binding_source(kind: &str, src: &str) -> Error {
+    Error::Message(format!("{kind} binding source {src:?} is not registered"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -214,7 +256,10 @@ mod wasm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wanix_fs::{fs_ref, read_file, write_file, FileMode, MemFs};
+    use std::sync::Arc;
+
+    use wanix_fs::{fs_ref, read_file, write_file, FileMode, MemFs, TarFs};
+    use wanix_protocol::p9::LoopbackTransport;
 
     fn alloc_task(system: &WanixSystem) -> String {
         let runtime = system.runtime();
@@ -349,6 +394,109 @@ mod tests {
         assert_eq!(
             read_file(backing.as_ref(), "nested/root/file.txt").unwrap(),
             b"subpath"
+        );
+    }
+
+    #[test]
+    fn file_source_binding_writes_registered_bytes() {
+        let system = WanixSystem::new().unwrap();
+        system.bind_ramfs_native("tmp").unwrap();
+        system
+            .binding_registry()
+            .register_file_bytes("pkg:file", b"hello from registry".to_vec())
+            .unwrap();
+        let task_id = alloc_task(&system);
+        let binding = WebBinding {
+            dst: "tmp/payload.txt".to_string(),
+            src: Some("pkg:file".to_string()),
+            kind: WebBindingKind::File,
+            storage: None,
+        };
+
+        system.setup_namespace_native(&task_id, &[binding]).unwrap();
+        let task = system.runtime().root().lookup(&task_id).unwrap();
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "tmp/payload.txt").unwrap(),
+            b"hello from registry"
+        );
+    }
+
+    #[test]
+    fn archive_source_binding_mounts_registered_tarfs() {
+        let system = WanixSystem::new().unwrap();
+        let source = fs_ref(MemFs::new());
+        wanix_fs::mkdir_all(source.as_ref(), "nested", FileMode::from_perm(0o755)).unwrap();
+        write_file(
+            source.as_ref(),
+            "nested/data.txt",
+            b"archived",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+        let mut archive = Vec::new();
+        TarFs::archive_to_writer(source.as_ref(), &mut archive).unwrap();
+        system
+            .binding_registry()
+            .register_archive_bytes("pkg:archive", archive)
+            .unwrap();
+        let task_id = alloc_task(&system);
+        let binding = WebBinding {
+            dst: "bundle".to_string(),
+            src: Some("pkg:archive".to_string()),
+            kind: WebBindingKind::Archive,
+            storage: None,
+        };
+
+        system.setup_namespace_native(&task_id, &[binding]).unwrap();
+        let task = system.runtime().root().lookup(&task_id).unwrap();
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "bundle/nested/data.txt").unwrap(),
+            b"archived"
+        );
+    }
+
+    #[test]
+    fn import_source_binding_mounts_registered_transport() {
+        let system = WanixSystem::new().unwrap();
+        let backing = fs_ref(MemFs::new());
+        write_file(
+            backing.as_ref(),
+            "hello.txt",
+            b"remote",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+        system
+            .binding_registry()
+            .register_import_transport(
+                "pkg:import",
+                Arc::new(LoopbackTransport::with_filesystem(backing.clone())),
+            )
+            .unwrap();
+        let task_id = alloc_task(&system);
+        let binding = WebBinding {
+            dst: "remote".to_string(),
+            src: Some("pkg:import".to_string()),
+            kind: WebBindingKind::Import,
+            storage: None,
+        };
+
+        system.setup_namespace_native(&task_id, &[binding]).unwrap();
+        let task = system.runtime().root().lookup(&task_id).unwrap();
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "remote/hello.txt").unwrap(),
+            b"remote"
+        );
+        write_file(
+            task.namespace().as_ref(),
+            "remote/writeback.txt",
+            b"roundtrip",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+        assert_eq!(
+            read_file(backing.as_ref(), "writeback.txt").unwrap(),
+            b"roundtrip"
         );
     }
 }
