@@ -199,11 +199,11 @@ fn open_stream_descriptor(
     descriptor: &StreamDescriptor,
 ) -> Result<(BoxFile, String)> {
     match descriptor {
-        StreamDescriptor::Inherit => open_placeholder_fd(FdKind::Pipe, name.to_string()),
-        StreamDescriptor::Null => open_placeholder_fd(FdKind::Pipe, format!("null:{name}")),
+        StreamDescriptor::Inherit => open_virtual_fd(FdKind::Pipe, name.to_string()),
+        StreamDescriptor::Null => open_virtual_fd(FdKind::Pipe, format!("null:{name}")),
         StreamDescriptor::Fd(fd) => open_fd_descriptor(task, fd, None),
         StreamDescriptor::Port(port) => {
-            open_placeholder_fd(FdKind::Port, format!("port:{}", port.port_id))
+            open_virtual_fd(FdKind::Port, format!("port:{}", port.port_id))
         }
     }
 }
@@ -218,7 +218,7 @@ fn open_fd_descriptor(
         return Ok((file, path.to_string()));
     }
     let name = fallback_fd_path(descriptor, default_fd);
-    open_placeholder_fd(descriptor.kind, name)
+    open_virtual_fd(descriptor.kind, name)
 }
 
 fn fallback_fd_path(descriptor: &FdDescriptor, default_fd: Option<u32>) -> String {
@@ -231,7 +231,7 @@ fn fallback_fd_path(descriptor: &FdDescriptor, default_fd: Option<u32>) -> Strin
     }
 }
 
-fn open_placeholder_fd(kind: FdKind, name: String) -> Result<(BoxFile, String)> {
+fn open_virtual_fd(kind: FdKind, name: String) -> Result<(BoxFile, String)> {
     let node = match kind {
         FdKind::Directory => Node::dir(name.clone(), FileMode::DIR | FileMode::from_perm(0o755)),
         FdKind::File | FdKind::Pipe | FdKind::Socket | FdKind::Port => {

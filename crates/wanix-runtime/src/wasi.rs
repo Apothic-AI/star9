@@ -52,6 +52,7 @@ const EVENTTYPE_FD_READ: u8 = 1;
 const EVENTTYPE_FD_WRITE: u8 = 2;
 const CLOCKID_REALTIME: u32 = 0;
 const CLOCKID_MONOTONIC: u32 = 1;
+const CLOCK_RESOLUTION_NANOS: u64 = 1_000_000;
 const SUBCLOCKFLAGS_SUBSCRIPTION_CLOCK_ABSTIME: u16 = 1;
 const SUBSCRIPTION_SIZE: i32 = 48;
 const EVENT_SIZE: i32 = 32;
@@ -258,6 +259,9 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "random_get", random_get)
+        .map_err(wasmi_error)?;
+    linker
+        .func_wrap(WASI, "clock_res_get", clock_res_get)
         .map_err(wasmi_error)?;
     linker
         .func_wrap(WASI, "clock_time_get", clock_time_get)
@@ -1120,21 +1124,35 @@ fn random_get(mut caller: Caller<'_, WasiState>, buf_ptr: i32, buf_len: i32) -> 
     write_bytes(&mut caller, buf_ptr, &bytes).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
+fn clock_res_get(mut caller: Caller<'_, WasiState>, clock_id: i32, resolution_ptr: i32) -> i32 {
+    if clock_id < 0 {
+        return ERRNO_INVAL;
+    }
+    if let Err(errno) = validate_wasi_clock(clock_id as u32) {
+        return errno;
+    }
+    write_u64(&mut caller, resolution_ptr, CLOCK_RESOLUTION_NANOS)
+        .map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
 fn clock_time_get(
     mut caller: Caller<'_, WasiState>,
-    _clock_id: i32,
+    clock_id: i32,
     _precision: i64,
     time_ptr: i32,
 ) -> i32 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .min(u64::MAX as u128) as u64;
+    if clock_id < 0 {
+        return ERRNO_INVAL;
+    }
+    let nanos = match wasi_clock_now_nanos(clock_id as u32) {
+        Ok(nanos) => nanos,
+        Err(errno) => return errno,
+    };
     write_u64(&mut caller, time_ptr, nanos).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
 fn wasi_clock_now_nanos(clock_id: u32) -> std::result::Result<u64, i32> {
+    validate_wasi_clock(clock_id)?;
     match clock_id {
         CLOCKID_REALTIME => Ok(SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1146,6 +1164,13 @@ fn wasi_clock_now_nanos(clock_id: u32) -> std::result::Result<u64, i32> {
             .unwrap_or_default()
             .as_nanos()
             .min(u64::MAX as u128) as u64),
+        _ => Err(ERRNO_INVAL),
+    }
+}
+
+fn validate_wasi_clock(clock_id: u32) -> std::result::Result<(), i32> {
+    match clock_id {
+        CLOCKID_REALTIME | CLOCKID_MONOTONIC => Ok(()),
         _ => Err(ERRNO_INVAL),
     }
 }
@@ -1643,6 +1668,10 @@ mod tests {
             (module
               (import "wasi_snapshot_preview1" "poll_oneoff"
                 (func $poll_oneoff (param i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "clock_res_get"
+                (func $clock_res_get (param i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "clock_time_get"
+                (func $clock_time_get (param i32 i64 i32) (result i32)))
               (import "wasi_snapshot_preview1" "sched_yield"
                 (func $sched_yield (result i32)))
               (import "wasi_snapshot_preview1" "proc_raise"
@@ -1736,7 +1765,35 @@ mod tests {
                     (i32.const 0)
                     (i32.const 32))
                   (i32.const 28)
-                  (i32.const 17)))
+                  (i32.const 17))
+                (call $assert_ok
+                  (call $clock_res_get
+                    (i32.const 0)
+                    (i32.const 160))
+                  (i32.const 18))
+                (call $assert_i64
+                  (i64.load (i32.const 160))
+                  (i64.const 1000000)
+                  (i32.const 19))
+                (call $assert_ok
+                  (call $clock_time_get
+                    (i32.const 1)
+                    (i64.const 0)
+                    (i32.const 168))
+                  (i32.const 20))
+                (call $assert_errno
+                  (call $clock_res_get
+                    (i32.const 99)
+                    (i32.const 160))
+                  (i32.const 28)
+                  (i32.const 21))
+                (call $assert_errno
+                  (call $clock_time_get
+                    (i32.const 99)
+                    (i64.const 0)
+                    (i32.const 168))
+                  (i32.const 28)
+                  (i32.const 22)))
             )
             "#,
         )
@@ -2145,6 +2202,66 @@ mod tests {
         assert_eq!(
             read_file(task.namespace().as_ref(), "workspace/linked.txt").unwrap(),
             b"source"
+        );
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_runs_compiled_preview1_smoke_fixture() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let program = include_bytes!("../../../tests/fixtures/wasi-preview1-smoke.wasm").to_vec();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([
+                    ("program.wasm", program),
+                    ("stdout.txt", Vec::new()),
+                ])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: vec!["compiled".into()],
+                    env: vec![EnvironmentEntry {
+                        name: "MODE".into(),
+                        value: "fixture".into(),
+                    }],
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet {
+                        stdin: StreamDescriptor::Null,
+                        stdout: StreamDescriptor::Fd(FdDescriptor {
+                            fd: 1,
+                            kind: FdKind::File,
+                            path: Some("workspace/stdout.txt".into()),
+                            read: false,
+                            write: true,
+                        }),
+                        stderr: StreamDescriptor::Null,
+                    },
+                    fds: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        assert_eq!(
+            read_file(task.namespace().as_ref(), "workspace/stdout.txt").unwrap(),
+            b"compiled-wasi-ok\n"
         );
     }
 

@@ -284,46 +284,45 @@ test("runJsWasmExecutionBootstrap dynamically imports a JS fixture runner and em
     );
 });
 
-test("runJsWasmExecutionBootstrap rejects direct WASM execution and emits an error task message", async () => {
+test("runJsWasmExecutionBootstrap runs a direct WASI WASM module and emits stdout plus exit", async () => {
     const channel = new FakeMessageChannel();
     const endpoint = new WorkerRuntimeEndpoint(channel.port1, { autoStart: true });
     const taskMessages = [];
-    const moduleUrl = new URL("./fixtures/js-wasm-execution-runner.wasm?direct=1", import.meta.url)
-        .href;
+    const moduleUrl = new URL("./fixtures/wasi-preview1-smoke.wasm", import.meta.url).href;
 
     channel.port2.start();
     channel.port2.addEventListener("message", (event) => {
         taskMessages.push(decodeWorkerRuntimeEnvelope(event.data));
     });
 
-    await assert.rejects(
-        () =>
-            runJsWasmExecutionBootstrap(
-                {
-                    type: DEFAULT_JS_WASM_BOOTSTRAP_MESSAGE_TYPE,
-                    task_id: "task-37",
-                    worker_id: "worker-37",
-                    module: moduleUrl,
-                    env: {},
-                },
-                {
-                    runtimeEndpoint: endpoint,
-                },
-            ),
-        new Error(`direct WASM execution is not supported for ${JSON.stringify(moduleUrl)}`),
+    const result = await runJsWasmExecutionBootstrap(
+        {
+            type: DEFAULT_JS_WASM_BOOTSTRAP_MESSAGE_TYPE,
+            task_id: "task-37",
+            worker_id: "worker-37",
+            module: moduleUrl,
+            args: ["--direct"],
+            env: { MODE: "direct" },
+        },
+        {
+            runtimeEndpoint: endpoint,
+        },
     );
 
-    assert.equal(taskMessages.length, 1);
-    const errorPayload = JSON.parse(new TextDecoder().decode(taskMessages[0].payload));
-    assert.equal(errorPayload.type, DEFAULT_JS_WASM_ERROR_TASK_MESSAGE_TYPE);
-    assert.equal(errorPayload.task_id, "task-37");
-    assert.equal(errorPayload.worker_id, "worker-37");
-    assert.equal(errorPayload.kind, "js_wasm");
-    assert.equal(errorPayload.module, moduleUrl);
-    assert.equal(errorPayload.name, "Error");
-    assert.equal(
-        errorPayload.message,
-        `direct WASM execution is not supported for ${JSON.stringify(moduleUrl)}`,
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.result.wasm.source, moduleUrl);
+    assert.equal(taskMessages.length, 2);
+    assert.equal(new TextDecoder().decode(taskMessages[0].payload), "compiled-wasi-ok\n");
+    assert.deepEqual(
+        JSON.parse(new TextDecoder().decode(taskMessages[1].payload)),
+        {
+            type: DEFAULT_JS_WASM_EXIT_TASK_MESSAGE_TYPE,
+            task_id: "task-37",
+            worker_id: "worker-37",
+            kind: "js_wasm",
+            module: moduleUrl,
+            exit_code: 0,
+        },
     );
 });
 

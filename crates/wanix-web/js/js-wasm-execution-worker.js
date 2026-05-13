@@ -9,6 +9,13 @@ import {
 
 export const DEFAULT_JS_WASM_EXIT_TASK_MESSAGE_TYPE = "wanix-js-wasm-execution-exit";
 export const DEFAULT_JS_WASM_ERROR_TASK_MESSAGE_TYPE = "wanix-js-wasm-execution-error";
+const DIRECT_WASM_MODULE_RECORD = Symbol("wanix.directWasmModule");
+const WASI_ERRNO_SUCCESS = 0;
+const WASI_ERRNO_BADF = 8;
+const WASI_ERRNO_INVAL = 28;
+const WASI_ERRNO_NOTSUP = 58;
+const WASI_CLOCK_REALTIME = 0;
+const WASI_CLOCK_MONOTONIC = 1;
 
 export function acceptJsWasmExecutionWorker(scope, options = {}) {
     const workerScope = requireWorkerScope(scope);
@@ -173,14 +180,15 @@ async function resolveExecutionRunner(context, options) {
 
 async function defaultLoadExecutionModule(specifier) {
     if (looksLikeWasmModule(specifier)) {
-        throw new Error(
-            `direct WASM execution is not supported for ${JSON.stringify(String(specifier))}`,
-        );
+        return loadDirectWasmModule(specifier);
     }
     return import(String(specifier));
 }
 
 function defaultResolveModuleRunner(moduleRecord) {
+    if (moduleRecord?.[DIRECT_WASM_MODULE_RECORD]) {
+        return (context) => runDirectWasmModule(moduleRecord, context);
+    }
     if (typeof moduleRecord === "function") {
         return moduleRecord;
     }
@@ -191,6 +199,268 @@ function defaultResolveModuleRunner(moduleRecord) {
         return moduleRecord.run;
     }
     throw new TypeError("expected module to export a default or named run function");
+}
+
+async function loadDirectWasmModule(specifier) {
+    if (typeof WebAssembly === "undefined" || typeof WebAssembly.compile !== "function") {
+        throw new Error("direct WASM execution requires WebAssembly.compile");
+    }
+    const source = String(specifier);
+    const bytes = await loadWasmBytes(source);
+    return {
+        [DIRECT_WASM_MODULE_RECORD]: true,
+        source,
+        module: await WebAssembly.compile(bytes),
+    };
+}
+
+async function loadWasmBytes(source) {
+    if (source.startsWith("file:")) {
+        const { readFile } = await import("node:fs/promises");
+        return new Uint8Array(await readFile(new URL(source)));
+    }
+    const response = await fetch(source);
+    if (!response.ok) {
+        throw new Error(`failed to fetch WASM module ${JSON.stringify(source)}: ${response.status}`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+}
+
+async function runDirectWasmModule(moduleRecord, context) {
+    const state = {
+        context,
+        exitCode: null,
+        memory: null,
+        textEncoder: getTextEncoder(),
+        textDecoder: getTextDecoder(),
+    };
+    const imports = createBrowserWasiImports(state);
+    const instance = await WebAssembly.instantiate(moduleRecord.module, imports);
+    state.memory = instance.exports.memory;
+    if (!state.memory || !(state.memory.buffer instanceof ArrayBuffer)) {
+        throw new Error("direct WASM module must export linear memory");
+    }
+
+    try {
+        if (typeof instance.exports._start === "function") {
+            instance.exports._start();
+        } else if (typeof instance.exports.run === "function") {
+            state.exitCode = extractExitCode(instance.exports.run());
+        } else if (typeof instance.exports.main === "function") {
+            state.exitCode = extractExitCode(instance.exports.main());
+        } else {
+            throw new Error("direct WASM module must export _start, run, or main");
+        }
+    } catch (error) {
+        if (error instanceof WasiProcExit) {
+            state.exitCode = error.code;
+        } else {
+            throw error;
+        }
+    }
+
+    return {
+        exitCode: normalizeExitCode(state.exitCode ?? 0),
+        wasm: {
+            source: moduleRecord.source,
+        },
+    };
+}
+
+class WasiProcExit extends Error {
+    constructor(code) {
+        super(`WASI proc_exit(${normalizeExitCode(code)})`);
+        this.name = "WasiProcExit";
+        this.code = normalizeExitCode(code);
+    }
+}
+
+function createBrowserWasiImports(state) {
+    const args = [state.context.module, ...state.context.args];
+    const env = state.context.env.map((entry) => `${entry.name}=${entry.value}`);
+
+    return {
+        wasi_snapshot_preview1: {
+            args_sizes_get(countPtr, sizePtr) {
+                return writeStringArraySizes(state, args, countPtr, sizePtr);
+            },
+            args_get(argvPtr, argvBufPtr) {
+                return writeStringArray(state, args, argvPtr, argvBufPtr);
+            },
+            environ_sizes_get(countPtr, sizePtr) {
+                return writeStringArraySizes(state, env, countPtr, sizePtr);
+            },
+            environ_get(envPtr, envBufPtr) {
+                return writeStringArray(state, env, envPtr, envBufPtr);
+            },
+            clock_res_get(clockId, resolutionPtr) {
+                if (!isSupportedClock(clockId)) {
+                    return WASI_ERRNO_INVAL;
+                }
+                writeU64(state, resolutionPtr, 1_000_000n);
+                return WASI_ERRNO_SUCCESS;
+            },
+            clock_time_get(clockId, _precision, timePtr) {
+                if (!isSupportedClock(clockId)) {
+                    return WASI_ERRNO_INVAL;
+                }
+                writeU64(state, timePtr, currentNanos(clockId));
+                return WASI_ERRNO_SUCCESS;
+            },
+            random_get(bufPtr, bufLen) {
+                if (bufLen < 0) {
+                    return WASI_ERRNO_INVAL;
+                }
+                const bytes = new Uint8Array(bufLen);
+                if (globalThis.crypto?.getRandomValues) {
+                    globalThis.crypto.getRandomValues(bytes);
+                } else {
+                    for (let index = 0; index < bytes.length; index += 1) {
+                        bytes[index] = (index * 31 + 17) & 0xff;
+                    }
+                }
+                writeBytes(state, bufPtr, bytes);
+                return WASI_ERRNO_SUCCESS;
+            },
+            fd_write(fd, iovsPtr, iovsLen, nwrittenPtr) {
+                if (fd < 0 || iovsLen < 0) {
+                    return WASI_ERRNO_BADF;
+                }
+                const chunks = [];
+                let written = 0;
+                for (let index = 0; index < iovsLen; index += 1) {
+                    const ptr = readU32(state, iovsPtr + index * 8);
+                    const len = readU32(state, iovsPtr + index * 8 + 4);
+                    const chunk = readBytes(state, ptr, len);
+                    chunks.push(chunk);
+                    written += chunk.byteLength;
+                }
+                const data = concatBytes(chunks);
+                if (fd === 1 || fd === 2) {
+                    state.context.sendTaskText(state.textDecoder.decode(data));
+                } else {
+                    state.context.sendTaskBinary(data);
+                }
+                writeU32(state, nwrittenPtr, written);
+                return WASI_ERRNO_SUCCESS;
+            },
+            fd_read(_fd, _iovsPtr, _iovsLen, nreadPtr) {
+                writeU32(state, nreadPtr, 0);
+                return WASI_ERRNO_SUCCESS;
+            },
+            fd_close() {
+                return WASI_ERRNO_SUCCESS;
+            },
+            fd_seek(_fd, _offset, _whence, newOffsetPtr) {
+                writeU64(state, newOffsetPtr, 0n);
+                return WASI_ERRNO_SUCCESS;
+            },
+            fd_tell(_fd, offsetPtr) {
+                writeU64(state, offsetPtr, 0n);
+                return WASI_ERRNO_SUCCESS;
+            },
+            fd_fdstat_get(_fd, statPtr) {
+                writeBytes(state, statPtr, new Uint8Array(24));
+                return WASI_ERRNO_SUCCESS;
+            },
+            fd_prestat_get(_fd, prestatPtr) {
+                writeU32(state, prestatPtr, 0);
+                writeU32(state, prestatPtr + 4, 1);
+                return WASI_ERRNO_SUCCESS;
+            },
+            fd_prestat_dir_name(_fd, pathPtr, pathLen) {
+                if (pathLen < 1) {
+                    return WASI_ERRNO_INVAL;
+                }
+                writeBytes(state, pathPtr, state.textEncoder.encode("/"));
+                return WASI_ERRNO_SUCCESS;
+            },
+            poll_oneoff(_inPtr, _outPtr, nsubscriptions, neventsPtr) {
+                if (nsubscriptions <= 0) {
+                    return WASI_ERRNO_INVAL;
+                }
+                writeU32(state, neventsPtr, 0);
+                return WASI_ERRNO_SUCCESS;
+            },
+            sched_yield() {
+                return WASI_ERRNO_SUCCESS;
+            },
+            proc_raise() {
+                return WASI_ERRNO_NOTSUP;
+            },
+            proc_exit(code) {
+                throw new WasiProcExit(code);
+            },
+        },
+    };
+}
+
+function writeStringArraySizes(state, values, countPtr, sizePtr) {
+    writeU32(state, countPtr, values.length);
+    writeU32(
+        state,
+        sizePtr,
+        values.reduce((sum, value) => sum + state.textEncoder.encode(String(value)).byteLength + 1, 0),
+    );
+    return WASI_ERRNO_SUCCESS;
+}
+
+function writeStringArray(state, values, ptrsPtr, bufPtr) {
+    let cursor = bufPtr;
+    for (let index = 0; index < values.length; index += 1) {
+        const bytes = state.textEncoder.encode(String(values[index]));
+        writeU32(state, ptrsPtr + index * 4, cursor);
+        writeBytes(state, cursor, bytes);
+        cursor += bytes.byteLength;
+        writeBytes(state, cursor, new Uint8Array([0]));
+        cursor += 1;
+    }
+    return WASI_ERRNO_SUCCESS;
+}
+
+function isSupportedClock(clockId) {
+    return clockId === WASI_CLOCK_REALTIME || clockId === WASI_CLOCK_MONOTONIC;
+}
+
+function currentNanos(clockId) {
+    if (clockId === WASI_CLOCK_MONOTONIC && globalThis.performance?.now) {
+        return BigInt(Math.floor(globalThis.performance.now() * 1_000_000));
+    }
+    return BigInt(Date.now()) * 1_000_000n;
+}
+
+function readU32(state, ptr) {
+    return memoryView(state).getUint32(ptr, true);
+}
+
+function writeU32(state, ptr, value) {
+    memoryView(state).setUint32(ptr, Number(value) >>> 0, true);
+}
+
+function writeU64(state, ptr, value) {
+    memoryView(state).setBigUint64(ptr, BigInt(value), true);
+}
+
+function readBytes(state, ptr, len) {
+    return new Uint8Array(state.memory.buffer, ptr, len).slice();
+}
+
+function writeBytes(state, ptr, bytes) {
+    new Uint8Array(state.memory.buffer, ptr, bytes.byteLength).set(bytes);
+}
+
+function memoryView(state) {
+    return new DataView(state.memory.buffer);
+}
+
+function concatBytes(chunks) {
+    const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return out;
 }
 
 function createExecutionContext(bootstrap, runtimeEndpoint, options) {
@@ -411,6 +681,13 @@ function getTextEncoder() {
         throw new Error("TextEncoder is required for JS/WASM execution worker messages");
     }
     return new TextEncoder();
+}
+
+function getTextDecoder() {
+    if (typeof TextDecoder !== "function") {
+        throw new Error("TextDecoder is required for JS/WASM execution worker messages");
+    }
+    return new TextDecoder();
 }
 
 function createDeferred() {

@@ -2,6 +2,14 @@
 
 ## 2026-05-13
 
+- Added `docs/audits/completion-gap-matrix.json` plus `tests/audit-matrix.test.mjs`, classifying preview1 import coverage, remaining host capability boundaries, and source-level unsupported markers.
+- Completed the missing WASI `clock_res_get` import, tightened `clock_time_get` clock-id validation, and added compiled preview1 smoke coverage through `tests/fixtures/wasi-preview1-smoke.wasm`.
+- Expanded CLI acceptance with `accept wasi`, executing the compiled preview1 fixture through `WasmiWasiHandler` with fd-backed stdout.
+- Implemented direct browser/worker `.wasm` execution in `js-wasm-execution-worker.js` for WASI-style modules, including args/env sizing, clock resolution/time, random bytes, fd stdout task messages, and proc-exit handling.
+- Expanded Node and Playwright browser coverage so JS and direct WASM workloads both run through real Wanix browser worker task paths.
+- Added browser-side async 9P server cancellation: `Tflush` now aborts Promise-backed server work, returns `Rflush`, and suppresses late replies.
+- Added a `wanix-terminal` browser custom element over the existing terminal device file protocol and covered it in browser smoke.
+- Documented live/host-capability verification boundaries in `docs/LIVE_TESTS.md` and refreshed README, architecture, and conformance docs for the completion sprint state.
 - Captured the final completion sprint plan in `PLAN.md`, covering WASI preview1 audit and compiled workloads, real browser JS/WASM execution, terminal/VM/network parity, live backend and browser storage hardening, true async 9P cancellation, and the final unsupported/placeholder cleanup gate.
 - Added high-level worker lifecycle methods to the `WanixSystem` native/wasm facade for worker spawn/start, port open/handoff, stdout recording, and exit recording through `RuntimeProtocolHost`.
 - Added `SystemElement.startBrowserWorker(...)`, which spawns a real browser `Worker`, transfers the runtime port, sends the JS/WASM execution bootstrap, records task messages back into the Rust runtime, opens/hands off ports, and exposes deterministic controller cleanup.

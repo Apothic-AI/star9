@@ -1,0 +1,156 @@
+{
+  "date": "2026-05-13",
+  "purpose": "Final port-completion audit for remaining intentionally bounded Wanix Rust surfaces.",
+  "wasi_preview1": {
+    "implemented": [
+      "args_get",
+      "args_sizes_get",
+      "clock_res_get",
+      "clock_time_get",
+      "environ_get",
+      "environ_sizes_get",
+      "fd_advise",
+      "fd_allocate",
+      "fd_close",
+      "fd_datasync",
+      "fd_fdstat_get",
+      "fd_fdstat_set_flags",
+      "fd_fdstat_set_rights",
+      "fd_filestat_get",
+      "fd_filestat_set_size",
+      "fd_filestat_set_times",
+      "fd_pread",
+      "fd_prestat_dir_name",
+      "fd_prestat_get",
+      "fd_pwrite",
+      "fd_read",
+      "fd_readdir",
+      "fd_renumber",
+      "fd_seek",
+      "fd_sync",
+      "fd_tell",
+      "fd_write",
+      "path_create_directory",
+      "path_filestat_get",
+      "path_filestat_set_times",
+      "path_link",
+      "path_open",
+      "path_readlink",
+      "path_remove_directory",
+      "path_rename",
+      "path_symlink",
+      "path_unlink_file",
+      "poll_oneoff",
+      "proc_exit",
+      "proc_raise",
+      "random_get",
+      "sched_yield",
+      "sock_accept",
+      "sock_recv",
+      "sock_send",
+      "sock_shutdown"
+    ],
+    "missing": [],
+    "explicit_unsupported": [
+      {
+        "import": "proc_raise",
+        "errno": "NOTSUP",
+        "classification": "host capability boundary",
+        "evidence": "wasmi_wasi_handler_supports_poll_yield_and_raise_imports"
+      },
+      {
+        "import": "sock_accept",
+        "errno": "NOTSUP for generic fd-backed sockets until a listener fd is installed",
+        "classification": "spec-level unsupported behavior on non-listener fds",
+        "evidence": "wasmi_wasi_handler_routes_socket_send_recv_over_task_fds"
+      },
+      {
+        "import": "fd_fdstat_set_flags",
+        "errno": "NOTSUP for unsupported fd flag mutation",
+        "classification": "host capability boundary",
+        "evidence": "wasmi_wasi_handler_supports_fd_advice_flags_and_times"
+      }
+    ],
+    "compiled_fixtures": [
+      "tests/fixtures/wasi-hard-link.wasm",
+      "tests/fixtures/wasi-preview1-smoke.wasm"
+    ]
+  },
+  "browser_execution": {
+    "implemented": [
+      "real module worker lifecycle through wanix-system",
+      "dynamic JS runner execution",
+      "direct WASI-style .wasm instantiation in browser/worker JS",
+      "stdout task message routing",
+      "exit task message routing",
+      "worker port open and handoff"
+    ],
+    "evidence": [
+      "tests/browser-js-wasm-execution-worker.test.mjs",
+      "tests/browser-smoke.html"
+    ]
+  },
+  "devices": {
+    "terminal": {
+      "implemented": ["data", "program", "screen", "resize via size", "winch", "state", "ctl clear/reset", "wanix-terminal element"],
+      "evidence": ["cargo run -p wanix-cli -- accept devices", "tests/browser-smoke.html"]
+    },
+    "vm": {
+      "implemented": ["deterministic provider contract surface through ctl/state/config/alias/console"],
+      "classification": "offline deterministic provider is the default; real VM provider remains opt-in host integration",
+      "evidence": ["cargo run -p wanix-cli -- accept devices"]
+    },
+    "network": {
+      "implemented": ["deterministic Plan 9-style listener/dial/accept/data/hangup resources"],
+      "classification": "native/browser real transports are opt-in host integration; deterministic model is default conformance",
+      "evidence": ["cargo run -p wanix-cli -- accept devices"]
+    }
+  },
+  "backends": {
+    "http": {
+      "implemented": ["cache validators", "conditional GET/HEAD", "native loopback transport tests", "server-side handler validators"],
+      "live": "environment-gated tests documented in docs/LIVE_TESTS.md"
+    },
+    "s3_r2": {
+      "implemented": ["SigV4 signing", "fake transport object operations", "CAS/conflict coverage"],
+      "live": "environment-gated tests documented in docs/LIVE_TESTS.md"
+    },
+    "browser_storage": {
+      "implemented": ["OPFS", "File System Access", "Cache API", "DOM", "download", "JS value", "worker-backed adapters", "browser debounce scheduler"],
+      "evidence": ["tests/browser-storage-adapters.test.mjs", "tests/browser-mounts.test.mjs", "tests/browser-smoke.html"]
+    }
+  },
+  "ninep": {
+    "implemented": [
+      "native frame stream serving",
+      "browser MessagePort namespace mount",
+      "client AbortSignal to Tflush",
+      "server async Tflush cancellation for Promise-backed work",
+      "late reply suppression",
+      "Rlerror replies for valid requests whose facade fails"
+    ],
+    "evidence": ["tests/browser-p9-port.test.mjs", "tests/browser-smoke.html"]
+  },
+  "source_classifications": [
+    { "path": "crates/wanix-core/src/lib.rs", "match": "operation not supported", "classification": "core error variant" },
+    { "path": "crates/wanix-fs/src/http_server.rs", "match": "ignore_unsupported", "classification": "optional filesystem metadata capability boundary" },
+    { "path": "crates/wanix-fs/src/http_server.rs", "match": "httpfs_handler_rejects_unsupported_methods", "classification": "test for explicit HTTP method rejection" },
+    { "path": "crates/wanix-fs/src/s3_object_store.rs", "match": "unsupported XML entity", "classification": "defensive XML parser error" },
+    { "path": "crates/wanix-protocol/src/p9.rs", "match": "unsupported 9P request type", "classification": "protocol validation boundary" },
+    { "path": "crates/wanix-protocol/src/p9.rs", "match": "unsupported 9P response type", "classification": "protocol validation boundary" },
+    { "path": "crates/wanix-runtime/src/devices.rs", "match": "ctl: unsupported command", "classification": "device ctl validation boundary" },
+    { "path": "crates/wanix-runtime/src/execution.rs", "match": "unsupported_execution", "classification": "execution registry missing-handler boundary" },
+    { "path": "crates/wanix-runtime/src/execution.rs", "match": "no execution handler registered", "classification": "execution registry missing-handler boundary" },
+    { "path": "crates/wanix-runtime/src/lib.rs", "match": "no execution handler registered", "classification": "test assertion for missing execution handler boundary" },
+    { "path": "crates/wanix-runtime/src/wasi.rs", "match": "sync_ignoring_unsupported", "classification": "fd sync host capability boundary" },
+    { "path": "crates/wanix-web/js/bind.js", "match": "Unsupported wanix-bind kind", "classification": "browser binding descriptor validation boundary" },
+    { "path": "crates/wanix-web/js/mounts.js", "match": "Unsupported browser storage backend", "classification": "browser storage descriptor validation boundary" },
+    { "path": "crates/wanix-web/js/p9-port.js", "match": "unsupported 9P version", "classification": "protocol negotiation boundary" },
+    { "path": "crates/wanix-web/js/storage-file-system.js", "match": "Unsupported browser storage backend", "classification": "browser storage descriptor validation boundary" },
+    { "path": "crates/wanix-web/js/storage-file-system.js", "match": "unsupported(", "classification": "browser capability detection boundary" },
+    { "path": "crates/wanix-web/js/storage-js-value.js", "match": "Unsupported", "classification": "JS-value storage handle validation boundary" },
+    { "path": "crates/wanix-web/js/storage-web.js", "match": "Unsupported DOM target type", "classification": "DOM storage target validation boundary" },
+    { "path": "crates/wanix-web/js/worker-runtime.js", "match": "Unsupported worker runtime message", "classification": "worker runtime envelope validation boundary" },
+    { "path": "crates/wanix-web/js/storage-web.js", "match": "Browser anchor downloads are not supported", "classification": "browser download capability boundary" }
+  ]
+}

@@ -82,6 +82,22 @@ export class SystemElement extends WanixElement {
         return this.system.writeFile(path, value);
     }
 
+    writeExistingText(path, value) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.writeText(mount.path, value);
+        }
+        return this.system.writeExistingText(path, value);
+    }
+
+    writeExistingFile(path, value) {
+        const mount = this._mounts.resolve(path);
+        if (mount) {
+            return mount.adapter.writeFile(mount.path, value);
+        }
+        return this.system.writeExistingFile(path, value);
+    }
+
     readDir(path) {
         const mount = this._mounts.resolve(path);
         if (mount) {

@@ -15,6 +15,7 @@ use wanix_protocol::{
     WanixApi,
 };
 use wanix_runtime::Runtime;
+use wanix_runtime::WasmiWasiHandler;
 
 #[derive(Parser)]
 #[command(name = "wanix")]
@@ -54,6 +55,7 @@ enum Command {
 enum AcceptanceCommand {
     P9,
     Devices,
+    Wasi,
     Worker,
     All,
 }
@@ -120,11 +122,13 @@ fn render_acceptance_output(suite: AcceptanceCommand) -> Result<String> {
     match suite {
         AcceptanceCommand::P9 => render_p9_acceptance(),
         AcceptanceCommand::Devices => render_device_acceptance(),
+        AcceptanceCommand::Wasi => render_wasi_acceptance(),
         AcceptanceCommand::Worker => render_worker_acceptance(),
         AcceptanceCommand::All => Ok(format!(
-            "{}{}{}",
+            "{}{}{}{}",
             render_p9_acceptance()?,
             render_device_acceptance()?,
+            render_wasi_acceptance()?,
             render_worker_acceptance()?
         )),
     }
@@ -362,6 +366,61 @@ fn render_worker_acceptance() -> Result<String> {
     ))
 }
 
+fn render_wasi_acceptance() -> Result<String> {
+    let runtime = Runtime::new()?;
+    let task = runtime.task_fs().alloc("auto", Some(runtime.root()))?;
+    let program = include_bytes!("../../../tests/fixtures/wasi-preview1-smoke.wasm").to_vec();
+    task.namespace().bind(
+        fs_ref(MemFs::from_entries([
+            ("program.wasm", program),
+            ("stdout.txt", Vec::new()),
+        ])),
+        ".",
+        "workspace",
+        wanix_vfs::BindMode::Replace,
+    )?;
+    runtime
+        .execution_registry()
+        .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+    let status = runtime.execution_registry().execute(
+        &task,
+        &ExecutionSpec {
+            kind: ExecutionKind::Wasi,
+            module: "program.wasm".into(),
+            args: vec!["acceptance".into()],
+            env: vec![EnvironmentEntry {
+                name: "MODE".into(),
+                value: "acceptance".into(),
+            }],
+            cwd: Some("workspace".into()),
+            stdio: StdioSet {
+                stdin: wanix_protocol::runtime::StreamDescriptor::Null,
+                stdout: wanix_protocol::runtime::StreamDescriptor::Fd(
+                    wanix_protocol::runtime::FdDescriptor {
+                        fd: 1,
+                        kind: wanix_protocol::runtime::FdKind::File,
+                        path: Some("workspace/stdout.txt".into()),
+                        read: false,
+                        write: true,
+                    },
+                ),
+                stderr: wanix_protocol::runtime::StreamDescriptor::Null,
+            },
+            fds: Vec::new(),
+        },
+    )?;
+    let stdout = escape_text(&read_text(
+        task.namespace().as_ref(),
+        "workspace/stdout.txt",
+    )?);
+    Ok(format!(
+        "wasi fixture=preview1-smoke exit={} stdout={}\n",
+        render_status(&status),
+        stdout,
+    ))
+}
+
 fn join_dir_names(fsys: &dyn FileSystem, path: &str) -> Result<String> {
     Ok(read_dir(fsys, path)?
         .into_iter()
@@ -444,6 +503,14 @@ fn format_fds(entries: &[(u32, String)]) -> String {
         .join(",")
 }
 
+fn render_status(status: &wanix_protocol::runtime::ExitStatus) -> String {
+    match status {
+        wanix_protocol::runtime::ExitStatus::ExitCode(code) => code.to_string(),
+        wanix_protocol::runtime::ExitStatus::Signal(signal) => format!("signal:{signal}"),
+        wanix_protocol::runtime::ExitStatus::Trap(reason) => format!("trap:{reason}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +544,14 @@ mod tests {
                 "worker target=worker-b task=3 parent=1\n",
                 "worker port=events name=event-bus handed_to=3\n"
             )
+        );
+    }
+
+    #[test]
+    fn wasi_acceptance_output_is_stable() {
+        assert_eq!(
+            render_wasi_acceptance().unwrap(),
+            "wasi fixture=preview1-smoke exit=0 stdout=compiled-wasi-ok\\n\n"
         );
     }
 }

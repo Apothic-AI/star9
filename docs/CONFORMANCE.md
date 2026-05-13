@@ -48,19 +48,19 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Browser 9P `MessagePort` helpers for complete binary frame request/response handling, tag-matched async client requests, async namespace read/write/list mounts, transferable served ports, `wanix-import` responder handoff, unknown-tag/error reporting, and non-binary frame error reporting with deterministic fake-port tests plus real Playwright smoke import over `MessagePort`.
 - Browser Worker host facade coverage for fake Worker-like startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
 - Browser JS/WASM Worker host bootstrap coverage for normalized execution messages, runtime descriptor transfer, task-message observation, existing-host wrapping, and cleanup.
-- Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, default dynamic JS runner import, explicit direct-WASM unsupported errors, task-message emission, exit/error reporting, and cleanup.
+- Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, default dynamic JS runner import, direct WASI-style `.wasm` instantiation, task-message emission, exit/error reporting, and cleanup.
 - Browser async mount resolution and debounced sync scheduling over async storage/sync targets with deterministic fake timers.
 - Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs, plus browser-side async mount routing for real host adapters through `wanix-system`.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
-- Wasmi-backed WASI preview1 execution coverage for task namespace module loading from inline WAT and checked-in compiled WASM fixtures, args/env/cwd propagation, preopened cwd, fd read/write/pread/pwrite/seek/tell/allocate/renumber/close/stat/advice/flags/rights/timestamps/sync/datasync/truncate/readdir behavior, path open/stat/timestamps/create-directory/unlink/remove-directory/rename/link/symlink/readlink behavior, stdio fd writes, deterministic random/clock imports, poll/yield/signal imports, socket send/recv/shutdown over installed task fds, unsupported socket accept, preview1 errno mapping, and proc-exit mapping.
+- Wasmi-backed WASI preview1 execution coverage for task namespace module loading from inline WAT and checked-in compiled WASM fixtures, args/env/cwd propagation, preopened cwd, fd read/write/pread/pwrite/seek/tell/allocate/renumber/close/stat/advice/flags/rights/timestamps/sync/datasync/truncate/readdir behavior, path open/stat/timestamps/create-directory/unlink/remove-directory/rename/link/symlink/readlink behavior, stdio fd writes, deterministic random/clock resolution/time imports, poll/yield/signal imports, socket send/recv/shutdown over installed task fds, unsupported socket accept on non-listener fds, preview1 errno mapping, and proc-exit mapping.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
 - 9P server attach, walk, and getattr behavior against a `MemFs` export.
 - 9P client filesystem behavior over loopback transport for read, write, create, hard link, readdir, rename, remove, mkdir, and rmdir operations.
 - 9P partial-walk edge behavior, duplicate `newfid` rejection, and client not-found mapping for partial remote walks.
-- 9P flush acknowledgement behavior and fid-state preservation for synchronous server handling.
+- 9P flush acknowledgement behavior, async browser server cancellation for Promise-backed work, late reply suppression, and fid-state preservation for synchronous server handling.
 - 9P native stream framing helpers for consecutive length-prefixed frames, invalid frame size rejection, and multi-request server dispatch over `Read`/`Write` boundaries.
 - 9P hard-link and xattr walk/create message codec coverage plus server/client xattr read, list, and write commit behavior over MemFs xattrs.
 - 9P client invalid path rejection before normalization for empty, absolute, and parent-traversal inputs.
@@ -71,23 +71,27 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Host-neutral browser storage registry resolution for writable registered handles, persistent descriptor identities, and subpath-rooted mounts.
 - Runtime root bindings for core and device surfaces.
 - Device allocator resource creation.
-- Terminal device program/data queues, retained screen file, program LF-to-CRLF normalization, winch signal path, ctl clear/reset/noop behavior, state, and size files.
+- Terminal device program/data queues, retained screen file, program LF-to-CRLF normalization, winch signal path, ctl clear/reset/noop behavior, state, size files, and browser `wanix-terminal` element integration.
 - VM device `new/<kind>` allocation, ctl start/stop/reset/alias/config behavior, alias lookup, state fields, console log, id, and kind files.
 - Network deterministic Plan 9-style connection resources for dial, bind, announce, listen accept, hangup/reset, status/local/remote, data flow, and invalid transitions.
 - WASI and Go-compatible JS execution adapter task starts.
 - Native `WanixSystem` smoke operations.
-- Native CLI acceptance smoke for 9P loopback, deterministic device surfaces, runtime worker protocol flows, and fd-backed worker stdout routing, plus a native stdin/stdout `serve-p9` export command built on Rust 9P stream framing.
+- Native CLI acceptance smoke for 9P loopback, deterministic device surfaces, compiled WASI preview1 fixtures, runtime worker protocol flows, and fd-backed worker stdout routing, plus a native stdin/stdout `serve-p9` export command built on Rust 9P stream framing.
 - Browser wasm smoke operations through `tests/browser-smoke.html`.
 
 ## Explicit Replacement Fixtures
 
-`tests/browser-smoke.html` replaces the representative browser examples as a Rust-backed acceptance path. It imports the browser custom element module, initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, mounts descriptor-backed storage, writes and reads files through the public API and 9P loopback import, lists directories, verifies task fields, starts WASI/Go JS adapter tasks, and runs a real module-worker JS/WASM task through the Wanix runtime path.
+`tests/browser-smoke.html` replaces the representative browser examples as a Rust-backed acceptance path. It imports the browser custom element module, initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, mounts descriptor-backed storage, writes and reads files through the public API and 9P loopback import, lists directories, verifies task fields, drives `wanix-terminal`, starts WASI/Go JS adapter tasks, runs a real module-worker JS task, and runs a direct WASI-style `.wasm` task through the Wanix runtime path.
 
 `tests/fixtures/api-operations.json` lists the public operation names used by the typed protocol boundary.
 
 `tests/fixtures/runtime-requests.json` lists the typed runtime protocol method names for worker and port dispatch.
 
 `tests/fixtures/wasi-hard-link.wasm` is a checked-in compiled WASI preview1 module, with source in `tests/fixtures/wasi-hard-link.wat`, used to prove `WasmiWasiHandler` executes precompiled fixture bytes loaded from the Wanix namespace.
+
+`tests/fixtures/wasi-preview1-smoke.wasm` is a checked-in compiled WASI preview1 module, with source in `tests/fixtures/wasi-preview1-smoke.wat`, used by Rust, CLI, Node, and browser smoke coverage for clock resolution/time, args/env sizing, random bytes, stdout, and direct browser `.wasm` execution.
+
+`docs/audits/completion-gap-matrix.json` classifies the remaining host capability boundaries and preview1 import coverage. `tests/audit-matrix.test.mjs` validates that code-level unsupported markers have an audit classification.
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 
@@ -99,7 +103,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/browser-js-wasm-worker-host.test.mjs` exercises JS/WASM execution bootstrap messages over the browser Worker host facade with fake Worker and MessagePort targets, covering runtime port transfer and task-message observation without running a real JS/WASM payload.
 
-`tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, and explicit direct-WASM rejection without a real browser worker or Go shim.
+`tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, and direct WASI-style `.wasm` execution without a Go shim.
 
 `tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, tag-matched async client requests, AbortSignal-to-`Tflush` cancellation, facade-error-to-`Rlerror` replies, import responder port handoff, and error reporting for unknown tags and non-binary requests.
 
@@ -113,11 +117,9 @@ These surfaces are represented in Rust but should continue to be expanded with d
 - HTTP filesystem broader live-service behavior against real servers.
 - Cloudflare/S3 live-service coverage such as bucket-specific behavior and opt-in live tests over `S3ObjectStore` plus `AwsSigV4Signer`.
 - Cross-document/browser MessagePort namespace mounting for remote 9P imports beyond the current async browser read/write/list mount baseline, especially richer mutation/error parity under browser smoke.
-- Additional 9P edge cases such as server-side operation cancellation after `Tflush` and remote conflict/error parity.
+- Additional 9P remote conflict/error parity beyond the current browser async cancellation, late-reply suppression, malformed frame, unknown tag, and Rlerror coverage.
 - Browser namespace mounting for real OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage adapters inside task/WASI-visible Rust namespaces where async browser APIs meet the synchronous Rust filesystem trait boundary. The current browser-side async mount table covers `wanix-system` operations.
-- Broader browser Worker execution orchestration beyond the current real module-worker smoke path, especially namespace handoff and representative workloads over the existing fd/stdio task-message routing.
-- Terminal browser element protocol details beyond the host-neutral data/program/screen file protocol.
+- Broader browser Worker execution orchestration beyond the current real JS and direct WASM module-worker smoke paths, especially WASI namespace calls from browser workers over runtime requests.
 - Real VM execution and native/browser TCP transport adapters beyond deterministic state-machine resources.
 - Real WASI socket accept/listen behavior beyond deterministic send/recv/shutdown over installed task fds.
-- WASI syscall coverage beyond the current preview1 fd directory, fd positional I/O/allocation/renumber, fd advice/flags/timestamps, fd sync/truncate, poll/yield/signal imports, path mutation, args/env, clock, and random baseline.
 - Full Go-compatible JS/WASM worker execution.

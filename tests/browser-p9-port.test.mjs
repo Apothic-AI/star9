@@ -266,6 +266,48 @@ test("WanixP9FramePortClient aborts requests with Tflush and ignores late respon
     assert.deepEqual(errors, []);
 });
 
+test("WanixP9FramePortServer aborts async work on Tflush and suppresses late replies", {
+    concurrency: false,
+}, async (t) => {
+    const restore = installFakeMessageChannel();
+    t.after(restore);
+
+    const channel = new MessageChannel();
+    let aborted = false;
+    let resolveRead = null;
+    const serverResponses = [];
+    const server = await serveWanixP9FramePort(channel.port1, {
+        handle9pFrame(frame, context) {
+            context.signal.addEventListener("abort", () => {
+                aborted = true;
+                resolveRead(p9Frame(117, tagOf(frame), [1, 2, 3, 4]));
+            });
+            return new Promise((resolve) => {
+                resolveRead = resolve;
+            });
+        },
+    });
+    server.onResponse(({ response }) => serverResponses.push(response));
+    t.after(() => server.close());
+
+    const client = createWanixP9FrameClient(channel.port2);
+    t.after(() => client.close());
+
+    const controller = new AbortController();
+    const pending = client.request(p9Frame(116, 44, [0, 0, 0, 0]), {
+        signal: controller.signal,
+    });
+
+    controller.abort(new Error("server-side cancel"));
+    await assert.rejects(pending, /server-side cancel/);
+    await flushTasks();
+
+    assert.equal(aborted, true);
+    assert.equal(serverResponses.length, 1);
+    assert.equal(serverResponses[0][4], 109);
+    assert.notEqual(tagOf(serverResponses[0]), 44);
+});
+
 test("WanixP9NamespaceMount reads, writes, and lists over MessagePort 9P", {
     concurrency: false,
 }, async (t) => {
@@ -519,6 +561,11 @@ function join(parent = ".", name = ".") {
 
 function tagOf(frame) {
     return frame[5] | (frame[6] << 8);
+}
+
+async function flushTasks() {
+    await Promise.resolve();
+    await Promise.resolve();
 }
 
 function installFakeMessageChannel() {

@@ -10,8 +10,8 @@ pub mod worker;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use wanix_core::{Error, FileMode, Result};
-use wanix_fs::{fs_ref, MemFs, TarFs};
+use wanix_core::{Error, ErrorKind, FileMode, Result};
+use wanix_fs::{fs_ref, open, MemFs, TarFs};
 use wanix_protocol::{
     p9::{NinePClientFs, NinePServer},
     runtime::{
@@ -87,6 +87,20 @@ impl WanixSystem {
 
     pub fn write_text_native(&self, path: &str, value: &str) -> Result<()> {
         self.api.write_file(path, value.as_bytes())
+    }
+
+    pub fn write_existing_native(&self, path: &str, data: &[u8]) -> Result<()> {
+        let namespace = self.runtime.namespace();
+        let mut file = open(namespace.as_ref(), path)?;
+        let written = file.write(data)?;
+        if written != data.len() {
+            return Err(ErrorKind::UnexpectedEof.into());
+        }
+        file.close()
+    }
+
+    pub fn write_existing_text_native(&self, path: &str, value: &str) -> Result<()> {
+        self.write_existing_native(path, value.as_bytes())
     }
 
     pub fn read_dir_native(&self, path: &str) -> Result<Vec<String>> {
@@ -441,6 +455,24 @@ mod wasm {
             self.write_text_native(path, value).map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = writeExistingFile)]
+        pub fn write_existing_file(
+            &self,
+            path: &str,
+            data: &[u8],
+        ) -> std::result::Result<(), JsValue> {
+            self.write_existing_native(path, data).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = writeExistingText)]
+        pub fn write_existing_text(
+            &self,
+            path: &str,
+            value: &str,
+        ) -> std::result::Result<(), JsValue> {
+            self.write_existing_text_native(path, value).map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = readDir)]
         pub fn read_dir(&self, path: &str) -> std::result::Result<JsValue, JsValue> {
             serde_wasm_bindgen::to_value(&self.read_dir_native(path).map_err(js_err)?)
@@ -791,6 +823,26 @@ mod tests {
         assert_eq!(gojs.cmd(), "repl-gojs.wasm");
         assert_eq!(wasi.exit(), "started");
         assert_eq!(gojs.exit(), "started");
+    }
+
+    #[test]
+    fn facade_write_existing_targets_device_files_without_create() {
+        let system = WanixSystem::new().unwrap();
+        let term_id = system
+            .read_text_native("#term/new")
+            .unwrap()
+            .trim()
+            .to_string();
+        system
+            .write_existing_text_native(&format!("#term/{term_id}/data"), "screen")
+            .unwrap();
+
+        assert_eq!(
+            system
+                .read_text_native(&format!("#term/{term_id}/screen"))
+                .unwrap(),
+            "screen"
+        );
     }
 
     #[test]

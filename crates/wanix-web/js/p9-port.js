@@ -77,6 +77,7 @@ export class WanixP9FramePortServer {
         this.closed = false;
         this.started = false;
         this._ownsTarget = options.ownsTarget === true;
+        this._pending = new Map();
         this._requestListeners = new Set();
         this._responseListeners = new Set();
         this._errorListeners = new Set();
@@ -136,6 +137,10 @@ export class WanixP9FramePortServer {
         if (this.closed) {
             return this;
         }
+        for (const pending of this._pending.values()) {
+            pending.controller.abort(new Error("9P frame server closed"));
+        }
+        this._pending.clear();
         this.stop();
         if (this._ownsTarget && typeof this.target.close === "function") {
             this.target.close();
@@ -148,24 +153,77 @@ export class WanixP9FramePortServer {
         let request = null;
         try {
             request = cloneFrameBytes(message.bytes, "9P request frame");
+            const tag = frameTag(request);
+            if (frameType(request) === MSG.TFLUSH) {
+                const oldtag = flushOldTag(request);
+                this._pending
+                    .get(oldtag)
+                    ?.controller.abort(new Error(`9P request tag ${oldtag} flushed`));
+                this._pending.delete(oldtag);
+                const response = encodeP9Frame(MSG.RFLUSH, tag);
+                this.endpoint.post(response);
+                emitListeners(this._responseListeners, {
+                    event: message.event,
+                    request,
+                    response,
+                    target: this.target,
+                });
+                return;
+            }
+
+            const controller = new AbortController();
+            this._pending.set(tag, { controller, request });
             emitListeners(this._requestListeners, {
                 bytes: request,
                 event: message.event,
                 target: this.target,
             });
 
-            const response = cloneFrameBytes(
-                this.facade.handle9pFrame(request),
-                "9P response frame",
-            );
-            this.endpoint.post(response);
+            const complete = (value) => {
+                if (
+                    controller.signal.aborted ||
+                    this.closed ||
+                    this._pending.get(tag)?.controller !== controller
+                ) {
+                    return;
+                }
+                this._pending.delete(tag);
+                const response = cloneFrameBytes(value, "9P response frame");
+                this.endpoint.post(response);
 
-            emitListeners(this._responseListeners, {
-                event: message.event,
-                request,
-                response,
-                target: this.target,
+                emitListeners(this._responseListeners, {
+                    event: message.event,
+                    request,
+                    response,
+                    target: this.target,
+                });
+            };
+            const fail = (error) => {
+                if (
+                    controller.signal.aborted ||
+                    this.closed ||
+                    this._pending.get(tag)?.controller !== controller
+                ) {
+                    return;
+                }
+                this._pending.delete(tag);
+                try {
+                    this.endpoint.post(encodeP9ErrorFrame(tag, ERROR_EIO));
+                } catch (postError) {
+                    emitListeners(this._errorListeners, postError);
+                }
+                emitListeners(this._errorListeners, error);
+            };
+            const result = this.facade.handle9pFrame(request, {
+                signal: controller.signal,
+                tag,
+                type: frameType(request),
             });
+            if (result && typeof result.then === "function") {
+                result.then(complete, fail);
+            } else {
+                complete(result);
+            }
         } catch (error) {
             if (request) {
                 try {
@@ -1004,7 +1062,7 @@ class P9Reader {
     }
 }
 
-function encodeP9Frame(type, tag, body) {
+function encodeP9Frame(type, tag, body = new Uint8Array()) {
     const payload = toUint8Array(body, "9P frame body");
     const frame = new Uint8Array(7 + payload.byteLength);
     const size = frame.byteLength;
@@ -1199,6 +1257,19 @@ function requireMessageChannel() {
 function frameTag(frame) {
     validateFrameShape(frame, "9P frame");
     return frame[5] | (frame[6] << 8);
+}
+
+function frameType(frame) {
+    validateFrameShape(frame, "9P frame");
+    return frame[4];
+}
+
+function flushOldTag(frame) {
+    validateFrameShape(frame, "9P Tflush frame");
+    if (frame.byteLength < 9) {
+        throw new TypeError("expected 9P Tflush frame to include oldtag");
+    }
+    return frame[7] | (frame[8] << 8);
 }
 
 function validateFrameShape(frame, label) {

@@ -42,6 +42,7 @@
     dst="shared-store-2"
     storage='{"backend":"js-value","value":"window.__wanixSmokeStore"}'
   ></wanix-bind>
+  <wanix-terminal id="smoke-terminal"></wanix-terminal>
 </wanix-system>
 
 <pre id="status">running</pre>
@@ -99,6 +100,8 @@
   try {
     const readyEvent = await waitForReady(systemElement);
     const system = readyEvent.detail.system;
+    const terminalElement = document.querySelector("#smoke-terminal");
+    await waitForReady(terminalElement);
 
     const version = (await system.readText("#wanix/version")).trim();
     const inlineText = (await system.readText("inline.txt")).trim();
@@ -114,6 +117,12 @@
     await system.writeText("shared-store/state.txt", "descriptor-ok");
     const sharedMirrorText = (await system.readText("shared-store-2/state.txt")).trim();
     const sharedEntries = await entriesOf("shared-store-2", system);
+
+    const terminalState = await terminalElement.writeData("browser-screen");
+    await terminalElement.resize(100, 30);
+    const terminalResized = await terminalElement.refresh();
+    await terminalElement.reset();
+    const terminalReset = await terminalElement.refresh();
 
     const portImport = await createWanixP9FramePort(system);
     await system.mountImportPort("remote-port", portImport.port);
@@ -163,6 +172,19 @@
     const workerMessages = workerTask.messages.slice();
     workerTask.close();
 
+    const directWasmTask = await system.startBrowserWorker("./fixtures/browser/execution-worker.mjs", {
+      workerId: "smoke-direct-wasm-worker",
+      module: "../../../tests/fixtures/wasi-preview1-smoke.wasm",
+      args: ["--browser-direct-wasm"],
+      env: [{ name: "MODE", value: "browser" }],
+      cwd: "tmp",
+    });
+    await waitFor(() => directWasmTask.exitCode === 0, "direct wasm worker exit");
+    const directWasmExit = (await system.readText(`#task/${directWasmTask.taskId}/exit`)).trim();
+    const directWasmCmd = (await system.readText(`#task/${directWasmTask.taskId}/cmd`)).trim();
+    const directWasmStdout = directWasmTask.messages.find((message) => message === "compiled-wasi-ok\n");
+    directWasmTask.close();
+
     assert(version === "0.1.0", `bad version ${version}`);
     assert(inlineText === "inline-browser-ok", `bad inline text ${inlineText}`);
     assert(fetchedText === "registered-browser-ok", `bad fetched text ${fetchedText}`);
@@ -203,6 +225,10 @@
       sharedEntries.includes("state.txt"),
       `missing shared entry: ${sharedEntries}`,
     );
+    assert(terminalState.screen === "browser-screen", `bad terminal screen ${terminalState.screen}`);
+    assert(terminalResized.size === "100x30", `bad terminal resize ${terminalResized.size}`);
+    assert(terminalReset.screen === "", `terminal reset did not clear screen ${terminalReset.screen}`);
+    assert(terminalReset.size === "80x24", `terminal reset did not restore size ${terminalReset.size}`);
     assert(Boolean(wasiTask) && Boolean(goTask) && wasiTask !== goTask, "bad task ids");
     assert(wasiCmd === "repl.wasm", `bad wasi cmd ${wasiCmd}`);
     assert(goCmd === "repl-gojs.wasm", `bad go cmd ${goCmd}`);
@@ -218,6 +244,12 @@
       `missing worker payload: ${JSON.stringify(workerMessages)}`,
     );
     assert(handedPort.port_id === "smoke-events", `bad handed port ${JSON.stringify(handedPort)}`);
+    assert(directWasmExit === "0", `bad direct wasm exit ${directWasmExit}`);
+    assert(
+      directWasmCmd === "../../../tests/fixtures/wasi-preview1-smoke.wasm --browser-direct-wasm",
+      `bad direct wasm cmd ${directWasmCmd}`,
+    );
+    assert(directWasmStdout === "compiled-wasi-ok\n", `bad direct wasm stdout ${directWasmStdout}`);
     assert(
       numericTaskIds(taskEntriesAfterWasi).includes(Number(wasiTask)),
       `missing wasi task entry: ${taskEntriesAfterWasi}`,
@@ -249,6 +281,9 @@
         goTask,
         workerTask: workerTask.taskId,
         workerExit,
+        directWasmTask: directWasmTask.taskId,
+        directWasmExit,
+        terminalSize: terminalReset.size,
         handedPort,
         taskEntriesAfterGo,
       },
