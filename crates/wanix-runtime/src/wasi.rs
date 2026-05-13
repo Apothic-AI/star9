@@ -238,6 +238,9 @@ fn add_wasi_imports(linker: &mut Linker<WasiState>) -> Result<()> {
         .func_wrap(WASI, "path_filestat_set_times", path_filestat_set_times)
         .map_err(wasmi_error)?;
     linker
+        .func_wrap(WASI, "path_link", path_link)
+        .map_err(wasmi_error)?;
+    linker
         .func_wrap(WASI, "path_unlink_file", path_unlink_file)
         .map_err(wasmi_error)?;
     linker
@@ -906,6 +909,20 @@ fn path_filestat_set_times(
             .stat(&FsContext::new(), &path)
             .map_or_else(|err| errno_from_error(&err), |_| ERRNO_SUCCESS),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn path_link(
+    _caller: Caller<'_, WasiState>,
+    _old_fd: i32,
+    _old_flags: i32,
+    _old_path_ptr: i32,
+    _old_path_len: i32,
+    _new_fd: i32,
+    _new_path_ptr: i32,
+    _new_path_len: i32,
+) -> i32 {
+    ERRNO_NOTSUP
 }
 
 fn path_unlink_file(
@@ -1689,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn wasmi_wasi_handler_exposes_unsupported_socket_imports() {
+    fn wasmi_wasi_handler_exposes_unsupported_imports() {
         let runtime = crate::Runtime::new().unwrap();
         let task = runtime
             .task_fs()
@@ -1706,6 +1723,8 @@ mod tests {
                 (func $sock_send (param i32 i32 i32 i32 i32) (result i32)))
               (import "wasi_snapshot_preview1" "sock_shutdown"
                 (func $sock_shutdown (param i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "path_link"
+                (func $path_link (param i32 i32 i32 i32 i32 i32 i32) (result i32)))
               (import "wasi_snapshot_preview1" "proc_exit"
                 (func $proc_exit (param i32)))
 
@@ -1753,7 +1772,18 @@ mod tests {
                     (i32.const 3)
                     (i32.const 0))
                   (i32.const 58)
-                  (i32.const 13)))
+                  (i32.const 13))
+                (call $assert_errno
+                  (call $path_link
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 0)
+                    (i32.const 0)
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 0))
+                  (i32.const 58)
+                  (i32.const 14)))
             )
             "#,
         )
