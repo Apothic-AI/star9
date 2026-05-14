@@ -219,6 +219,10 @@ impl ExecutionRegistry {
         Ok(status)
     }
 
+    pub fn has_handler(&self, kind: ExecutionKind, module: &str) -> bool {
+        self.handler(kind, module).is_some()
+    }
+
     fn register_arc(
         &self,
         kind: ExecutionKind,

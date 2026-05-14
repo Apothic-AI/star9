@@ -8,10 +8,10 @@ Current rc execution-provider contract:
 
 - Keep the standalone `star9-rc` crate independent of Star 9 concrete runtime types. Executable process graphs are expressed as host-neutral specs and optional host-provider hooks.
 - Preserve deterministic evaluator behavior for fake hosts, pure built-ins, and browser paths where a streaming provider is unavailable.
-- Use provider-backed graph execution for native-host external stages where Star 9 can install streaming fds. The current provider-backed path covers WASI stages and opt-in native stages; JS/WASM worker graph execution remains a browser/runtime-port provider boundary.
-- Represent provider-backed pipelines and jobs through Star 9 tasks, fd tables, generated pipe resources under `.rc/graphs/...`, and graph/job status returned through rc `status`/`wait`.
+- Use provider-backed graph execution for external stages where Star 9 can install streaming fds. The native-host provider-backed path covers WASI stages, opt-in native stages, and JS/WASM stages when an `ExecutionRegistry` handler is registered for the module or kind.
+- Represent provider-backed pipelines and jobs through Star 9 tasks, fd tables, generated pipe resources under `.rc/graphs/...`, and persistent graph files such as `kind`, `job`, `tasks`, `notes`, `state`, and `status`.
 - Keep `rfork` precise: `rfork e` remains supported, unsupported flags fail explicitly until Star 9 has matching namespace/env/fd/process-group sharing controls.
-- Route note delivery through rc note hooks and Star 9 `#signal/data` where present; delivery into active provider-backed task groups remains a documented future precision item.
+- Route note delivery through rc note hooks and Star 9 `#signal/data` where present; active provider-backed task groups receive deterministic `signal:<note>` status through their graph/job control record.
 - Browser service providers must be honest about browser capabilities: `import!url#system`, `ws!`, `wss!`, and configured `webtransport!` services route through `#srv`/`mount`-style shell flow, while raw `tcp!` remains unavailable in browsers.
 - Keep docs/audits current for provider-backed execution, browser service providers, and the remaining process-graph boundaries.
 
@@ -25,7 +25,7 @@ Current rc/userland depth contract:
 - Make native `srv tcp!host!port name` real on native hosts by registering a 9P client service in `#srv`, while keeping browser raw TCP explicitly unavailable.
 - Add browser service compatibility for honest browser transports: `srv import!url#system name` and `mount name path` route through the existing cross-document import/MessagePort 9P boundary; WebSocket/WebTransport providers stay documented provider hooks.
 - Keep `dossrv` and `vacfs` as precise provider-missing commands until disk/partition and vac/Venti/archive providers exist.
-- Preserve the portable deterministic rc evaluator while exposing Star 9 process-graph hooks. The Star 9 adapter now materializes pipeline, background-job, and process-substitution graph records as `#task` entries with fd paths bound to generated pipe resources; true streaming/concurrent external stage execution remains tied to stronger task execution and job control.
+- Preserve the portable deterministic rc evaluator while exposing Star 9 process-graph hooks. The Star 9 adapter now materializes pipeline, background-job, and process-substitution graph records as `#task` entries with fd paths bound to generated pipe resources; provider-backed WASI/native/registered JS-WASM stages use streaming task fd execution where available.
 
 Current rc sprint contract:
 

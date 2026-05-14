@@ -24,17 +24,20 @@ Plan 9 rule:
 
 3. Concurrent external rc pipelines
    - Native-host two-stage and linear multi-stage WASI stages run concurrently through Star 9 task fds and pipe resources.
+   - Registered JS/WASM stages are routed through the same provider graph when an `ExecutionRegistry` module or kind handler exists.
    - Opt-in native process stages are routed through the same provider graph when native execution is enabled.
    - Pipeline status aggregation preserves rc `a|b|c` status strings.
 
 4. Background task groups and `wait`
-   - External WASI/native graph jobs can start through provider threads.
+   - External WASI/native/registered-JS graph jobs can start through provider threads.
    - `wait` and `wait <job>` can block on provider-backed job receivers and return stdout/stderr/status.
+   - Provider graph lifecycle is visible through `.rc/graphs/<id>/kind`, `job`, `tasks`, `notes`, `state`, and `status`.
    - Pure built-in background jobs keep deterministic evaluator job records.
 
 5. Notes/signals and `rfork`
    - Existing rc note hooks and `sigexit` behavior remain intact.
    - Star 9 note broadcast still routes through `#signal/data` where present.
+   - Active provider-backed jobs are marked with deterministic `signal:<note>` status and task exits.
    - `rfork e` remains supported. Unsupported flags continue to fail precisely until Star 9 has matching task scope controls.
 
 6. Browser service providers
@@ -47,10 +50,9 @@ Plan 9 rule:
 
 ## Remaining Provider Depth
 
-- JS/WASM worker stages in rc provider graphs.
-- Browser worker-backed process graph execution through runtime fd/port streams.
-- Active task-group note/signal delivery for provider-backed jobs.
-- Persistent task-group/job cleanup files.
+- Browser worker-backed process graph execution through async runtime fd/port streams.
+- Provider-specific hard cancellation for active stages where WASI/worker/native providers expose cancellers.
+- Explicit cleanup controls for `.rc/graphs/<id>` resources.
 - Exact `rfork` namespace/env/fd/process-group sharing beyond `rfork e`.
 - Concrete default WebTransport 9P provider.
 

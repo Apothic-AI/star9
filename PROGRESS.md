@@ -2,6 +2,13 @@
 
 ## 2026-05-14
 
+- Continued the rc provider graph completion sprint on `rc-provider-graph-completion`.
+- Added `ExecutionRegistry::has_handler` so rc graph providers can distinguish unavailable JS/WASM worker execution from explicitly registered module/kind handlers.
+- Extended Star 9 rc provider graphs to run registered JS/WASM stages through the same task/fd/pipe execution path as WASI and opt-in native stages, including mixed WASI-to-worker pipelines.
+- Added provider-backed process-substitution execution for executable `<{}` and `>{}` forms where a host graph provider is available, while preserving deterministic evaluator fallback for pure built-ins and browser-limited hosts.
+- Added persistent provider graph lifecycle files under `.rc/graphs/<id>/`: `kind`, `job`, `tasks`, `notes`, `state`, and `status`.
+- Added active provider-job note delivery. `RcSession::deliver_note` still runs rc note hooks and the Star 9 adapter still broadcasts through `#signal/data`, but active provider-backed jobs are now marked with deterministic `signal:<note>` status and task exits.
+- Added focused Star 9 rc tests for registered JS/WASM worker stages, provider process substitution, persistent graph lifecycle files, and active provider-job note status.
 - Started the rc execution-provider parity sprint on `rc-execution-provider-parity`.
 - Extended the standalone `star9-rc` executable graph hooks so native adapters can execute or start provider-backed process graphs without adding Star 9 runtime dependencies to the reusable rc crate.
 - Added provider-backed external rc pipeline execution in `star9-shell::rc` for native-host two-stage and linear multi-stage WASI pipelines plus opt-in native stages. The adapter now builds real Star 9 task/fd/pipe graphs, starts stages concurrently, routes stdio through task fd descriptors, closes pipe writer ends for EOF, reads final stdout/stderr from task fds, and aggregates rc pipeline status.

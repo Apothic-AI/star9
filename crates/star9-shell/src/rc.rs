@@ -8,9 +8,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use star9_core::{clean_path, Error, ErrorKind, FileMode, FsContext, Result};
-#[cfg(not(target_arch = "wasm32"))]
-use star9_fs::write_file;
 use star9_fs::{fs_ref, FileSystem, MemFs, Node, PipeFs};
+#[cfg(not(target_arch = "wasm32"))]
+use star9_fs::{read_file as fs_read_file, write_file as fs_write_file};
 #[cfg(not(target_arch = "wasm32"))]
 use star9_protocol::runtime::{
     EnvironmentEntry, ExecutionKind, ExecutionSpec, FdDescriptor, FdKind, StdioSet,
@@ -41,7 +41,67 @@ pub struct Star9RcHost {
     cwd: String,
     next_graph_id: u32,
     #[cfg(not(target_arch = "wasm32"))]
-    running_jobs: Arc<Mutex<BTreeMap<u32, mpsc::Receiver<RcProcessJobResult>>>>,
+    running_jobs: Arc<Mutex<BTreeMap<u32, RunningJob>>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct RunningJob {
+    receiver: mpsc::Receiver<RcProcessJobResult>,
+    control: Arc<JobControl>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct JobControl {
+    graph_root: String,
+    task_ids: Mutex<Vec<String>>,
+    note: Mutex<Option<String>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl JobControl {
+    fn new(graph_root: String) -> Self {
+        Self {
+            graph_root,
+            task_ids: Mutex::new(Vec::new()),
+            note: Mutex::new(None),
+        }
+    }
+
+    fn set_tasks(&self, task_ids: Vec<String>) {
+        *self.task_ids.lock().unwrap() = task_ids;
+    }
+
+    fn note(&self) -> Option<String> {
+        self.note.lock().unwrap().clone()
+    }
+
+    fn signal_status(&self) -> Option<RcStatus> {
+        self.note()
+            .map(|note| RcStatus::from_status(format!("signal:{note}")))
+    }
+
+    fn send_note(&self, host: &RuntimeShellHost, note: &str) {
+        let mut guard = self.note.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(note.to_string());
+        }
+        drop(guard);
+
+        let _ = write_graph_file(host, &self.graph_root, "state", "signaled\n");
+        let _ = write_graph_file(
+            host,
+            &self.graph_root,
+            "status",
+            &format!("signal:{note}\n"),
+        );
+        let _ = append_graph_file(host, &self.graph_root, "notes", &format!("{note}\n"));
+
+        for task_id in self.task_ids.lock().unwrap().iter() {
+            if let Ok(task) = host.runtime().task_fs().lookup(task_id) {
+                task.set_exit(format!("signal:{note}"));
+            }
+        }
+    }
 }
 
 impl Star9RcHost {
@@ -302,10 +362,10 @@ impl RcHost for Star9RcHost {
         {
             let mut jobs = self.running_jobs.lock().unwrap();
             let receivers = if let Some(job_id) = _job_id {
-                let Some(receiver) = jobs.remove(&job_id) else {
+                let Some(job) = jobs.remove(&job_id) else {
                     return Ok(None);
                 };
-                vec![(job_id, receiver)]
+                vec![(job_id, job)]
             } else if jobs.is_empty() {
                 return Ok(None);
             } else {
@@ -314,8 +374,20 @@ impl RcHost for Star9RcHost {
             drop(jobs);
 
             let mut results = Vec::new();
-            for (job_id, receiver) in receivers {
-                match receiver.recv() {
+            for (job_id, job) in receivers {
+                if let Some(status) = job.control.signal_status() {
+                    if let Some(note) = job.control.note() {
+                        job.control.send_note(&self.host, &note);
+                    }
+                    results.push(RcProcessJobResult {
+                        id: job_id,
+                        status,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    });
+                    continue;
+                }
+                match job.receiver.recv() {
                     Ok(result) => results.push(result),
                     Err(_) => results.push(RcProcessJobResult {
                         id: job_id,
@@ -333,10 +405,14 @@ impl RcHost for Star9RcHost {
     }
 
     fn send_note_to_processes(&mut self, note: &str) -> star9_rc::RcResult<()> {
-        match self.host.write_existing("#signal/data", note.as_bytes()) {
-            Ok(()) => Ok(()),
-            Err(_) => Ok(()),
+        let _ = self.host.write_existing("#signal/data", note.as_bytes());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            for job in self.running_jobs.lock().unwrap().values() {
+                job.control.send_note(&self.host, note);
+            }
         }
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -344,14 +420,19 @@ impl RcHost for Star9RcHost {
         &mut self,
         spec: RcExecutableGraphSpec,
     ) -> star9_rc::RcResult<Option<RcOutput>> {
-        if spec.kind != RcProcessGraphKind::Pipeline {
+        if !matches!(
+            spec.kind,
+            RcProcessGraphKind::Pipeline
+                | RcProcessGraphKind::ProcessSubstitutionRead
+                | RcProcessGraphKind::ProcessSubstitutionWrite
+        ) {
             return Ok(None);
         }
-        if !can_execute_external_graph(&spec, self.host.native_enabled()) {
+        if !can_execute_external_graph(&self.host, &spec) {
             return Ok(None);
         }
         let graph_root = self.next_graph_root()?;
-        execute_external_graph(self.host.clone(), graph_root, spec)
+        execute_external_graph(self.host.clone(), graph_root, spec, None)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -373,14 +454,16 @@ impl RcHost for Star9RcHost {
         let Some(job_id) = spec.job_id else {
             return Ok(None);
         };
-        if !can_execute_external_graph(&spec, self.host.native_enabled()) {
+        if !can_execute_external_graph(&self.host, &spec) {
             return Ok(None);
         }
         let graph_root = self.next_graph_root()?;
         let host = self.host.clone();
+        let control = Arc::new(JobControl::new(graph_root.clone()));
         let (tx, rx) = mpsc::channel();
+        let thread_control = control.clone();
         thread::spawn(move || {
-            let result = execute_external_graph(host, graph_root, spec);
+            let result = execute_external_graph(host, graph_root, spec, Some(thread_control));
             let job = match result {
                 Ok(Some(out)) => RcProcessJobResult {
                     id: job_id,
@@ -403,7 +486,13 @@ impl RcHost for Star9RcHost {
             };
             let _ = tx.send(job);
         });
-        self.running_jobs.lock().unwrap().insert(job_id, rx);
+        self.running_jobs.lock().unwrap().insert(
+            job_id,
+            RunningJob {
+                receiver: rx,
+                control,
+            },
+        );
         Ok(Some(RcStartedProcessJob { id: job_id }))
     }
 
@@ -488,11 +577,66 @@ fn resolve_graph_binding_path(graph_root: &str, binding_path: &str) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn can_execute_external_graph(spec: &RcExecutableGraphSpec, native_enabled: bool) -> bool {
+fn write_graph_file(
+    host: &RuntimeShellHost,
+    graph_root: &str,
+    name: &str,
+    data: &str,
+) -> Result<()> {
+    fs_write_file(
+        host.runtime().namespace().as_ref(),
+        &format!("{graph_root}/{name}"),
+        data.as_bytes(),
+        FileMode::from_perm(0o644),
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn append_graph_file(
+    host: &RuntimeShellHost,
+    graph_root: &str,
+    name: &str,
+    data: &str,
+) -> Result<()> {
+    let path = format!("{graph_root}/{name}");
+    let mut bytes = fs_read_file(host.runtime().namespace().as_ref(), &path).unwrap_or_default();
+    bytes.extend_from_slice(data.as_bytes());
+    fs_write_file(
+        host.runtime().namespace().as_ref(),
+        &path,
+        &bytes,
+        FileMode::from_perm(0o644),
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_graph_state(
+    host: &RuntimeShellHost,
+    graph_root: &str,
+    state: &str,
+    control: &Option<Arc<JobControl>>,
+) -> Result<()> {
+    if let Some(status) = control.as_ref().and_then(|control| control.signal_status()) {
+        write_graph_file(host, graph_root, "status", &format!("{status}\n"))?;
+        write_graph_file(host, graph_root, "state", "signaled\n")
+    } else {
+        write_graph_file(host, graph_root, "state", state)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn can_execute_external_graph(host: &RuntimeShellHost, spec: &RcExecutableGraphSpec) -> bool {
     !spec.stages.is_empty()
         && spec.stages.iter().all(|stage| {
-            stage_execution_kind(stage, native_enabled)
-                .map(|kind| kind != ExecutionKind::JsWasm)
+            stage_execution(stage, host.native_enabled())
+                .map(|(kind, module, _)| match kind {
+                    ExecutionKind::JsWasm => host
+                        .runtime()
+                        .execution_registry()
+                        .has_handler(kind, &module),
+                    ExecutionKind::Native => host.native_enabled(),
+                    ExecutionKind::Wasi => true,
+                })
                 .unwrap_or(false)
         })
 }
@@ -502,11 +646,33 @@ fn execute_external_graph(
     host: RuntimeShellHost,
     graph_root: String,
     spec: RcExecutableGraphSpec,
+    control: Option<Arc<JobControl>>,
 ) -> star9_rc::RcResult<Option<RcOutput>> {
-    if !can_execute_external_graph(&spec, host.native_enabled()) {
+    if !can_execute_external_graph(&host, &spec) {
         return Ok(None);
     }
-    for index in 0..spec.stages.len().saturating_sub(1) {
+    write_graph_file(&host, &graph_root, "kind", &format!("{:?}\n", spec.kind))
+        .map_err(to_rc_error)?;
+    write_graph_file(
+        &host,
+        &graph_root,
+        "job",
+        &format!(
+            "{}\n",
+            spec.job_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+    )
+    .map_err(to_rc_error)?;
+    write_graph_state(&host, &graph_root, "planned\n", &control).map_err(to_rc_error)?;
+    write_graph_file(&host, &graph_root, "notes", "").map_err(to_rc_error)?;
+    if let Some(out) = maybe_finish_signaled_graph(&host, &graph_root, spec.kind.clone(), &control)?
+    {
+        return Ok(Some(out));
+    }
+
+    for index in graph_pipe_indices(&spec) {
         host.runtime()
             .namespace()
             .bind(
@@ -542,6 +708,20 @@ fn execute_external_graph(
             .map_err(to_rc_error)?;
         let exec = build_execution_spec(&host, &graph_root, index, stage).map_err(to_rc_error)?;
         stages.push((task, exec, stage.fd_bindings.clone()));
+    }
+    let task_ids = stages
+        .iter()
+        .map(|(task, _, _)| task.id())
+        .collect::<Vec<_>>();
+    if let Some(control) = &control {
+        control.set_tasks(task_ids.clone());
+    }
+    write_graph_file(&host, &graph_root, "tasks", &(task_ids.join("\n") + "\n"))
+        .map_err(to_rc_error)?;
+    write_graph_state(&host, &graph_root, "running\n", &control).map_err(to_rc_error)?;
+    if let Some(out) = maybe_finish_signaled_graph(&host, &graph_root, spec.kind.clone(), &control)?
+    {
+        return Ok(Some(out));
     }
 
     let mut handles = Vec::new();
@@ -585,16 +765,82 @@ fn execute_external_graph(
         }
     }
 
-    let status = statuses
+    let mut status = statuses
         .iter()
         .cloned()
         .reduce(|left, right| RcStatus::pipeline(&left, &right))
         .unwrap_or_else(RcStatus::success);
+    if let Some(signal_status) = control.as_ref().and_then(|control| control.signal_status()) {
+        status = signal_status;
+    }
+    if spec.kind == RcProcessGraphKind::ProcessSubstitutionRead {
+        stdout = String::from_utf8_lossy(
+            &fs_read_file(
+                host.runtime().namespace().as_ref(),
+                &format!("{graph_root}/pipe0/data1"),
+            )
+            .unwrap_or_default(),
+        )
+        .into_owned();
+    }
+    write_graph_file(&host, &graph_root, "status", &format!("{status}\n")).map_err(to_rc_error)?;
+    write_graph_state(
+        &host,
+        &graph_root,
+        if status.to_string().starts_with("signal:") {
+            "signaled\n"
+        } else if status.is_success() {
+            "exited\n"
+        } else {
+            "failed\n"
+        },
+        &control,
+    )
+    .map_err(to_rc_error)?;
     Ok(Some(RcOutput {
         status,
         stdout,
         stderr,
         exited: false,
+    }))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn graph_pipe_indices(spec: &RcExecutableGraphSpec) -> Vec<usize> {
+    let mut indices = spec
+        .stages
+        .iter()
+        .flat_map(|stage| stage.fd_bindings.iter())
+        .filter_map(|binding| binding.path.strip_prefix("pipe:"))
+        .filter_map(|rest| rest.split('/').next())
+        .filter_map(|index| index.parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn maybe_finish_signaled_graph(
+    host: &RuntimeShellHost,
+    graph_root: &str,
+    kind: RcProcessGraphKind,
+    control: &Option<Arc<JobControl>>,
+) -> star9_rc::RcResult<Option<RcOutput>> {
+    let Some(status) = control.as_ref().and_then(|control| control.signal_status()) else {
+        return Ok(None);
+    };
+    write_graph_file(host, graph_root, "status", &format!("{status}\n")).map_err(to_rc_error)?;
+    write_graph_file(host, graph_root, "state", "signaled\n").map_err(to_rc_error)?;
+    Ok(Some(RcOutput {
+        status,
+        stdout: String::new(),
+        stderr: String::new(),
+        exited: matches!(
+            kind,
+            RcProcessGraphKind::ProcessSubstitutionRead
+                | RcProcessGraphKind::ProcessSubstitutionWrite
+        ),
     }))
 }
 
@@ -609,7 +855,7 @@ fn build_execution_spec(
         .ok_or_else(|| Error::path("exec", stage.argv.join(" "), ErrorKind::NotSupported))?;
     let stdin_path = if !stage.stdin.is_empty() {
         let path = format!("{graph_root}/stage{index}-stdin");
-        write_file(
+        fs_write_file(
             host.runtime().namespace().as_ref(),
             &path,
             stage.stdin.as_bytes(),
@@ -1022,6 +1268,118 @@ mod tests {
     }
 
     #[test]
+    fn rc_shell_runs_js_wasm_worker_stage_when_provider_registered() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        register_js_wasm_echo(runtime.clone());
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm | worker echo.mjs");
+        assert!(
+            out.status.is_success(),
+            "status={} stdout={:?} stderr={:?}",
+            out.status,
+            out.stdout,
+            out.stderr
+        );
+        assert_eq!(out.status.to_string(), "0|0", "{out:?}");
+        assert_eq!(out.stdout, "pipe-ok\n", "{out:?}");
+
+        let tasks = runtime.task_fs().tasks();
+        let worker = tasks
+            .iter()
+            .find(|task| task.cmd() == "echo.mjs")
+            .expect("js/wasm worker task");
+        assert_eq!(worker.exit(), "0");
+        let fds = worker
+            .fd_entries()
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe0/data1"), "{fds}");
+    }
+
+    #[test]
+    fn rc_shell_provider_process_substitution_streams_through_pipe() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        register_js_wasm_echo(runtime.clone());
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("cat <{worker echo.mjs}");
+        assert!(out.status.is_success(), "{out:?}");
+        assert_eq!(out.stdout, "worker-ok\n");
+        assert_eq!(
+            String::from_utf8_lossy(
+                &fs_read_file(runtime.namespace().as_ref(), ".rc/graphs/rcgraph1/state").unwrap()
+            ),
+            "exited\n"
+        );
+
+        let out = rc.eval_line("echo sink >{worker echo.mjs}");
+        assert!(out.status.is_success(), "{out:?}");
+        assert_eq!(out.stdout, "sink\n");
+    }
+
+    #[test]
+    fn rc_shell_provider_jobs_expose_lifecycle_files() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm & wait 1");
+        assert!(out.status.is_success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(
+                &fs_read_file(runtime.namespace().as_ref(), ".rc/graphs/rcgraph1/state").unwrap()
+            ),
+            "exited\n"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(
+                &fs_read_file(runtime.namespace().as_ref(), ".rc/graphs/rcgraph1/status").unwrap()
+            ),
+            "0\n"
+        );
+        let tasks = String::from_utf8_lossy(
+            &fs_read_file(runtime.namespace().as_ref(), ".rc/graphs/rcgraph1/tasks").unwrap(),
+        )
+        .into_owned();
+        assert!(!tasks.trim().is_empty(), "{tasks:?}");
+    }
+
+    #[test]
+    fn rc_shell_notes_mark_active_provider_jobs() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        runtime
+            .execution_registry()
+            .register_kind_fn(ExecutionKind::JsWasm, |_task, _spec| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                Ok(star9_protocol::runtime::ExitStatus::ExitCode(0))
+            });
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("worker slow.mjs &");
+        assert!(out.status.is_success(), "{out:?}");
+        let _ = rc.session_mut().deliver_note("term");
+        let out = rc.eval_line("wait 1");
+        assert!(!out.status.is_success(), "{out:?}");
+        assert_eq!(out.stdout, "[1] signal:term\n");
+        assert_eq!(
+            wait_for_graph_file(&runtime, ".rc/graphs/rcgraph1/state", "signaled\n"),
+            "signaled\n"
+        );
+        assert_eq!(
+            wait_for_graph_file(&runtime, ".rc/graphs/rcgraph1/status", "signal:term\n"),
+            "signal:term\n"
+        );
+    }
+
+    #[test]
     fn rc_shell_reports_unavailable_plan9_service_providers() {
         let host = RuntimeShellHost::fresh().unwrap();
         let mut rc = RcShell::new(host);
@@ -1103,5 +1461,54 @@ mod tests {
             "#,
         )
         .unwrap()
+    }
+
+    fn register_js_wasm_echo(runtime: star9_runtime::Runtime) {
+        runtime
+            .execution_registry()
+            .register_kind_fn(ExecutionKind::JsWasm, |task, _spec| {
+                let input = task
+                    .with_fd_mut(0, |file| {
+                        let _ = file.seek(SeekFrom::Start(0));
+                        let mut out = Vec::new();
+                        let mut buf = [0_u8; 8192];
+                        loop {
+                            match file.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => out.extend_from_slice(&buf[..n]),
+                                Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
+                                Err(err) => return Err(err),
+                            }
+                        }
+                        Ok(out)
+                    })
+                    .unwrap_or_default();
+                let output = if input.is_empty() {
+                    b"worker-ok\n".to_vec()
+                } else {
+                    input
+                };
+                task.with_fd_mut(1, |file| {
+                    file.write(&output)?;
+                    Ok(())
+                })?;
+                Ok(star9_protocol::runtime::ExitStatus::ExitCode(0))
+            });
+    }
+
+    fn wait_for_graph_file(runtime: &star9_runtime::Runtime, path: &str, expected: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let mut last = String::new();
+        while std::time::Instant::now() < deadline {
+            last = String::from_utf8_lossy(
+                &fs_read_file(runtime.namespace().as_ref(), path).unwrap_or_default(),
+            )
+            .into_owned();
+            if last == expected {
+                return last;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        last
     }
 }

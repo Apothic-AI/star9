@@ -124,7 +124,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `docs/audits/plan9-command-compatibility-matrix.json` records shell/rc-visible Plan 9 command compatibility for `bind`, `unmount`, `srv`, and `mount`, plus provider-missing boundaries for `dossrv`, `vacfs`, and network service sources.
 
-`docs/audits/rc-process-graph-matrix.json` and `docs/audits/rc-pipeline-job-control-boundary.md` record the rc process-graph boundary. The portable rc evaluator remains deterministic, while the Star 9 adapter creates task/fd/pipe graph records for pipelines, background jobs, and process substitution. Native-host WASI and opt-in native rc pipelines/background jobs now use provider-backed task/fd execution; JS/WASM worker graph execution, exact `rfork` sharing, and active task-group signal delivery remain documented provider boundaries.
+`docs/audits/rc-process-graph-matrix.json` and `docs/audits/rc-pipeline-job-control-boundary.md` record the rc process-graph boundary. The portable rc evaluator remains deterministic, while the Star 9 adapter creates task/fd/pipe graph records for pipelines, background jobs, and process substitution. Native-host WASI, registered JS/WASM, and opt-in native rc pipelines/background jobs now use provider-backed task/fd execution with persistent `.rc/graphs/<id>` lifecycle files and deterministic active-job note status. Browser worker graph execution, exact `rfork` sharing, hard provider cancellation, and explicit graph cleanup controls remain documented provider boundaries.
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 
