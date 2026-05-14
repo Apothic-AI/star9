@@ -2,9 +2,57 @@
 
 ## Current Focus
 
-Finish the Plan 9 host-depth completion sprint while keeping the Rust tree primary, deterministic, and free of Go runtime/build dependencies.
+Finish the Star 9 shell sprint while keeping the Rust tree primary, Plan 9-aligned, deterministic by default, and free of GPL or Go runtime/build dependencies.
 
-Current sprint contract:
+Current shell sprint contract:
+
+- Shell behavior routes through Star 9 namespaces, files, task fds, device files, runtime requests, and 9P-shaped mounts.
+- `star9-shell` is a host-neutral shell core, not a POSIX/Bash/Plan 9 `rc` compatibility claim.
+- Native shell UX uses `reedline`; GPL shell dependencies are rejected.
+- Native host process execution remains an explicit `star9 shell --native` / `native <cmd...>` opt-in.
+- Browser shell UX is a plain custom element and JS controller over the `Star9System` wasm facade.
+- VM demo behavior remains deterministic by default through `#vm` files; real x86 providers stay future provider work behind the same device surface.
+- `docs/audits/shell-dependency-matrix.json`, planning, progress, architecture, conformance, and live-test docs track the dependency/license and behavior decisions.
+
+### Star 9 Shell Sprint Plan
+
+1. Evidence and license gate
+   - Reject GPL shell dependencies such as `rcshell`.
+   - Record BSD-licensed `rs9p`/`unpfs` as future native interop references only.
+   - Accept `reedline` for native interactive input.
+
+2. Shell core
+   - Add `crates/star9-shell`.
+   - Implement `ShellSession`, `ShellHost`, parser, command registry, status/stdout/stderr results, cwd, prompt, and sequencing.
+   - Keep parsing deliberately small: words, quotes, escapes, comments, and `;`.
+
+3. Runtime host adapter
+   - Route file, task, terminal, VM, network, WASI, worker, and opt-in native execution through Star 9 runtime APIs and file/device protocols.
+   - Use a writable ramfs workspace for native CLI shell sessions while browser shells use their existing `star9-system` namespace setup.
+
+4. Core commands
+   - Provide `pwd`, `cd`, `ls`, `cat`, `write`, `append`, `mkdir`, `rm`, `mv`, `cp`, `stat`, `version`, `binds`, `tasks`, `fds`, `term`, `vm`, `net`, `wasi`, `worker`, `native`, and `help`.
+
+5. Native CLI shell
+   - Add `star9 shell`, `star9 shell -c '<command>'`, `star9 shell <script-file>`, and stdin script mode.
+   - Use `reedline` for interactive mode.
+
+6. Browser shell
+   - Expose `Star9System.createShell()` via wasm-bindgen.
+   - Add `crates/star9-web/js/shell.js`, `<star9-shell>`, and `examples/shell.html`.
+   - Keep browser-only mount/download helpers routed into normal mounted namespaces where they touch storage.
+
+7. VM/provider direction
+   - Keep the deterministic VM provider as the demo target.
+   - Document the future real-provider path behind `#vm/<id>/ctl`, `state`, `console`, `config`, `term`, `guest`, and `error`.
+
+8. Verification
+   - Cover parser/core commands in Rust.
+   - Cover browser shell controller behavior in Node.
+   - Cover wasm facade shell execution in browser smoke.
+   - Keep all checks offline by default.
+
+Previous host-depth completion contract:
 
 - Host capabilities must appear as mounted namespaces or device files controlled by small file protocols; they must not bypass task namespaces, fd tables, or 9P-style composition.
 - Rust/native 9P cancellation uses tag-keyed async operation tracking where native work can run concurrently. `Tflush` cancels by old tag, returns `Rflush`, and suppresses late replies.

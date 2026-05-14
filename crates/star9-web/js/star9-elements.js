@@ -2,13 +2,15 @@ import { BindElement } from "./bind.js";
 import { SystemElement } from "./system.js";
 import { TaskElement } from "./task.js";
 import { TerminalElement } from "./terminal.js";
+import { ShellElement } from "./shell.js";
 
 defineElement("star9-system", SystemElement);
 defineElement("star9-bind", BindElement);
 defineElement("star9-task", TaskElement);
 defineElement("star9-terminal", TerminalElement);
+defineElement("star9-shell", ShellElement);
 
-export { BindElement, SystemElement, TaskElement, TerminalElement };
+export { BindElement, ShellElement, SystemElement, TaskElement, TerminalElement };
 export * from "./js-wasm-execution-worker.js";
 export * from "./js-wasm-worker-host.js";
 export * from "./p9-port.js";
@@ -22,6 +24,7 @@ export * from "./storage-starfs.js";
 export * from "./storage-p9.js";
 export * from "./network-adapter.js";
 export * from "./terminal.js";
+export * from "./shell.js";
 
 function defineElement(name, ctor) {
     if (typeof window === "undefined" || !window.customElements) {

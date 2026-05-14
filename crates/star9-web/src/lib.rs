@@ -7,6 +7,7 @@ pub mod p9_transport;
 mod storage;
 pub mod worker;
 
+use std::cell::RefCell;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -22,6 +23,7 @@ use star9_protocol::{
     Star9Api,
 };
 use star9_runtime::{ExecutionAdapter, Runtime};
+use star9_shell::{RuntimeShellHost, ShellResult, ShellSession};
 use star9_vfs::BindMode;
 
 pub use bindings::*;
@@ -35,6 +37,35 @@ pub struct Star9System {
     p9_server: Arc<NinePServer>,
     binding_registry: BrowserBindingRegistry,
     storage_registry: BrowserStorageRegistry,
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub struct Star9Shell {
+    session: RefCell<ShellSession<RuntimeShellHost>>,
+}
+
+impl Star9Shell {
+    fn new(runtime: Runtime) -> Self {
+        Self {
+            session: RefCell::new(ShellSession::new(RuntimeShellHost::new(runtime))),
+        }
+    }
+
+    pub fn eval_native(&self, line: &str) -> ShellResult {
+        self.session.borrow_mut().eval_line(line)
+    }
+
+    pub fn prompt_native(&self) -> String {
+        self.session.borrow().prompt()
+    }
+
+    pub fn cwd_native(&self) -> String {
+        self.session.borrow().cwd().to_string()
+    }
+
+    pub fn last_status_native(&self) -> i32 {
+        self.session.borrow().last_status()
+    }
 }
 
 impl Star9System {
@@ -67,6 +98,10 @@ impl Star9System {
 
     pub fn storage_registry(&self) -> BrowserStorageRegistry {
         self.storage_registry.clone()
+    }
+
+    pub fn create_shell_native(&self) -> Star9Shell {
+        Star9Shell::new(self.runtime.clone())
     }
 
     pub fn register_file_bytes_native(&self, src: &str, bytes: &[u8]) -> Result<()> {
@@ -385,7 +420,25 @@ impl Star9System {
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::*;
+    use serde::Serialize;
     use wasm_bindgen::prelude::*;
+
+    #[derive(Serialize)]
+    struct WebShellResult {
+        status: i32,
+        stdout: String,
+        stderr: String,
+    }
+
+    impl From<ShellResult> for WebShellResult {
+        fn from(value: ShellResult) -> Self {
+            Self {
+                status: value.status,
+                stdout: value.stdout,
+                stderr: value.stderr,
+            }
+        }
+    }
 
     fn js_err(err: impl std::fmt::Display) -> JsValue {
         JsValue::from_str(&err.to_string())
@@ -405,6 +458,11 @@ mod wasm {
         #[wasm_bindgen(constructor)]
         pub fn new() -> std::result::Result<Star9System, JsValue> {
             Star9System::build().map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = createShell)]
+        pub fn create_shell(&self) -> Star9Shell {
+            self.create_shell_native()
         }
 
         #[wasm_bindgen(js_name = registerFileBytes)]
@@ -656,6 +714,30 @@ mod wasm {
         #[wasm_bindgen(js_name = wasmReady)]
         pub fn wasm_ready(&self) {
             web_sys::console::log_1(&JsValue::from_str("star9-system ready"));
+        }
+    }
+
+    #[wasm_bindgen]
+    impl Star9Shell {
+        #[wasm_bindgen(js_name = eval)]
+        pub fn eval(&self, line: &str) -> std::result::Result<JsValue, JsValue> {
+            serde_wasm_bindgen::to_value(&WebShellResult::from(self.eval_native(line)))
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = prompt)]
+        pub fn prompt(&self) -> String {
+            self.prompt_native()
+        }
+
+        #[wasm_bindgen(js_name = cwd)]
+        pub fn cwd(&self) -> String {
+            self.cwd_native()
+        }
+
+        #[wasm_bindgen(js_name = lastStatus)]
+        pub fn last_status(&self) -> i32 {
+            self.last_status_native()
         }
     }
 }

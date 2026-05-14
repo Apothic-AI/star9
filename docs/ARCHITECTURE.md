@@ -92,6 +92,14 @@ Runtime device implementations live in a focused `devices` module. The terminal 
 
 `star9-web` exposes a `wasm-bindgen` `Star9System` facade. Browser-specific logic stays in this crate; core runtime state remains Rust-native and host-neutral. The plain ES module at `crates/star9-web/js/star9-elements.js` defines `star9-system`, `star9-bind`, and `star9-task` without a bundler, lazy-loads the wasm package, and delegates file, namespace, 9P, and task operations to the Rust facade.
 
+## Shell
+
+`star9-shell` is the host-neutral shell layer. It deliberately starts as a Star 9 command surface rather than a POSIX, Bash, or Plan 9 `rc` compatibility layer. The parser handles words, single and double quotes, backslash escapes, comments, and `;` sequencing. `ShellSession` owns cwd, prompt state, last status, and command dispatch. `ShellHost` is the boundary that turns shell commands into Star 9 operations: file reads/writes/listing/stat, task execution, task inspection, and device access all go through namespaces, task files, fd files, device files, or runtime requests.
+
+`RuntimeShellHost` adapts the shell to `star9-runtime`. Native CLI shell sessions bind a writable ramfs workspace at `.` so commands like `mkdir demo` work immediately while hidden device paths such as `#task`, `#term`, `#vm`, and `#net` remain directly addressable. Browser shell sessions use the existing `star9-system` namespace, so page authors decide whether the first mount is ramfs, OPFS, StarFS, an import, or another namespace composition.
+
+`star9-cli shell` uses `reedline` for interactive input and keeps host process execution explicit through `--native` plus the `native <cmd...>` shell command. Browser shell support is exposed as `Star9System.createShell()`, `crates/star9-web/js/shell.js`, and the `<star9-shell>` custom element. Browser-only helpers such as `mount-opfs`, `mount-starfs`, `import`, and `download` call the existing mounted-storage/import/facade paths rather than bypassing the namespace model.
+
 Browser binding and storage setup is represented by typed descriptors in `star9-web` before touching browser APIs. Namespace/file/archive/import binds and OPFS, File System Access, Cache API, JS value, download, worker, DOM, and StarFS storage plans validate independently of JS host objects so runtime behavior can be tested natively first.
 
 `BrowserStorageRegistry` maps those storage descriptors to `FileSystem` instances for native tests and synchronous Rust surfaces. It can use registered host handles or deterministic in-memory stand-ins, preserves descriptor identity for repeated mounts, and can expose a descriptor subpath as the mounted root through the existing namespace machinery. StarFS descriptors resolve to a separate registry-backed filesystem; this is a native/test stand-in, not a replacement for the browser StarFS adapter.

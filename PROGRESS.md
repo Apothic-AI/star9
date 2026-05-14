@@ -3,6 +3,12 @@
 ## 2026-05-14
 
 - Rebranded the project from its legacy name to Star 9 / `star9`, including Rust crate packages, crate directories, Rust module imports, CLI command metadata, browser custom elements, JS facade/helper names, namespace root naming, live-test environment variables, examples, fixtures, docs, and audit matrices.
+- Started the Star 9 shell sprint on `sprint-star9-shell`.
+- Added `crates/star9-shell`, a host-neutral shell core with small command parsing, `ShellSession`, `ShellHost`, explicit stdout/stderr/status results, cwd/prompt state, command sequencing, runtime-backed file operations, task/device inspection commands, deterministic VM/network/terminal helpers, WASI/worker execution commands, and opt-in native command execution.
+- Added native CLI shell entry points: `star9 shell`, `star9 shell -c '<command>'`, script-file execution, stdin script mode, and a `reedline` interactive prompt. CLI shell sessions get a writable ramfs workspace while still accessing device files such as `#task`, `#vm`, and `#net`.
+- Added `Star9System.createShell()` plus `Star9Shell` wasm facade methods, `crates/star9-web/js/shell.js`, the `<star9-shell>` custom element, and `examples/shell.html`.
+- Added CLI integration tests, Node browser shell controller coverage, and expanded `tests/browser-smoke.html` so the wasm facade shell creates, writes, reads, and changes directories through the same Star 9 runtime namespace used by browser examples.
+- Added `docs/audits/shell-dependency-matrix.json` documenting shell/9P reference crate license decisions: GPL `rcshell` is rejected, `reedline` is accepted, and `rs9p`/`unpfs` remain future native interop references rather than replacements for Star 9's browser-aware 9P stack.
 
 ## 2026-05-13
 
