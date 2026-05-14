@@ -1,10 +1,10 @@
-# wanix-rs
+# Star 9
 
-Rust-native Wanix runtime.
+Rust-native Star 9 runtime.
 
-`../wanix` is the reference implementation for porting behavior into Rust. This project does not wrap, execute, link, shell out to, or test against Go code; runtime behavior is delivered by this repository's Rust code, fixtures, and tests.
+The legacy upstream reference checkout remains the behavior reference while this project moves forward as Star 9. This project does not wrap, execute, link, shell out to, or test against Go code; runtime behavior is delivered by this repository's Rust code, fixtures, and tests.
 
-This workspace implements the main Wanix runtime surfaces in Rust:
+This workspace implements the main Star 9 runtime surfaces in Rust:
 
 - Plan 9-style namespaces and bind semantics.
 - Filesystem traits, helpers, metadata, paths, file handles, and open flags.
@@ -16,9 +16,9 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Explicit metadata caching through `MetaCacheFs` and local-first sync orchestration through `SyncFs`, including reusable tar patch application and a native background debounce scheduler.
 - Task/resource filesystem with per-task namespaces, aliases, drivers, and file descriptors.
 - Task export filesystems exposed at `#task/<id>/export`, plus bind introspection through `#task/<id>/binds`.
-- Typed public file API for the Wanix JS handle operation set.
+- Typed public file API for the Star 9 JS handle operation set.
 - CBOR encode/decode helpers for the typed public API boundary.
-- Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net` surfaces.
+- Runtime root construction with built-in `#star9`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net` surfaces.
 - Deterministic terminal, VM, and Plan 9-style network device state surfaces, including a retained terminal screen file, raw terminal input queue, a `VmProvider` lifecycle contract behind `#vm`, and attached VM guest filesystem surface.
 - Rust-native 9P import/export with hard-link and xattr read/list/write support, native stream/TCP transport helpers, async native `Tflush` cancellation, browser MessagePort frame-serving/client helpers, an async browser namespace mount client, and a browser storage-to-9P export bridge for async storage adapters.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
@@ -28,38 +28,38 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests, JS-side async namespace mount routing for real browser hosts, task-facing 9P proxy mounts, and browser timer-backed debounced sync scheduling for async targets.
 - StarFS as separate optional browser storage mount backends: a lightweight OPFS-backed compatible adapter with xattrs, KV, tool-call audit logs, and restorable snapshots, plus an additional `starfs-sdk` adapter hook for an external SDK/worker/wasm backend. Neither replaces raw OPFS.
 - Browser network transport adapters shaped like `#net` resources over WebSocket/WebTransport-style capabilities; browser raw TCP remains explicitly unavailable.
-- Wasmi-backed WASI preview1 execution over Wanix task namespaces, fd tables, fd directory/positional I/O/allocation/renumber/advice/flags/timestamps/sync/truncate syscalls, clock resolution/time, poll/yield/signal imports, hard-link and other path mutation syscalls, deterministic socket listener accept plus send/recv/shutdown over `#net` task fds, and explicit unsupported socket accept on non-listener fds.
+- Wasmi-backed WASI preview1 execution over Star 9 task namespaces, fd tables, fd directory/positional I/O/allocation/renumber/advice/flags/timestamps/sync/truncate syscalls, clock resolution/time, poll/yield/signal imports, hard-link and other path mutation syscalls, deterministic socket listener accept plus send/recv/shutdown over `#net` task fds, and explicit unsupported socket accept on non-listener fds.
 - Rust-owned WASI fixtures include checked-in compiled `.wasm` modules as well as focused WAT unit fixtures.
 - Native CLI acceptance commands for 9P loopback, deterministic devices, compiled WASI preview1 fixtures, runtime worker protocol flows, and fd-backed worker stdout routing, plus a Rust-native `serve-p9` stdin/stdout stream hook for local filesystem export.
-- Opt-in native PTY execution acceptance on native hosts with `cargo run -p wanix-cli -- accept native`.
-- Opt-in native TCP loopback acceptance on native hosts with `cargo run -p wanix-cli -- accept native-tcp`.
-- Opt-in native 9P TCP stream acceptance on native hosts with `cargo run -p wanix-cli -- accept native-p9`.
+- Opt-in native PTY execution acceptance on native hosts with `cargo run -p star9-cli -- accept native`.
+- Opt-in native TCP loopback acceptance on native hosts with `cargo run -p star9-cli -- accept native-tcp`.
+- Opt-in native 9P TCP stream acceptance on native hosts with `cargo run -p star9-cli -- accept native-p9`.
 
 ## Workspace
 
-- `wanix-core`: shared errors, file modes, metadata, paths, contexts, open flags.
-- `wanix-fs`: filesystem traits, helpers, backends, nodes, field/control files, pipes, signals.
-- `wanix-vfs`: namespace binding, union behavior, synthesized directories, write routing.
-- `wanix-task`: task/resource filesystem, task fields, aliases, fd table, drivers.
-- `wanix-protocol`: typed request/response API for file operations.
-- `wanix-runtime`: root composition and built-in device/resource surfaces.
-- `wanix-web`: `wasm-bindgen` browser facade plus plain JS custom elements.
-- `wanix-cli`: native CLI entry point.
+- `star9-core`: shared errors, file modes, metadata, paths, contexts, open flags.
+- `star9-fs`: filesystem traits, helpers, backends, nodes, field/control files, pipes, signals.
+- `star9-vfs`: namespace binding, union behavior, synthesized directories, write routing.
+- `star9-task`: task/resource filesystem, task fields, aliases, fd table, drivers.
+- `star9-protocol`: typed request/response API for file operations.
+- `star9-runtime`: root composition and built-in device/resource surfaces.
+- `star9-web`: `wasm-bindgen` browser facade plus plain JS custom elements.
+- `star9-cli`: native CLI entry point.
 
 ## Verification
 
 ```sh
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo test -p wanix-fs --features native-http
+cargo test -p star9-fs --features native-http
 node --test tests/*.test.mjs
-cargo run -p wanix-cli -- accept all
-cargo build -p wanix-web --target wasm32-unknown-unknown
-wasm-pack build crates/wanix-web --target web --out-dir ../../target/wanix-web-pkg --dev
+cargo run -p star9-cli -- accept all
+cargo build -p star9-web --target wasm32-unknown-unknown
+wasm-pack build crates/star9-web --target web --out-dir ../../target/star9-web-pkg --dev
 python3 -m http.server 4177 --bind 127.0.0.1
 ```
 
-Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build` command. The page sets `document.body.dataset.status` to `ok` after it initializes `wanix-system`, applies `wanix-bind` children, binds a ramfs, performs file API, mounts a 9P export over a real `MessagePort`, exercises Rust 9P loopback operations, exercises real browser storage adapters through the async JS mount table where available, mounts OPFS and StarFS through task-facing browser paths where supported, drives normalized and raw browser terminal paths, starts representative WASI and Go-compatible JS adapter tasks, runs a real module-worker JS workload, runs a direct WASI-style `.wasm` workload through the Wanix worker/runtime path, runs a Go-compatible JS/WASM runner fixture, and mounts a worker-exported 9P filesystem as both `#task/<id>/export` and `#vm/<id>/guest`.
+Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build` command. The page sets `document.body.dataset.status` to `ok` after it initializes `star9-system`, applies `star9-bind` children, binds a ramfs, performs file API, mounts a 9P export over a real `MessagePort`, exercises Rust 9P loopback operations, exercises real browser storage adapters through the async JS mount table where available, mounts OPFS and StarFS through task-facing browser paths where supported, drives normalized and raw browser terminal paths, starts representative WASI and Go-compatible JS adapter tasks, runs a real module-worker JS workload, runs a direct WASI-style `.wasm` workload through the Star 9 worker/runtime path, runs a Go-compatible JS/WASM runner fixture, and mounts a worker-exported 9P filesystem as both `#task/<id>/export` and `#vm/<id>/guest`.
 
 Rust-backed browser examples live under `examples/` for basic VM, VM workbench, import/iframe workbench, and worker-export behavior.
 

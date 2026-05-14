@@ -47,7 +47,7 @@
     "kind": "ns",
     "storage": {
       "backend": "cache",
-      "cache": "wanix-shell",
+      "cache": "star9-shell",
       "path": "responses"
     }
   },
@@ -56,7 +56,7 @@
     "kind": "ns",
     "storage": {
       "backend": "js-value",
-      "value": "window.wanixRoot",
+      "value": "window.star9Root",
       "path": "children"
     }
   },
@@ -65,7 +65,7 @@
     "kind": "ns",
     "storage": {
       "backend": "download",
-      "name": "wanix-output.tar",
+      "name": "star9-output.tar",
       "media_type": "application/x-tar"
     }
   },

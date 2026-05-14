@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createBrowserNetworkDevice } from "../crates/wanix-web/js/network-adapter.js";
+import { createBrowserNetworkDevice } from "../crates/star9-web/js/network-adapter.js";
 
 test("browser network adapter exposes WebSocket transport through net-style files", () => {
     const sockets = [];

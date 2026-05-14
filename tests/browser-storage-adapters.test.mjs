@@ -5,17 +5,17 @@ import {
     createFileSystemAccessStorageAdapter,
     createOpfsStorageAdapter,
     requestFileSystemAccessHandle,
-} from "../crates/wanix-web/js/storage-file-system.js";
+} from "../crates/star9-web/js/storage-file-system.js";
 import {
     createCacheStorageAdapter,
     createDomStorageAdapter,
     createDownloadStorageAdapter,
-} from "../crates/wanix-web/js/storage-web.js";
+} from "../crates/star9-web/js/storage-web.js";
 import {
     createJsValueStorageAdapter,
     createWorkerStorageAdapter,
-} from "../crates/wanix-web/js/storage-js-value.js";
-import { createBrowserStorageAdapter } from "../crates/wanix-web/js/mounts.js";
+} from "../crates/star9-web/js/storage-js-value.js";
+import { createBrowserStorageAdapter } from "../crates/star9-web/js/mounts.js";
 
 const encoder = new TextEncoder();
 
@@ -206,7 +206,7 @@ test("StarFS SDK storage is a separate optional backend", async () => {
     assert.deepEqual(await starfs.listXattrs("notes.txt"), ["user.kind"]);
     assert.equal(new TextDecoder().decode(await starfs.getXattr("notes.txt", "user.kind")), "note");
     assert.deepEqual((await starfs.readDir(".")).map((entry) => entry.name), ["notes.txt"]);
-    assert.equal(starfs.descriptor.version, "wanix-starfs-sdk-adapter-v1");
+    assert.equal(starfs.descriptor.version, "star9-starfs-sdk-adapter-v1");
 });
 
 class FakeStarFsSdkAdapter {

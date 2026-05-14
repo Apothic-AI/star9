@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
     AsyncMountTable,
     BrowserDebouncedSyncScheduler,
-} from "../crates/wanix-web/js/mounts.js";
+} from "../crates/star9-web/js/mounts.js";
 
 test("AsyncMountTable resolves longest mounted prefix and closes unmounted adapters", async () => {
     const root = fakeAdapter();

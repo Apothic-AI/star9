@@ -1028,6 +1028,106 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "star9-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "star9-core",
+ "star9-fs",
+ "star9-protocol",
+ "star9-runtime",
+ "star9-task",
+ "star9-vfs",
+]
+
+[[package]]
+name = "star9-core"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.11.1",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "star9-fs"
+version = "0.1.0"
+dependencies = [
+ "hmac",
+ "http",
+ "serde",
+ "serde_bytes",
+ "sha2",
+ "star9-core",
+ "tar",
+ "tempfile",
+ "ureq",
+]
+
+[[package]]
+name = "star9-protocol"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "star9-core",
+ "star9-fs",
+ "star9-task",
+ "star9-vfs",
+]
+
+[[package]]
+name = "star9-runtime"
+version = "0.1.0"
+dependencies = [
+ "portable-pty",
+ "star9-core",
+ "star9-fs",
+ "star9-protocol",
+ "star9-task",
+ "star9-vfs",
+ "wasmi",
+ "wat",
+]
+
+[[package]]
+name = "star9-task"
+version = "0.1.0"
+dependencies = [
+ "star9-core",
+ "star9-fs",
+ "star9-vfs",
+]
+
+[[package]]
+name = "star9-vfs"
+version = "0.1.0"
+dependencies = [
+ "star9-core",
+ "star9-fs",
+]
+
+[[package]]
+name = "star9-web"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "star9-core",
+ "star9-fs",
+ "star9-protocol",
+ "star9-runtime",
+ "star9-vfs",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
 name = "string-interner"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1228,106 +1328,6 @@ checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
 dependencies = [
  "same-file",
  "winapi-util",
-]
-
-[[package]]
-name = "wanix-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "wanix-core",
- "wanix-fs",
- "wanix-protocol",
- "wanix-runtime",
- "wanix-task",
- "wanix-vfs",
-]
-
-[[package]]
-name = "wanix-core"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.11.1",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "wanix-fs"
-version = "0.1.0"
-dependencies = [
- "hmac",
- "http",
- "serde",
- "serde_bytes",
- "sha2",
- "tar",
- "tempfile",
- "ureq",
- "wanix-core",
-]
-
-[[package]]
-name = "wanix-protocol"
-version = "0.1.0"
-dependencies = [
- "ciborium",
- "serde",
- "serde_bytes",
- "serde_json",
- "wanix-core",
- "wanix-fs",
- "wanix-task",
- "wanix-vfs",
-]
-
-[[package]]
-name = "wanix-runtime"
-version = "0.1.0"
-dependencies = [
- "portable-pty",
- "wanix-core",
- "wanix-fs",
- "wanix-protocol",
- "wanix-task",
- "wanix-vfs",
- "wasmi",
- "wat",
-]
-
-[[package]]
-name = "wanix-task"
-version = "0.1.0"
-dependencies = [
- "wanix-core",
- "wanix-fs",
- "wanix-vfs",
-]
-
-[[package]]
-name = "wanix-vfs"
-version = "0.1.0"
-dependencies = [
- "wanix-core",
- "wanix-fs",
-]
-
-[[package]]
-name = "wanix-web"
-version = "0.1.0"
-dependencies = [
- "js-sys",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wanix-core",
- "wanix-fs",
- "wanix-protocol",
- "wanix-runtime",
- "wanix-vfs",
- "wasm-bindgen",
- "wasm-bindgen-test",
- "web-sys",
 ]
 
 [[package]]

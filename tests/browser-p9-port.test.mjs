@@ -2,15 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-    attachWanixImportResponder,
-    createWanixP9FramePort,
-    createWanixP9FrameClient,
-    createWanixP9NamespaceMount,
-    serveWanixP9FramePort,
-} from "../crates/wanix-web/js/p9-port.js";
-import { createStorageP9FramePort } from "../crates/wanix-web/js/storage-p9.js";
+    attachStar9ImportResponder,
+    createStar9P9FramePort,
+    createStar9P9FrameClient,
+    createStar9P9NamespaceMount,
+    serveStar9P9FramePort,
+} from "../crates/star9-web/js/p9-port.js";
+import { createStorageP9FramePort } from "../crates/star9-web/js/storage-p9.js";
 
-test("serveWanixP9FramePort handles binary request frames and posts binary responses", {
+test("serveStar9P9FramePort handles binary request frames and posts binary responses", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -25,7 +25,7 @@ test("serveWanixP9FramePort handles binary request frames and posts binary respo
         },
     };
 
-    const server = await serveWanixP9FramePort(channel.port1, facade);
+    const server = await serveStar9P9FramePort(channel.port1, facade);
     t.after(() => server.close());
 
     const responses = [];
@@ -43,7 +43,7 @@ test("serveWanixP9FramePort handles binary request frames and posts binary respo
     assert.deepEqual(responses[0], p9Frame(101, 7, [100]));
 });
 
-test("serveWanixP9FramePort reports non-binary request frames through error listeners", {
+test("serveStar9P9FramePort reports non-binary request frames through error listeners", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -52,7 +52,7 @@ test("serveWanixP9FramePort reports non-binary request frames through error list
     const channel = new MessageChannel();
     let calls = 0;
     const errors = [];
-    const server = await serveWanixP9FramePort(channel.port1, {
+    const server = await serveStar9P9FramePort(channel.port1, {
         handle9pFrame() {
             calls += 1;
             return new Uint8Array([9]);
@@ -72,7 +72,7 @@ test("serveWanixP9FramePort reports non-binary request frames through error list
     assert.match(String(errors[0]), /expected binary runtime message to be binary data/);
 });
 
-test("serveWanixP9FramePort returns Rlerror when the facade throws after a valid request", {
+test("serveStar9P9FramePort returns Rlerror when the facade throws after a valid request", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -80,7 +80,7 @@ test("serveWanixP9FramePort returns Rlerror when the facade throws after a valid
 
     const channel = new MessageChannel();
     const errors = [];
-    const server = await serveWanixP9FramePort(channel.port1, {
+    const server = await serveStar9P9FramePort(channel.port1, {
         handle9pFrame() {
             throw new Error("boom");
         },
@@ -101,7 +101,7 @@ test("serveWanixP9FramePort returns Rlerror when the facade throws after a valid
     assert.deepEqual(responses[0], p9Frame(7, 77, [5, 0, 0, 0]));
 });
 
-test("attachWanixImportResponder transfers a served MessagePort-like 9P endpoint", {
+test("attachStar9ImportResponder transfers a served MessagePort-like 9P endpoint", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -110,7 +110,7 @@ test("attachWanixImportResponder transfers a served MessagePort-like 9P endpoint
     const target = new FakeWindowTarget();
     const frames = [];
     const servedServers = [];
-    const responder = await attachWanixImportResponder(target, {
+    const responder = await attachStar9ImportResponder(target, {
         handle9pFrame(frame) {
             frames.push(frame);
             return p9Frame(111, tagOf(frame), [tagOf(frame)]);
@@ -129,7 +129,7 @@ test("attachWanixImportResponder transfers a served MessagePort-like 9P endpoint
     replyChannel.port1.start();
 
     target.dispatchMessage({
-        request: "wanix-import",
+        request: "star9-import",
         responder: replyChannel.port2,
     });
 
@@ -155,13 +155,13 @@ test("attachWanixImportResponder transfers a served MessagePort-like 9P endpoint
     assert.equal(servedServers[0].closed, true);
 });
 
-test("createWanixP9FramePort creates a transferable served endpoint", {
+test("createStar9P9FramePort creates a transferable served endpoint", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
     t.after(restore);
 
-    const created = await createWanixP9FramePort({
+    const created = await createStar9P9FramePort({
         handle9pFrame(frame) {
             return p9Frame(121, tagOf(frame), [42]);
         },
@@ -184,21 +184,21 @@ test("createWanixP9FramePort creates a transferable served endpoint", {
     assert.deepEqual(responses[0], p9Frame(121, 11, [42]));
 });
 
-test("WanixP9FramePortClient resolves responses by 9P tag", {
+test("Star9P9FramePortClient resolves responses by 9P tag", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
     t.after(restore);
 
     const channel = new MessageChannel();
-    const server = await serveWanixP9FramePort(channel.port1, {
+    const server = await serveStar9P9FramePort(channel.port1, {
         handle9pFrame(frame) {
             return p9Frame(frame[4] + 1, tagOf(frame), [frame.at(-1)]);
         },
     });
     t.after(() => server.close());
 
-    const client = createWanixP9FrameClient(channel.port2);
+    const client = createStar9P9FrameClient(channel.port2);
     t.after(() => client.close());
 
     const first = await client.request(p9Frame(30, 21, [1]));
@@ -208,7 +208,7 @@ test("WanixP9FramePortClient resolves responses by 9P tag", {
     assert.deepEqual(second, p9Frame(33, 22, [2]));
 });
 
-test("WanixP9FramePortClient reports unknown response tags", {
+test("Star9P9FramePortClient reports unknown response tags", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -216,7 +216,7 @@ test("WanixP9FramePortClient reports unknown response tags", {
 
     const channel = new MessageChannel();
     const errors = [];
-    const client = createWanixP9FrameClient(channel.port1);
+    const client = createStar9P9FrameClient(channel.port1);
     client.onError((error) => errors.push(error));
     t.after(() => client.close());
 
@@ -227,7 +227,7 @@ test("WanixP9FramePortClient reports unknown response tags", {
     assert.match(String(errors[0]), /unknown tag 99/);
 });
 
-test("WanixP9FramePortClient aborts requests with Tflush and ignores late responses", {
+test("Star9P9FramePortClient aborts requests with Tflush and ignores late responses", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -241,7 +241,7 @@ test("WanixP9FramePortClient aborts requests with Tflush and ignores late respon
     channel.port1.start();
 
     const errors = [];
-    const client = createWanixP9FrameClient(channel.port2);
+    const client = createStar9P9FrameClient(channel.port2);
     client.onError((error) => errors.push(error));
     t.after(() => client.close());
 
@@ -267,7 +267,7 @@ test("WanixP9FramePortClient aborts requests with Tflush and ignores late respon
     assert.deepEqual(errors, []);
 });
 
-test("WanixP9FramePortServer aborts async work on Tflush and suppresses late replies", {
+test("Star9P9FramePortServer aborts async work on Tflush and suppresses late replies", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -277,7 +277,7 @@ test("WanixP9FramePortServer aborts async work on Tflush and suppresses late rep
     let aborted = false;
     let resolveRead = null;
     const serverResponses = [];
-    const server = await serveWanixP9FramePort(channel.port1, {
+    const server = await serveStar9P9FramePort(channel.port1, {
         handle9pFrame(frame, context) {
             context.signal.addEventListener("abort", () => {
                 aborted = true;
@@ -291,7 +291,7 @@ test("WanixP9FramePortServer aborts async work on Tflush and suppresses late rep
     server.onResponse(({ response }) => serverResponses.push(response));
     t.after(() => server.close());
 
-    const client = createWanixP9FrameClient(channel.port2);
+    const client = createStar9P9FrameClient(channel.port2);
     t.after(() => client.close());
 
     const controller = new AbortController();
@@ -309,7 +309,7 @@ test("WanixP9FramePortServer aborts async work on Tflush and suppresses late rep
     assert.notEqual(tagOf(serverResponses[0]), 44);
 });
 
-test("WanixP9NamespaceMount reads, writes, and lists over MessagePort 9P", {
+test("Star9P9NamespaceMount reads, writes, and lists over MessagePort 9P", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -321,7 +321,7 @@ test("WanixP9NamespaceMount reads, writes, and lists over MessagePort 9P", {
     });
     t.after(() => server.close());
 
-    const mount = await createWanixP9NamespaceMount(channel.port2);
+    const mount = await createStar9P9NamespaceMount(channel.port2);
     t.after(() => mount.close());
 
     assert.equal(await mount.readText("hello.txt"), "hello");
@@ -348,7 +348,7 @@ test("createStorageP9FramePort exports async storage adapters as 9P mounts", {
         exported.port.close();
     });
 
-    const mount = await createWanixP9NamespaceMount(exported.port);
+    const mount = await createStar9P9NamespaceMount(exported.port);
     t.after(() => mount.close());
 
     assert.equal(await mount.readText("hello.txt"), "hello");
@@ -379,7 +379,7 @@ test("storage 9P exports large writes and complete directory chunks", {
         exported.port.close();
     });
 
-    const mount = await createWanixP9NamespaceMount(exported.port);
+    const mount = await createStar9P9NamespaceMount(exported.port);
     t.after(() => mount.close());
 
     const payload = "x".repeat(130_000);
@@ -412,7 +412,7 @@ test("storage 9P server aborts pending adapter work on Tflush and rejects malfor
     });
 
     const errors = [];
-    const client = createWanixP9FrameClient(exported.port);
+    const client = createStar9P9FrameClient(exported.port);
     client.onError((error) => errors.push(error));
     t.after(() => client.close());
 
@@ -423,7 +423,7 @@ test("storage 9P server aborts pending adapter work on Tflush and rejects malfor
     await client.request(requestFrame(104, 2, (out) => {
         out.u32(1);
         out.u32(0xffffffff);
-        out.string("wanix");
+        out.string("star9");
         out.string("");
         out.u32(0);
     }));
@@ -468,7 +468,7 @@ test("storage 9P server aborts pending adapter work on Tflush and rejects malfor
     assert.equal(tagOf(responses[1]), 0xffff);
 });
 
-test("wanix import responder enforces origins and supports concurrent imported mounts", {
+test("star9 import responder enforces origins and supports concurrent imported mounts", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -476,7 +476,7 @@ test("wanix import responder enforces origins and supports concurrent imported m
 
     const target = new FakeWindowTarget();
     const servedServers = [];
-    const responder = await attachWanixImportResponder(target, {
+    const responder = await attachStar9ImportResponder(target, {
         handle9pFrame(frame) {
             return p9Frame(frame[4] + 1, tagOf(frame), [tagOf(frame) & 0xff]);
         },
@@ -493,7 +493,7 @@ test("wanix import responder enforces origins and supports concurrent imported m
     denied.port1.addEventListener("message", (event) => deniedTransfers.push(event.data));
     denied.port1.start();
     target.dispatchMessage({
-        request: "wanix-import",
+        request: "star9-import",
         responder: denied.port2,
     }, {
         origin: "https://denied.example",
@@ -506,7 +506,7 @@ test("wanix import responder enforces origins and supports concurrent imported m
         channel.port1.addEventListener("message", (event) => imported.push(event.data));
         channel.port1.start();
         target.dispatchMessage({
-            request: "wanix-import",
+            request: "star9-import",
             responder: channel.port2,
         }, {
             origin: "https://allowed.example",

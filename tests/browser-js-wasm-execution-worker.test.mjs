@@ -6,13 +6,13 @@ import {
     DEFAULT_JS_WASM_ERROR_TASK_MESSAGE_TYPE,
     DEFAULT_JS_WASM_EXIT_TASK_MESSAGE_TYPE,
     runJsWasmExecutionBootstrap,
-} from "../crates/wanix-web/js/js-wasm-execution-worker.js";
-import { DEFAULT_JS_WASM_BOOTSTRAP_MESSAGE_TYPE } from "../crates/wanix-web/js/js-wasm-worker-host.js";
+} from "../crates/star9-web/js/js-wasm-execution-worker.js";
+import { DEFAULT_JS_WASM_BOOTSTRAP_MESSAGE_TYPE } from "../crates/star9-web/js/js-wasm-worker-host.js";
 import {
     DEFAULT_RUNTIME_PORT_MESSAGE_TYPE,
     decodeWorkerRuntimeEnvelope,
     WorkerRuntimeEndpoint,
-} from "../crates/wanix-web/js/worker-runtime.js";
+} from "../crates/star9-web/js/worker-runtime.js";
 
 for (const order of ["runtime-first", "bootstrap-first"]) {
     test(`acceptJsWasmExecutionWorker waits for runtime and bootstrap (${order})`, async () => {
