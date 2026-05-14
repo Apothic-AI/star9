@@ -1,15 +1,15 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Wanix import workbench</title>
+<title>Star 9 import workbench</title>
 
-<wanix-system id="client" pkg="../target/wanix-web-pkg/wanix_web.js">
-  <wanix-bind kind="ns" dst="." src="#ramfs"></wanix-bind>
-</wanix-system>
+<star9-system id="client" pkg="../target/star9-web-pkg/star9_web.js">
+  <star9-bind kind="ns" dst="." src="#ramfs"></star9-bind>
+</star9-system>
 
 <pre id="out">starting</pre>
 
 <script type="module">
-  import "../crates/wanix-web/js/wanix-elements.js";
+  import "../crates/star9-web/js/star9-elements.js";
 
   const client = document.querySelector("#client");
   await client.ready;

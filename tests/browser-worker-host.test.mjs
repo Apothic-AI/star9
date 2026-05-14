@@ -5,13 +5,13 @@ import {
     BrowserWorkerHost,
     acceptBrowserWorkerHost,
     spawnBrowserWorkerHost,
-} from "../crates/wanix-web/js/worker-host.js";
+} from "../crates/star9-web/js/worker-host.js";
 import {
     DEFAULT_RUNTIME_PORT_MESSAGE_TYPE,
-    createWanixRuntimeNamespaceClient,
+    createStar9RuntimeNamespaceClient,
     decodeWorkerRuntimeEnvelope,
     encodeWorkerRuntimeEnvelope,
-} from "../crates/wanix-web/js/worker-runtime.js";
+} from "../crates/star9-web/js/worker-runtime.js";
 
 test("spawnBrowserWorkerHost connects a runtime port and bootstraps system context", {
     concurrency: false,
@@ -92,7 +92,7 @@ test("acceptBrowserWorkerHost routes binary request and response envelopes over 
     assert.deepEqual(responses[0].payload, responsePayload);
 });
 
-test("spawnBrowserWorkerHost wires worker runtime requests into WanixSystem facade", {
+test("spawnBrowserWorkerHost wires worker runtime requests into Star9System facade", {
     concurrency: false,
 }, async (t) => {
     const restore = installFakeMessageChannel();
@@ -202,7 +202,7 @@ test("BrowserWorkerHost exposes ordinary worker messages for export handoff", {
     assert.equal(targetMessages.length, 1);
 });
 
-test("callWanixLogger is a no-op by default and contains logger failures", async (t) => {
+test("callStar9Logger is a no-op by default and contains logger failures", async (t) => {
     const originalHTMLElement = globalThis.HTMLElement;
     globalThis.HTMLElement = class HTMLElement {};
     t.after(() => {
@@ -212,25 +212,25 @@ test("callWanixLogger is a no-op by default and contains logger failures", async
             globalThis.HTMLElement = originalHTMLElement;
         }
     });
-    const { callWanixLogger } = await import("../crates/wanix-web/js/system.js");
+    const { callStar9Logger } = await import("../crates/star9-web/js/system.js");
     const calls = [];
-    assert.equal(callWanixLogger(null, "readText", ["file"]), false);
+    assert.equal(callStar9Logger(null, "readText", ["file"]), false);
     assert.equal(
-        callWanixLogger((operation, path) => calls.push([operation, path]), "readText", ["file"]),
+        callStar9Logger((operation, path) => calls.push([operation, path]), "readText", ["file"]),
         true,
     );
     assert.deepEqual(calls, [["readText", "file"]]);
     assert.equal(
-        callWanixLogger(() => {
+        callStar9Logger(() => {
             throw new Error("logger failed");
         }, "writeText", ["file"]),
         false,
     );
 });
 
-test("createWanixRuntimeNamespaceClient sends typed namespace and fd requests over runtime endpoint", async () => {
+test("createStar9RuntimeNamespaceClient sends typed namespace and fd requests over runtime endpoint", async () => {
     const endpoint = new FakeRuntimeEndpoint();
-    const client = createWanixRuntimeNamespaceClient(endpoint, {
+    const client = createStar9RuntimeNamespaceClient(endpoint, {
         taskId: "task-9",
         encodeRequest: encodeJsonBytes,
         decodeResponse: decodeJsonBytes,

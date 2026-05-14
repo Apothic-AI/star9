@@ -1,20 +1,20 @@
 [workspace]
 members = [
-    "crates/wanix-cli",
-    "crates/wanix-core",
-    "crates/wanix-fs",
-    "crates/wanix-protocol",
-    "crates/wanix-runtime",
-    "crates/wanix-task",
-    "crates/wanix-vfs",
-    "crates/wanix-web",
+    "crates/star9-cli",
+    "crates/star9-core",
+    "crates/star9-fs",
+    "crates/star9-protocol",
+    "crates/star9-runtime",
+    "crates/star9-task",
+    "crates/star9-vfs",
+    "crates/star9-web",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://example.invalid/wanix-rs"
+repository = "https://example.invalid/star9"
 rust-version = "1.80"
 
 [workspace.dependencies]

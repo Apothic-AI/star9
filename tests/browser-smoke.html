@@ -1,56 +1,56 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>wanix-web smoke</title>
+<title>star9-web smoke</title>
 
 <script>
-  window.__wanixSmokeStore = {};
+  window.__star9SmokeStore = {};
 </script>
 
-<wanix-system
+<star9-system
   id="smoke-system"
-  pkg="../target/wanix-web-pkg/wanix_web.js"
+  pkg="../target/star9-web-pkg/star9_web.js"
 >
-  <wanix-bind kind="ns" type="ns" dst="." src="#ramfs"></wanix-bind>
-  <wanix-bind kind="file" type="file" dst="inline.txt">inline-browser-ok</wanix-bind>
-  <wanix-bind
+  <star9-bind kind="ns" type="ns" dst="." src="#ramfs"></star9-bind>
+  <star9-bind kind="file" type="file" dst="inline.txt">inline-browser-ok</star9-bind>
+  <star9-bind
     kind="file"
     type="file"
     dst="fetched.txt"
     src="./fixtures/browser/registered-file.txt"
-  ></wanix-bind>
-  <wanix-bind
+  ></star9-bind>
+  <star9-bind
     kind="ns"
     type="ns"
     dst="cache-store"
-    storage='{"backend":"cache","cache":"wanix-smoke","path":"root"}'
-  ></wanix-bind>
-  <wanix-bind
+    storage='{"backend":"cache","cache":"star9-smoke","path":"root"}'
+  ></star9-bind>
+  <star9-bind
     kind="ns"
     type="ns"
     dst="dom-store"
     storage='{"backend":"dom","node":"#status"}'
-  ></wanix-bind>
-  <wanix-bind
+  ></star9-bind>
+  <star9-bind
     kind="ns"
     type="ns"
     dst="shared-store"
-    storage='{"backend":"js-value","value":"window.__wanixSmokeStore"}'
-  ></wanix-bind>
-  <wanix-bind
+    storage='{"backend":"js-value","value":"window.__star9SmokeStore"}'
+  ></star9-bind>
+  <star9-bind
     kind="ns"
     type="ns"
     dst="shared-store-2"
-    storage='{"backend":"js-value","value":"window.__wanixSmokeStore"}'
-  ></wanix-bind>
-  <wanix-terminal id="smoke-terminal"></wanix-terminal>
-  <wanix-terminal id="smoke-raw-terminal" raw></wanix-terminal>
-</wanix-system>
+    storage='{"backend":"js-value","value":"window.__star9SmokeStore"}'
+  ></star9-bind>
+  <star9-terminal id="smoke-terminal"></star9-terminal>
+  <star9-terminal id="smoke-raw-terminal" raw></star9-terminal>
+</star9-system>
 
 <pre id="status">running</pre>
 
 <script type="module">
-  import "../crates/wanix-web/js/wanix-elements.js";
-  import { createWanixP9FramePort } from "../crates/wanix-web/js/p9-port.js";
+  import "../crates/star9-web/js/star9-elements.js";
+  import { createStar9P9FramePort } from "../crates/star9-web/js/p9-port.js";
 
   const status = document.querySelector("#status");
   const systemElement = document.querySelector("#smoke-system");
@@ -106,7 +106,7 @@
     await waitForReady(terminalElement);
     await waitForReady(rawTerminalElement);
 
-    const version = (await system.readText("#wanix/version")).trim();
+    const version = (await system.readText("#star9/version")).trim();
     const inlineText = (await system.readText("inline.txt")).trim();
     const fetchedText = (await system.readText("fetched.txt")).trim();
 
@@ -131,7 +131,7 @@
     await terminalElement.reset();
     const terminalReset = await terminalElement.refresh();
 
-    const portImport = await createWanixP9FramePort(system);
+    const portImport = await createStar9P9FramePort(system);
     await system.mountImportPort("remote-port", portImport.port);
     const remotePortInlineText = (await system.readText("remote-port/inline.txt")).trim();
     await system.writeText("remote-port/port-created.txt", "port-ok");
@@ -145,7 +145,7 @@
     const remoteFetchedText = (await system.readText("remote/fetched.txt")).trim();
 
     if (navigator.storage && typeof navigator.storage.getDirectory === "function") {
-      await system.mountStorage("opfs-store", { backend: "opfs", root: "wanix-smoke" });
+      await system.mountStorage("opfs-store", { backend: "opfs", root: "star9-smoke" });
       await system.writeText("opfs-store/state.txt", "opfs-ok");
       const opfsText = await system.readText("opfs-store/state.txt");
       assert(opfsText === "opfs-ok", `bad opfs text ${opfsText}`);
@@ -162,7 +162,7 @@
     if (navigator.storage && typeof navigator.storage.getDirectory === "function") {
       await system.mountTaskStorage(wasiTask, "storage/opfs", {
         backend: "opfs",
-        root: "wanix-smoke-task-opfs",
+        root: "star9-smoke-task-opfs",
       });
       await system.writeText(`#task/${wasiTask}/ns/storage/opfs/state.txt`, "task-opfs-ok");
       taskOpfsText = (await system.readText(`#task/${wasiTask}/ns/storage/opfs/state.txt`)).trim();
@@ -170,13 +170,13 @@
       system.unmount(`#task/${wasiTask}/ns/storage/opfs`);
       await system.mountTaskStorage(wasiTask, "storage/opfs", {
         backend: "opfs",
-        root: "wanix-smoke-task-opfs",
+        root: "star9-smoke-task-opfs",
       });
       taskOpfsRemountText = (await system.readText(`#task/${wasiTask}/ns/storage/opfs/state.txt`)).trim();
 
       await system.mountStarFs("starfs-store", {
         id: "smoke-agent",
-        storage: { backend: "opfs", root: "wanix-smoke-starfs" },
+        storage: { backend: "opfs", root: "star9-smoke-starfs" },
       });
       await system.writeText("starfs-store/report.txt", "starfs-ok");
       await system.writeText("starfs-store/.starfs/kv/prefs.json", "{\"theme\":\"dark\"}");

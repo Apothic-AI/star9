@@ -6,12 +6,12 @@ Default verification is offline and deterministic. Live or host-capability check
 
 ```sh
 cargo test --workspace
-cargo test -p wanix-fs --features native-http
+cargo test -p star9-fs --features native-http
 cargo clippy --workspace --all-targets -- -D warnings
 node --test tests/*.test.mjs
-cargo build -p wanix-web --target wasm32-unknown-unknown
-wasm-pack build crates/wanix-web --target web --out-dir ../../target/wanix-web-pkg --dev
-cargo run -p wanix-cli -- accept all
+cargo build -p star9-web --target wasm32-unknown-unknown
+wasm-pack build crates/star9-web --target web --out-dir ../../target/star9-web-pkg --dev
+cargo run -p star9-cli -- accept all
 ```
 
 Run the browser smoke after `wasm-pack build`:
@@ -24,25 +24,25 @@ Then open `http://127.0.0.1:4177/tests/browser-smoke.html` or drive it with Play
 
 ## HTTP
 
-`wanix-fs` includes native loopback coverage under the `native-http` feature. Broader live HTTP checks use an environment-gated test and should point at a temporary server that supports conditional GET/HEAD, validators, range responses, redirects, and auth failures. These checks are outside default test runs unless explicitly configured.
+`star9-fs` includes native loopback coverage under the `native-http` feature. Broader live HTTP checks use an environment-gated test and should point at a temporary server that supports conditional GET/HEAD, validators, range responses, redirects, and auth failures. These checks are outside default test runs unless explicitly configured.
 
 Run:
 
 ```sh
-WANIX_LIVE_HTTP=1 \
-WANIX_LIVE_HTTP_BASE_URL=https://example.test/wanix/readme.txt \
-cargo test -p wanix-fs --features native-http --test live_backends live_http -- --nocapture
+STAR9_LIVE_HTTP=1 \
+STAR9_LIVE_HTTP_BASE_URL=https://example.test/star9/readme.txt \
+cargo test -p star9-fs --features native-http --test live_backends live_http -- --nocapture
 ```
 
 Supported environment:
 
 ```sh
-WANIX_LIVE_HTTP=1
-WANIX_LIVE_HTTP_BASE_URL=https://example.test/wanix
-WANIX_LIVE_HTTP_AUTH=optional-token
-WANIX_LIVE_HTTP_RANGE_URL=https://example.test/wanix/range.bin
-WANIX_LIVE_HTTP_REDIRECT_URL=https://example.test/wanix/redirect
-WANIX_LIVE_HTTP_AUTH_FAILURE_URL=https://example.test/wanix/private
+STAR9_LIVE_HTTP=1
+STAR9_LIVE_HTTP_BASE_URL=https://example.test/star9
+STAR9_LIVE_HTTP_AUTH=optional-token
+STAR9_LIVE_HTTP_RANGE_URL=https://example.test/star9/range.bin
+STAR9_LIVE_HTTP_REDIRECT_URL=https://example.test/star9/redirect
+STAR9_LIVE_HTTP_AUTH_FAILURE_URL=https://example.test/star9/private
 ```
 
 ## S3 And R2
@@ -52,30 +52,30 @@ The default suite validates `S3ObjectStore` and `AwsSigV4Signer` with determinis
 Run:
 
 ```sh
-WANIX_LIVE_S3=1 \
-WANIX_S3_ENDPOINT=https://s3.example.com \
-WANIX_S3_REGION=auto \
-WANIX_S3_BUCKET=wanix-live \
-WANIX_S3_ACCESS_KEY_ID=... \
-WANIX_S3_SECRET_ACCESS_KEY=... \
-cargo test -p wanix-fs --features native-http --test live_backends live_s3 -- --nocapture
+STAR9_LIVE_S3=1 \
+STAR9_S3_ENDPOINT=https://s3.example.com \
+STAR9_S3_REGION=auto \
+STAR9_S3_BUCKET=star9-live \
+STAR9_S3_ACCESS_KEY_ID=... \
+STAR9_S3_SECRET_ACCESS_KEY=... \
+cargo test -p star9-fs --features native-http --test live_backends live_s3 -- --nocapture
 ```
 
 Supported environment:
 
 ```sh
-WANIX_LIVE_S3=1
-WANIX_S3_ENDPOINT=https://s3.example.com
-WANIX_S3_REGION=auto
-WANIX_S3_BUCKET=wanix-live
-WANIX_S3_ACCESS_KEY_ID=...
-WANIX_S3_SECRET_ACCESS_KEY=...
-WANIX_S3_PREFIX=wanix-live-${USER}
-WANIX_S3_SERVICE=s3
-WANIX_LIVE_S3_AUTH_FAILURE=1
+STAR9_LIVE_S3=1
+STAR9_S3_ENDPOINT=https://s3.example.com
+STAR9_S3_REGION=auto
+STAR9_S3_BUCKET=star9-live
+STAR9_S3_ACCESS_KEY_ID=...
+STAR9_S3_SECRET_ACCESS_KEY=...
+STAR9_S3_PREFIX=star9-live-${USER}
+STAR9_S3_SERVICE=s3
+STAR9_LIVE_S3_AUTH_FAILURE=1
 ```
 
-For Cloudflare R2, use the R2 S3-compatible endpoint, `WANIX_S3_REGION=auto`, and keep `WANIX_S3_SERVICE=s3`.
+For Cloudflare R2, use the R2 S3-compatible endpoint, `STAR9_S3_REGION=auto`, and keep `STAR9_S3_SERVICE=s3`.
 
 ## Browser Storage
 
@@ -83,7 +83,7 @@ For Cloudflare R2, use the R2 S3-compatible endpoint, `WANIX_S3_REGION=auto`, an
 
 Required browser storage behaviors: read, write, list, stat, mkdir, remove, error reporting, explicit flush/close where available, and cleanup of smoke data.
 
-Raw OPFS is the preferred simple persistent browser filesystem. `wanix-system.mountStorage(...)` mounts OPFS directly into the browser async mount table. `wanix-system.mountStorageExport(...)` and `wanix-system.mountTaskStorage(...)` export the async adapter through a `MessagePort` 9P server, then mount the imported namespace at a normal browser Wanix path such as `#task/<id>/ns/storage/opfs`. This is the real browser storage boundary; synchronous Rust Wasmi task namespaces still use descriptor-backed stand-ins unless a browser worker proxy is mounted over 9P.
+Raw OPFS is the preferred simple persistent browser filesystem. `star9-system.mountStorage(...)` mounts OPFS directly into the browser async mount table. `star9-system.mountStorageExport(...)` and `star9-system.mountTaskStorage(...)` export the async adapter through a `MessagePort` 9P server, then mount the imported namespace at a normal browser Star 9 path such as `#task/<id>/ns/storage/opfs`. This is the real browser storage boundary; synchronous Rust Wasmi task namespaces still use descriptor-backed stand-ins unless a browser worker proxy is mounted over 9P.
 
 StarFS is an additional optional mount backend, not a replacement for raw OPFS or the other browser storage mounts. The current lightweight adapter is StarFS-compatible and OPFS-backed by default:
 
@@ -113,7 +113,7 @@ The default `#net` device is deterministic and offline. Real native TCP and brow
 Run the native TCP loopback host-capability check with:
 
 ```sh
-cargo run -p wanix-cli -- accept native-tcp
+cargo run -p star9-cli -- accept native-tcp
 ```
 
 This opens a loopback `TcpListener`, connects a `TcpStream`, exchanges request/response bytes, and exits. It is separate from `accept all` so default verification remains deterministic and does not open sockets beyond explicit host opt-in.
@@ -121,7 +121,7 @@ This opens a loopback `TcpListener`, connects a `TcpStream`, exchanges request/r
 Run the native 9P stream import/serve check with:
 
 ```sh
-cargo run -p wanix-cli -- accept native-p9
+cargo run -p star9-cli -- accept native-p9
 ```
 
 This serves a `MemFs` export over a loopback `TcpListener`, imports it through `TcpStreamTransport`, performs read/write operations, and closes cleanly.
@@ -133,7 +133,7 @@ Browser network transport coverage is WebSocket/WebTransport-style and file-mode
 Host process execution is opt-in. Run it only on native hosts where spawning `/bin/sh` through a pseudo terminal is acceptable:
 
 ```sh
-cargo run -p wanix-cli -- accept native
+cargo run -p star9-cli -- accept native
 ```
 
 This validates the Rust native PTY handler's stdout routing and exit-state propagation without making host process execution part of the default offline gate.

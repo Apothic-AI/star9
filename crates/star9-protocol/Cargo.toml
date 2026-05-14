@@ -1,0 +1,19 @@
+[package]
+name = "star9-protocol"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ciborium = "0.2"
+serde.workspace = true
+serde_bytes.workspace = true
+star9-core = { path = "../star9-core" }
+star9-fs = { path = "../star9-fs" }
+star9-task = { path = "../star9-task" }
+star9-vfs = { path = "../star9-vfs" }
+
+[dev-dependencies]
+serde_json.workspace = true

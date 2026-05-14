@@ -8,12 +8,12 @@ import {
     attachBrowserJsWasmWorkerHost,
     createJsWasmExecutionBootstrap,
     spawnBrowserJsWasmWorkerHost,
-} from "../crates/wanix-web/js/js-wasm-worker-host.js";
+} from "../crates/star9-web/js/js-wasm-worker-host.js";
 import {
     DEFAULT_RUNTIME_PORT_MESSAGE_TYPE,
     encodeWorkerRuntimeEnvelope,
-} from "../crates/wanix-web/js/worker-runtime.js";
-import { BrowserWorkerHost } from "../crates/wanix-web/js/worker-host.js";
+} from "../crates/star9-web/js/worker-runtime.js";
+import { BrowserWorkerHost } from "../crates/star9-web/js/worker-host.js";
 
 test("createJsWasmExecutionBootstrap normalizes execution fields", () => {
     const bootstrap = createJsWasmExecutionBootstrap({

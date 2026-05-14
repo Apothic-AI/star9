@@ -1,17 +1,17 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Wanix worker export</title>
+<title>Star 9 worker export</title>
 
-<wanix-system id="wanix" pkg="../target/wanix-web-pkg/wanix_web.js">
-  <wanix-bind kind="ns" dst="." src="#ramfs"></wanix-bind>
-</wanix-system>
+<star9-system id="star9" pkg="../target/star9-web-pkg/star9_web.js">
+  <star9-bind kind="ns" dst="." src="#ramfs"></star9-bind>
+</star9-system>
 
 <pre id="out">starting</pre>
 
 <script type="module">
-  import "../crates/wanix-web/js/wanix-elements.js";
+  import "../crates/star9-web/js/star9-elements.js";
 
-  const system = document.querySelector("#wanix");
+  const system = document.querySelector("#star9");
   await system.ready;
   const task = await system.startBrowserWorker("../tests/fixtures/browser/export-worker.mjs", {
     workerId: "example-export",

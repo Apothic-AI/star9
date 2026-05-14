@@ -27,7 +27,7 @@
     "starfs_reference": {
       "path": "/home/bitnom/Code/apothic-monorepo/libs/rust/starfs",
       "observed_sdks": ["Rust SDK over PrimaDB/Turso", "TypeScript SDK with browser tests over database-wasm", "CLI/FUSE/NFS mount crates"],
-      "wanix_integration_choice": "Do not vendor the external SDK into default wanix-rs builds. The checked-in starfs-sdk adapter hook wraps a supplied external SDK/worker/wasm adapter as an additional backend when users opt in."
+      "star9_integration_choice": "Do not vendor the external SDK into default star9 builds. The checked-in starfs-sdk adapter hook wraps a supplied external SDK/worker/wasm adapter as an additional backend when users opt in."
     }
   },
   "browser_storage_task_visibility": {
@@ -43,7 +43,7 @@
   "cross_document_9p": {
     "classification": "browser capability-gated implementation",
     "implemented": [
-      "origin-gated wanix-import responder",
+      "origin-gated star9-import responder",
       "concurrent imported ports from one exporter",
       "read/write/list through imported namespace",
       "error, malformed frame, abort/Tflush, late reply, and teardown coverage"
@@ -54,14 +54,14 @@
     "classification": "live-service opt-in implementation",
     "default": "offline fake transports and native loopback tests",
     "opt_in_docs": "docs/LIVE_TESTS.md",
-    "tests": "crates/wanix-fs/tests/live_backends.rs",
-    "requires": ["WANIX_LIVE_HTTP=1 with WANIX_LIVE_HTTP_BASE_URL", "WANIX_LIVE_S3=1 with S3/R2 credentials"]
+    "tests": "crates/star9-fs/tests/live_backends.rs",
+    "requires": ["STAR9_LIVE_HTTP=1 with STAR9_LIVE_HTTP_BASE_URL", "STAR9_LIVE_S3=1 with S3/R2 credentials"]
   },
   "network": {
     "default": "deterministic #net Plan 9-style resource model",
     "wasi": "listener-backed sock_accept plus sock_recv/sock_send/sock_shutdown through #net data fds",
-    "native_opt_in": ["cargo run -p wanix-cli -- accept native-tcp", "cargo run -p wanix-cli -- accept native-p9"],
-    "browser_boundary": "WebSocket/WebTransport-style transport is exposed through crates/wanix-web/js/network-adapter.js; raw TCP is not a browser API."
+    "native_opt_in": ["cargo run -p star9-cli -- accept native-tcp", "cargo run -p star9-cli -- accept native-p9"],
+    "browser_boundary": "WebSocket/WebTransport-style transport is exposed through crates/star9-web/js/network-adapter.js; raw TCP is not a browser API."
   },
   "vm": {
     "default": "deterministic VM provider surface behind VmProvider",

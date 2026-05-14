@@ -1,0 +1,26 @@
+[package]
+name = "star9-fs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+native-http = ["dep:ureq"]
+
+[dependencies]
+hmac.workspace = true
+http = "1"
+serde.workspace = true
+serde_bytes.workspace = true
+sha2.workspace = true
+tar = "0.4"
+star9-core = { path = "../star9-core" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

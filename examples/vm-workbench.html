@@ -1,18 +1,18 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Wanix VM workbench</title>
+<title>Star 9 VM workbench</title>
 
-<wanix-system id="wanix" pkg="../target/wanix-web-pkg/wanix_web.js">
-  <wanix-bind kind="ns" dst="." src="#ramfs"></wanix-bind>
-  <wanix-terminal id="term" raw></wanix-terminal>
-</wanix-system>
+<star9-system id="star9" pkg="../target/star9-web-pkg/star9_web.js">
+  <star9-bind kind="ns" dst="." src="#ramfs"></star9-bind>
+  <star9-terminal id="term" raw></star9-terminal>
+</star9-system>
 
 <pre id="out">starting</pre>
 
 <script type="module">
-  import "../crates/wanix-web/js/wanix-elements.js";
+  import "../crates/star9-web/js/star9-elements.js";
 
-  const system = document.querySelector("#wanix");
+  const system = document.querySelector("#star9");
   const term = document.querySelector("#term");
   await Promise.all([system.ready, term.ready]);
   const vm = (await system.readText("#vm/new/v86")).trim();

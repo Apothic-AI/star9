@@ -1,4 +1,4 @@
-# wanix-rs Plan
+# Star 9 Plan
 
 ## Current Focus
 
@@ -18,7 +18,7 @@ Current sprint contract:
 - Preserve the existing browser storage adapters: OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage.
 - Prefer raw OPFS for simple persistent browser workspaces.
 - Keep StarFS as separate optional mount backends: the lightweight OPFS-backed compatible adapter and the additional `starfs-sdk` adapter hook for an external StarFS SDK/worker/wasm integration.
-- Route browser async storage into Wanix task-facing paths through a 9P proxy/mount boundary instead of pretending browser async APIs satisfy the synchronous Rust `FileSystem` trait.
+- Route browser async storage into Star 9 task-facing paths through a 9P proxy/mount boundary instead of pretending browser async APIs satisfy the synchronous Rust `FileSystem` trait.
 - Expand browser 9P import/export parity for mutation, errors, large payloads, cancellation, malformed frames, concurrent imports, and teardown.
 - Keep deterministic terminal/VM/network devices as default conformance. Native TCP, native PTY, real VM providers, and live HTTP/S3/R2 checks remain explicit opt-ins.
 - Keep Go-compatible JS/WASM execution represented by Rust/browser worker lifecycle fixtures without reintroducing Go build dependencies.
@@ -121,7 +121,7 @@ This sprint is the final port-completion run. The work should proceed continuous
 ### 1. Evidence Inventory And Gap Matrix
 
 - Build a machine-readable audit of WASI preview1 imports implemented by `WasmiWasiHandler`, imports still missing, imports intentionally unsupported, and the exact errno behavior for unsupported host capabilities.
-- Audit direct JS/WASM execution paths, browser worker bootstrap paths, task fd/namespace handoff, browser custom elements, and current smoke fixtures against the reference `../wanix` behavior that still matters.
+- Audit direct JS/WASM execution paths, browser worker bootstrap paths, task fd/namespace handoff, browser custom elements, and current smoke fixtures against the reference the legacy upstream reference checkout behavior that still matters.
 - Audit device roots for terminal, VM, and network files against the expected Plan 9-style file protocol: stable files, control commands, state transitions, blocking or async behavior, close semantics, resize/winch behavior, and error behavior.
 - Audit backend surfaces for HTTP, S3/R2, browser storage, SyncFs scheduling, cache validators, conditional requests, auth errors, pagination, object metadata, conflict handling, and capability detection.
 - Audit all `unsupported`, `not supported`, `placeholder`, `TODO`, `FIXME`, `todo!`, and `unimplemented!` sites. Each site must be assigned to one of: remove by implementation, keep as a host capability boundary, or keep as an explicit spec-level unsupported behavior with direct tests.
@@ -130,20 +130,20 @@ This sprint is the final port-completion run. The work should proceed continuous
 ### 2. WASI Preview1 Completion
 
 - Complete the preview1 import matrix for fd, path, clock, random, args/env, process, polling, advisory, sync, file metadata, and socket-like imports.
-- Replace broad unsupported behavior with precise host behavior where Wanix can model it over task namespaces and fd handles.
-- Implement socket/listener behavior once the network device adapter contract is in place: create/listen/accept/connect/read/write/shutdown should route through deterministic Wanix network resources by default and native/browser adapters when explicitly enabled.
+- Replace broad unsupported behavior with precise host behavior where Star 9 can model it over task namespaces and fd handles.
+- Implement socket/listener behavior once the network device adapter contract is in place: create/listen/accept/connect/read/write/shutdown should route through deterministic Star 9 network resources by default and native/browser adapters when explicitly enabled.
 - Add representative compiled fixtures, not only inline WAT, covering file tree traversal, stdio, args/env, clocks/random, fd renumbering, links/symlinks/xattrs where applicable, polling, network sockets, nonzero exits, traps, and invalid syscall/error paths.
-- Ensure WASI workloads run through the normal Wanix task lifecycle: namespace clone, cwd/preopens, fd table installation, stdio descriptors, task messages, exit state, cleanup, and deterministic status reporting.
-- Gate: Rust tests and CLI acceptance run compiled WASI workloads through Wanix task paths without Go shims, and the syscall matrix has no unclassified preview1 imports.
+- Ensure WASI workloads run through the normal Star 9 task lifecycle: namespace clone, cwd/preopens, fd table installation, stdio descriptors, task messages, exit state, cleanup, and deterministic status reporting.
+- Gate: Rust tests and CLI acceptance run compiled WASI workloads through Star 9 task paths without Go shims, and the syscall matrix has no unclassified preview1 imports.
 
 ### 3. Direct Browser JS/WASM Execution
 
-- Move browser execution beyond bootstrap-only fixtures by running real module workers that instantiate representative JS and WebAssembly workloads through Wanix runtime ports.
-- Provide a browser-side WASI import object backed by Wanix runtime requests for namespace and fd operations, with stdio and task messages routed through the same task fd table used by native execution.
+- Move browser execution beyond bootstrap-only fixtures by running real module workers that instantiate representative JS and WebAssembly workloads through Star 9 runtime ports.
+- Provide a browser-side WASI import object backed by Star 9 runtime requests for namespace and fd operations, with stdio and task messages routed through the same task fd table used by native execution.
 - Support namespace/fd/stdio handoff into browser workers, explicit task start/exit/error messages, port handoff, structured worker cleanup, and deterministic propagation of worker failures into `#task/<id>/exit`.
-- Keep direct `.wasm` behavior explicit: either implement direct browser WASM execution through the Wanix WASI import object or retain a tested, documented unsupported boundary if only JS-runner execution is meant to be public.
+- Keep direct `.wasm` behavior explicit: either implement direct browser WASM execution through the Star 9 WASI import object or retain a tested, documented unsupported boundary if only JS-runner execution is meant to be public.
 - Expand browser smoke and Node tests to cover successful JS workload, successful WASM workload, stderr/stdout routing, namespace read/write, worker error, port transfer, cancellation/termination, and cleanup.
-- Gate: Playwright smoke starts real browser JS and WASM workloads through Wanix task paths and observes fd/stdout/task/exit/port behavior without test-only shortcuts.
+- Gate: Playwright smoke starts real browser JS and WASM workloads through Star 9 task paths and observes fd/stdout/task/exit/port behavior without test-only shortcuts.
 
 ### 4. Terminal, VM, And Network Device Parity
 
@@ -186,7 +186,7 @@ This sprint is the final port-completion run. The work should proceed continuous
 ## Planning Constraints
 
 - Do not attach scheduling/time estimate assumptions to planning docs.
-- Use `../wanix` as the source reference while porting behavior into Rust.
+- Use the legacy upstream reference checkout as the source reference while porting behavior into Rust.
 - Do not invoke Go code from runtime, build, test, browser smoke, or conformance paths.
 - Treat Rust specs, fixtures, and conformance tests as the authoritative behavior source once behavior is ported.
 - Prefer generalized Rust designs over one-off translations of individual files.
@@ -195,7 +195,7 @@ This sprint is the final port-completion run. The work should proceed continuous
 
 ## Target Outcome
 
-The sprint is complete when `wanix-rs` can build and run a Rust-native implementation of the main Wanix runtime surfaces:
+The sprint is complete when `star9` can build and run a Rust-native implementation of the main Star 9 runtime surfaces:
 
 - Plan 9-style namespace and bind semantics.
 - Core filesystem traits, metadata, file handles, and path resolution.
@@ -210,14 +210,14 @@ The sprint is complete when `wanix-rs` can build and run a Rust-native implement
 
 Use a Rust workspace with crates split by semantic boundary:
 
-- `wanix-core`: errors, paths, file modes, metadata, context/origin flags, utility types.
-- `wanix-fs`: filesystem and file traits, helper operations, `fskit` equivalents, `memfs`, `localfs`, `tarfs`, pipes, signals, caches.
-- `wanix-vfs`: namespace, bind/unbind, union behavior, path resolution, symlink traversal.
-- `wanix-task`: tasks, task filesystem, drivers, file descriptors, task-local namespace cloning.
-- `wanix-protocol`: API method schemas, CBOR/RPC message types, HTTP filesystem metadata, 9P bridge types where needed.
-- `wanix-runtime`: root construction, built-in device registration, CLI/runtime composition.
-- `wanix-web`: `wasm-bindgen`/web-sys integration, web components, workers, JS value filesystem, browser storage backends.
-- `wanix-cli`: native command entry point and serving/build tooling.
+- `star9-core`: errors, paths, file modes, metadata, context/origin flags, utility types.
+- `star9-fs`: filesystem and file traits, helper operations, `fskit` equivalents, `memfs`, `localfs`, `tarfs`, pipes, signals, caches.
+- `star9-vfs`: namespace, bind/unbind, union behavior, path resolution, symlink traversal.
+- `star9-task`: tasks, task filesystem, drivers, file descriptors, task-local namespace cloning.
+- `star9-protocol`: API method schemas, CBOR/RPC message types, HTTP filesystem metadata, 9P bridge types where needed.
+- `star9-runtime`: root construction, built-in device registration, CLI/runtime composition.
+- `star9-web`: `wasm-bindgen`/web-sys integration, web components, workers, JS value filesystem, browser storage backends.
+- `star9-cli`: native command entry point and serving/build tooling.
 
 These crate names are working names. They can be collapsed if implementation evidence shows that fewer crates reduce coupling without blurring ownership.
 
@@ -226,7 +226,7 @@ These crate names are working names. They can be collapsed if implementation evi
 Proceed through these gates in order. A gate is done only when the Rust implementation has tests or differential evidence proving the targeted behavior.
 
 1. Source map and contracts
-   - Inventory exported APIs, filesystem extension traits, resource/device roots, worker message schemas, and example entry points from `../wanix`.
+   - Inventory exported APIs, filesystem extension traits, resource/device roots, worker message schemas, and example entry points from the legacy upstream reference checkout.
    - Convert required runtime behavior from the reference implementation into Rust-owned conformance fixtures and checklists.
    - Mark generated, vendored, or reference-only code that should not be ported directly.
 
@@ -255,7 +255,7 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 7. Device filesystems
    - Port pipe and signal first because they are core communication primitives.
    - Port terminal, VM, worker, DOM, cache, download, JS value filesystem, browser storage, and network devices according to dependency order.
-   - For device surfaces that depend heavily on browser APIs, keep Rust traits host-neutral and place JS bindings in `wanix-web`.
+   - For device surfaces that depend heavily on browser APIs, keep Rust traits host-neutral and place JS bindings in `star9-web`.
 
 8. Protocol and API surfaces
    - Port the public file API currently exposed by `api.Responder` and `api/handle.js`.
@@ -265,8 +265,8 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 
 9. WASM and browser runtime
    - Port root runtime initialization and built-in bindings from the current `wasm` package.
-   - Recreate `wanix-system` behavior with Rust-backed WASM exports and minimal JS glue.
-- Port worker startup, task worker messaging, port opening, 9P import/export, namespace setup from `<wanix-bind>`, and mount integration for browser filesystem bindings. Keep the JS Worker host facade covered by deterministic fake-worker tests while real browser execution is integrated.
+   - Recreate `star9-system` behavior with Rust-backed WASM exports and minimal JS glue.
+- Port worker startup, task worker messaging, port opening, 9P import/export, namespace setup from `<star9-bind>`, and mount integration for browser filesystem bindings. Keep the JS Worker host facade covered by deterministic fake-worker tests while real browser execution is integrated.
 
 10. WASI and Go-compatible JS execution
 - Extend the Rust Wasmi WASI preview1 handler, including fd positional I/O/allocation and remaining preview1 syscall coverage, and port or replace the current worker shims for Go-compatible JS/WASM workloads.
@@ -275,7 +275,7 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 
 11. CLI, build, and examples
     - Build the native CLI and web distribution artifacts from the Rust workspace.
-    - Port representative examples so they run against Rust-backed Wanix.
+    - Port representative examples so they run against Rust-backed Star 9.
     - Keep examples as acceptance tests where possible.
 
 12. Hardening and cleanup
@@ -297,6 +297,6 @@ Proceed through these gates in order. A gate is done only when the Rust implemen
 - `cargo test --workspace` passes.
 - Rust conformance tests cover the core filesystem, namespace, task, and API semantics.
 - Native CLI acceptance commands cover 9P loopback, deterministic devices, runtime worker protocol smoke paths, and fd-backed stdout routing.
-- Browser smoke tests prove that `wanix-system` can initialize, bind filesystems, open a handle, run file API operations, mount browser storage/9P imports, start representative WASI/Go-compatible JS tasks, and run a real module-worker JS/WASM task through Wanix worker paths.
+- Browser smoke tests prove that `star9-system` can initialize, bind filesystems, open a handle, run file API operations, mount browser storage/9P imports, start representative WASI/Go-compatible JS tasks, and run a real module-worker JS/WASM task through Star 9 worker paths.
 - Existing examples have Rust-backed equivalents or explicit replacement tests.
 - The public Rust API is documented enough to guide continued development from this repository alone.
