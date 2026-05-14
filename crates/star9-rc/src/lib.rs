@@ -126,7 +126,16 @@ impl RcStatus {
         }
     }
 
-    fn pipeline(left: &Self, right: &Self) -> Self {
+    pub fn from_status(status: impl Into<String>) -> Self {
+        let status = status.into();
+        if status == "0" {
+            Self::success()
+        } else {
+            Self(status)
+        }
+    }
+
+    pub fn pipeline(left: &Self, right: &Self) -> Self {
         let left = if left.0.is_empty() { "0" } else { &left.0 };
         let right = if right.0.is_empty() { "0" } else { &right.0 };
         Self(format!("{left}|{right}"))
@@ -225,6 +234,27 @@ pub struct RcProcessJobResult {
     pub stderr: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcExecutableStageSpec {
+    pub argv: Vec<String>,
+    pub stdin: String,
+    pub cwd: String,
+    pub env: BTreeMap<String, Vec<String>>,
+    pub fd_bindings: Vec<RcFdBindingSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcExecutableGraphSpec {
+    pub kind: RcProcessGraphKind,
+    pub job_id: Option<u32>,
+    pub stages: Vec<RcExecutableStageSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcStartedProcessJob {
+    pub id: u32,
+}
+
 pub trait RcHost {
     fn current_dir(&self) -> String;
     fn set_current_dir(&mut self, path: &str) -> RcResult<()>;
@@ -261,6 +291,18 @@ pub trait RcHost {
     }
     fn send_note_to_processes(&mut self, _note: &str) -> RcResult<()> {
         Ok(())
+    }
+    fn execute_process_graph(
+        &mut self,
+        _spec: RcExecutableGraphSpec,
+    ) -> RcResult<Option<RcOutput>> {
+        Ok(None)
+    }
+    fn start_process_graph_job(
+        &mut self,
+        _spec: RcExecutableGraphSpec,
+    ) -> RcResult<Option<RcStartedProcessJob>> {
+        Ok(None)
     }
     fn rfork(&mut self, flags: &str) -> RcResult<()> {
         if flags.chars().all(|flag| flag == 'e') {
@@ -1530,6 +1572,167 @@ impl<H: RcHost> RcSession<H> {
         self.host.finish_process_graph(record, &outcomes).ok();
     }
 
+    fn try_execute_pipeline_graph(
+        &mut self,
+        left: &Node,
+        right: &Node,
+        from_fd: u32,
+        to_fd: u32,
+        input: &str,
+    ) -> Option<RcOutput> {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        Self::append_pipeline_nodes(left, &mut nodes, &mut edges)?;
+        edges.push((from_fd, to_fd));
+        Self::append_pipeline_nodes(right, &mut nodes, &mut edges)?;
+        if nodes.len() < 2 || edges.len() + 1 != nodes.len() {
+            return None;
+        }
+
+        let mut bindings = vec![Vec::new(); nodes.len()];
+        for (index, (from_fd, to_fd)) in edges.into_iter().enumerate() {
+            bindings[index].push(RcFdBindingSpec {
+                fd: from_fd,
+                path: format!("pipe:{index}/data"),
+                readable: false,
+                writable: true,
+            });
+            bindings[index + 1].push(RcFdBindingSpec {
+                fd: to_fd,
+                path: format!("pipe:{index}/data1"),
+                readable: true,
+                writable: false,
+            });
+        }
+
+        let mut stages = Vec::new();
+        for (index, node) in nodes.into_iter().enumerate() {
+            let stdin = if index == 0 {
+                input.to_string()
+            } else {
+                String::new()
+            };
+            stages.push(self.executable_stage(node, stdin, bindings[index].clone())?);
+        }
+        self.host
+            .execute_process_graph(RcExecutableGraphSpec {
+                kind: RcProcessGraphKind::Pipeline,
+                job_id: None,
+                stages,
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn append_pipeline_nodes<'a>(
+        node: &'a Node,
+        nodes: &mut Vec<&'a Node>,
+        edges: &mut Vec<(u32, u32)>,
+    ) -> Option<()> {
+        match node {
+            Node::Simple(_) => {
+                nodes.push(node);
+                Some(())
+            }
+            Node::Pipe(left, right, spec) => {
+                Self::append_pipeline_nodes(left, nodes, edges)?;
+                edges.push((
+                    spec.as_ref().map(|spec| spec.from_fd).unwrap_or(1),
+                    spec.as_ref().map(|spec| spec.to_fd).unwrap_or(0),
+                ));
+                Self::append_pipeline_nodes(right, nodes, edges)
+            }
+            _ => None,
+        }
+    }
+
+    fn try_start_background_graph(&mut self, id: u32, node: &Node, input: &str) -> bool {
+        let Some(stage) = self.executable_stage(node, input.to_string(), Vec::new()) else {
+            return false;
+        };
+        self.host
+            .start_process_graph_job(RcExecutableGraphSpec {
+                kind: RcProcessGraphKind::Background,
+                job_id: Some(id),
+                stages: vec![stage],
+            })
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    fn executable_stage(
+        &mut self,
+        node: &Node,
+        stdin: String,
+        fd_bindings: Vec<RcFdBindingSpec>,
+    ) -> Option<RcExecutableStageSpec> {
+        let Node::Simple(simple) = node else {
+            return None;
+        };
+        if !simple.redirects.is_empty() {
+            return None;
+        }
+
+        let mut env = self.vars.clone();
+        for assignment in &simple.assignments {
+            env.insert(
+                assignment.name.clone(),
+                if assignment.values.is_empty() {
+                    Vec::new()
+                } else {
+                    self.expand_words(&assignment.values)
+                },
+            );
+        }
+
+        let words = self.expand_words(&simple.words);
+        if words.is_empty()
+            || self.functions.contains_key(&words[0])
+            || BUILTINS.contains(&words[0].as_str())
+        {
+            return None;
+        }
+        let argv = self.resolve_external_argv(&words)?;
+        Some(RcExecutableStageSpec {
+            argv,
+            stdin,
+            cwd: self.host.current_dir(),
+            env,
+            fd_bindings,
+        })
+    }
+
+    fn resolve_external_argv(&mut self, words: &[String]) -> Option<Vec<String>> {
+        let command = words.first()?;
+        if matches!(command.as_str(), "wasi" | "worker" | "native") && words.len() > 1 {
+            return Some(words.to_vec());
+        }
+        if is_host_executable_path(command) {
+            return Some(words.to_vec());
+        }
+        if command.contains('/') {
+            return self.host_executable_argv(command, &words[1..]);
+        }
+        for dir in self.lookup_var("path") {
+            let candidate = join_path(&dir, command);
+            if let Some(argv) = self.host_executable_argv(&candidate, &words[1..]) {
+                return Some(argv);
+            }
+        }
+        None
+    }
+
+    fn host_executable_argv(&mut self, path: &str, args: &[String]) -> Option<Vec<String>> {
+        let bytes = self.host.read_file(path).ok()?;
+        if !is_host_executable(path, &bytes) {
+            return None;
+        }
+        let mut argv = vec![path.to_string()];
+        argv.extend(args.iter().cloned());
+        Some(argv)
+    }
+
     fn eval_node(&mut self, node: &Node, input: String) -> RcOutput {
         match node {
             Node::Empty => RcOutput::default(),
@@ -1558,6 +1761,11 @@ impl<H: RcHost> RcSession<H> {
             Node::Pipe(left, right, spec) => {
                 let from_fd = spec.as_ref().map(|spec| spec.from_fd).unwrap_or(1);
                 let to_fd = spec.as_ref().map(|spec| spec.to_fd).unwrap_or(0);
+                if let Some(out) =
+                    self.try_execute_pipeline_graph(left, right, from_fd, to_fd, &input)
+                {
+                    return out;
+                }
                 let graph = self.prepare_pipeline_graph(left, right, from_fd, to_fd);
                 let mut left = self.eval_node(left, input);
                 let left_status = left.status.clone();
@@ -1582,6 +1790,9 @@ impl<H: RcHost> RcSession<H> {
             Node::Background(inner) => {
                 let id = self.next_job_id;
                 self.next_job_id += 1;
+                if self.try_start_background_graph(id, inner, &input) {
+                    return RcOutput::success(format!("[{id}]\n"));
+                }
                 let graph = self.prepare_background_graph(id, inner);
                 let out = self.eval_node(inner, input);
                 self.finish_process_graph(graph.as_ref(), std::slice::from_ref(&out.status));
@@ -2771,8 +2982,11 @@ fn is_null_path(path: &str) -> bool {
 }
 
 fn is_host_executable(path: &str, bytes: &[u8]) -> bool {
-    bytes.starts_with(b"\0asm")
-        || path.ends_with(".wasm")
+    bytes.starts_with(b"\0asm") || is_host_executable_path(path)
+}
+
+fn is_host_executable_path(path: &str) -> bool {
+    path.ends_with(".wasm")
         || path.ends_with(".wat")
         || path.ends_with(".js")
         || path.ends_with(".mjs")

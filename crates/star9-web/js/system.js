@@ -311,6 +311,39 @@ export class SystemElement extends Star9Element {
         return this.mountImportPort(dst, port, { ...options, source: src });
     }
 
+    async mountBrowserService(dst, source, options = {}) {
+        this._log("mountBrowserService", dst, source);
+        const descriptor = parseBrowserServiceSource(source, options);
+        if (descriptor.family === "webtransport") {
+            throw new Error("browser WebTransport service provider is not configured");
+        }
+        return this.mountWebSocket9p(dst, descriptor.url, {
+            ...options,
+            source,
+            family: descriptor.family,
+        });
+    }
+
+    async mountNetworkService(dst, source, options = {}) {
+        return this.mountBrowserService(dst, source, options);
+    }
+
+    async mountWebSocket9p(dst, url, options = {}) {
+        this._log("mountWebSocket9p", dst, url);
+        const socketTarget = await createWebSocketP9Target(url, options);
+        const adapter = await createP9MountFromPort(socketTarget, options.mount || options);
+        const closeMount = typeof adapter.close === "function" ? adapter.close.bind(adapter) : null;
+        adapter.close = () => {
+            closeMount?.();
+            socketTarget.close?.();
+        };
+        this.mountAdapter(dst, adapter, {
+            kind: "browser-network-9p",
+            source: options.source || url,
+        });
+        return adapter;
+    }
+
     unmount(dst) {
         this._log("unmount", dst);
         return this._mounts.unmount(dst);
@@ -732,6 +765,128 @@ function toUint8Array(value) {
         return Uint8Array.from(value);
     }
     return new TextEncoder().encode(String(value));
+}
+
+function parseBrowserServiceSource(source, options = {}) {
+    const explicitFamily = options.family ? String(options.family) : "";
+    const text = String(source || "");
+    const bang = text.indexOf("!");
+    const family = explicitFamily || (bang >= 0 ? text.slice(0, bang) : "");
+    const rest = bang >= 0 ? text.slice(bang + 1) : text;
+    if (family === "ws" || family === "wss") {
+        return { family, url: browserFamilyUrl(family, options.url || rest) };
+    }
+    if (family === "webtransport") {
+        return { family, url: browserFamilyUrl("https", options.url || rest) };
+    }
+    throw new Error(`unknown browser service family: ${source}`);
+}
+
+function browserFamilyUrl(scheme, address) {
+    const value = String(address || "");
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) {
+        return value;
+    }
+    const [host, ...pathParts] = value.split("!");
+    if (!host) {
+        throw new Error("browser service address is missing a host");
+    }
+    const path = pathParts.join("/");
+    if (!path) {
+        return `${scheme}://${host}`;
+    }
+    return `${scheme}://${host}${path.startsWith("/") ? "" : "/"}${path}`;
+}
+
+async function createWebSocketP9Target(url, options = {}) {
+    const WebSocketCtor = options.WebSocket || globalThis.WebSocket;
+    if (typeof WebSocketCtor !== "function") {
+        throw new Error("browser WebSocket service provider is not available");
+    }
+    const socket = new WebSocketCtor(url);
+    socket.binaryType = "arraybuffer";
+    const target = new WebSocketMessageTarget(socket);
+    await target.ready(Number(options.openTimeoutMs ?? 3000));
+    return target;
+}
+
+class WebSocketMessageTarget {
+    constructor(socket) {
+        this.socket = socket;
+        this._listeners = new Map();
+    }
+
+    addEventListener(type, listener) {
+        if (type !== "message") {
+            this.socket.addEventListener?.(type, listener);
+            return;
+        }
+        const wrapped = (event) => listener({ data: event.data, originalEvent: event });
+        this._listeners.set(listener, wrapped);
+        this.socket.addEventListener("message", wrapped);
+    }
+
+    removeEventListener(type, listener) {
+        if (type !== "message") {
+            this.socket.removeEventListener?.(type, listener);
+            return;
+        }
+        const wrapped = this._listeners.get(listener);
+        if (wrapped) {
+            this.socket.removeEventListener("message", wrapped);
+            this._listeners.delete(listener);
+        }
+    }
+
+    postMessage(payload) {
+        this.socket.send(toUint8Array(payload));
+    }
+
+    start() {
+        return this;
+    }
+
+    close() {
+        this.socket.close?.();
+    }
+
+    ready(timeoutMs) {
+        if (this.socket.readyState === 1) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve, reject) => {
+            let timeout = null;
+            const cleanup = () => {
+                if (timeout !== null) {
+                    clearTimeout(timeout);
+                }
+                this.socket.removeEventListener?.("open", onOpen);
+                this.socket.removeEventListener?.("error", onError);
+                this.socket.removeEventListener?.("close", onClose);
+            };
+            const onOpen = () => {
+                cleanup();
+                resolve();
+            };
+            const onError = (event) => {
+                cleanup();
+                reject(new Error(event?.message || "browser WebSocket service failed to open"));
+            };
+            const onClose = () => {
+                cleanup();
+                reject(new Error("browser WebSocket service closed before opening"));
+            };
+            this.socket.addEventListener?.("open", onOpen);
+            this.socket.addEventListener?.("error", onError);
+            this.socket.addEventListener?.("close", onClose);
+            if (timeoutMs >= 0) {
+                timeout = setTimeout(() => {
+                    cleanup();
+                    reject(new Error(`timed out opening browser WebSocket service after ${timeoutMs}ms`));
+                }, timeoutMs);
+            }
+        });
+    }
 }
 
 function errorMessage(error) {

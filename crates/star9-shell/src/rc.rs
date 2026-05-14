@@ -1,16 +1,37 @@
 use std::collections::BTreeMap;
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::SeekFrom;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{mpsc, Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread;
+
 use star9_core::{clean_path, Error, ErrorKind, FileMode, FsContext, Result};
+#[cfg(not(target_arch = "wasm32"))]
+use star9_fs::write_file;
 use star9_fs::{fs_ref, FileSystem, MemFs, Node, PipeFs};
-use star9_rc::{
-    RcCommandInvocation, RcCommandResult, RcError, RcFdBindingSpec, RcHost, RcOutput,
-    RcProcessGraphKind, RcProcessGraphRecord, RcProcessGraphSpec, RcProcessJobResult,
-    RcProcessStageOutcome, RcProcessStageRecord, RcSession, RcStat, RcStatus,
+#[cfg(not(target_arch = "wasm32"))]
+use star9_protocol::runtime::{
+    EnvironmentEntry, ExecutionKind, ExecutionSpec, FdDescriptor, FdKind, StdioSet,
+    StreamDescriptor,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use star9_rc::RcExecutableStageSpec;
+use star9_rc::{
+    RcCommandInvocation, RcCommandResult, RcError, RcExecutableGraphSpec, RcFdBindingSpec, RcHost,
+    RcOutput, RcProcessGraphKind, RcProcessGraphRecord, RcProcessGraphSpec, RcProcessJobResult,
+    RcProcessStageOutcome, RcProcessStageRecord, RcSession, RcStartedProcessJob, RcStat, RcStatus,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use star9_runtime::WasmiWasiHandler;
 use star9_task::Task;
 use star9_vfs::BindMode;
 
 use crate::{RuntimeShellHost, ShellHost, ShellSession};
+
+#[cfg(not(target_arch = "wasm32"))]
+use star9_runtime::NativePtyExecutionHandler;
 
 pub type Star9RcSession = RcSession<Star9RcHost>;
 
@@ -19,6 +40,8 @@ pub struct Star9RcHost {
     host: RuntimeShellHost,
     cwd: String,
     next_graph_id: u32,
+    #[cfg(not(target_arch = "wasm32"))]
+    running_jobs: Arc<Mutex<BTreeMap<u32, mpsc::Receiver<RcProcessJobResult>>>>,
 }
 
 impl Star9RcHost {
@@ -27,6 +50,8 @@ impl Star9RcHost {
             host,
             cwd: ".".into(),
             next_graph_id: 1,
+            #[cfg(not(target_arch = "wasm32"))]
+            running_jobs: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -94,6 +119,11 @@ impl Star9RcHost {
             readable: binding.readable,
             writable: binding.writable,
         })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn next_graph_root(&mut self) -> star9_rc::RcResult<String> {
+        self.graph_root().map_err(to_rc_error)
     }
 }
 
@@ -268,6 +298,37 @@ impl RcHost for Star9RcHost {
         &mut self,
         _job_id: Option<u32>,
     ) -> star9_rc::RcResult<Option<Vec<RcProcessJobResult>>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut jobs = self.running_jobs.lock().unwrap();
+            let receivers = if let Some(job_id) = _job_id {
+                let Some(receiver) = jobs.remove(&job_id) else {
+                    return Ok(None);
+                };
+                vec![(job_id, receiver)]
+            } else if jobs.is_empty() {
+                return Ok(None);
+            } else {
+                std::mem::take(&mut *jobs).into_iter().collect()
+            };
+            drop(jobs);
+
+            let mut results = Vec::new();
+            for (job_id, receiver) in receivers {
+                match receiver.recv() {
+                    Ok(result) => results.push(result),
+                    Err(_) => results.push(RcProcessJobResult {
+                        id: job_id,
+                        status: RcStatus::from_status("failed"),
+                        stdout: String::new(),
+                        stderr: format!("wait: {job_id}: job provider closed\n"),
+                    }),
+                }
+            }
+            Ok(Some(results))
+        }
+
+        #[cfg(target_arch = "wasm32")]
         Ok(None)
     }
 
@@ -276,6 +337,82 @@ impl RcHost for Star9RcHost {
             Ok(()) => Ok(()),
             Err(_) => Ok(()),
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn execute_process_graph(
+        &mut self,
+        spec: RcExecutableGraphSpec,
+    ) -> star9_rc::RcResult<Option<RcOutput>> {
+        if spec.kind != RcProcessGraphKind::Pipeline {
+            return Ok(None);
+        }
+        if !can_execute_external_graph(&spec, self.host.native_enabled()) {
+            return Ok(None);
+        }
+        let graph_root = self.next_graph_root()?;
+        execute_external_graph(self.host.clone(), graph_root, spec)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn execute_process_graph(
+        &mut self,
+        _spec: RcExecutableGraphSpec,
+    ) -> star9_rc::RcResult<Option<RcOutput>> {
+        Ok(None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_process_graph_job(
+        &mut self,
+        spec: RcExecutableGraphSpec,
+    ) -> star9_rc::RcResult<Option<RcStartedProcessJob>> {
+        if spec.kind != RcProcessGraphKind::Background {
+            return Ok(None);
+        }
+        let Some(job_id) = spec.job_id else {
+            return Ok(None);
+        };
+        if !can_execute_external_graph(&spec, self.host.native_enabled()) {
+            return Ok(None);
+        }
+        let graph_root = self.next_graph_root()?;
+        let host = self.host.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = execute_external_graph(host, graph_root, spec);
+            let job = match result {
+                Ok(Some(out)) => RcProcessJobResult {
+                    id: job_id,
+                    status: out.status,
+                    stdout: out.stdout,
+                    stderr: out.stderr,
+                },
+                Ok(None) => RcProcessJobResult {
+                    id: job_id,
+                    status: RcStatus::from_status("provider-missing"),
+                    stdout: String::new(),
+                    stderr: format!("job {job_id}: no external execution provider\n"),
+                },
+                Err(err) => RcProcessJobResult {
+                    id: job_id,
+                    status: RcStatus::from_status("failed"),
+                    stdout: String::new(),
+                    stderr: format!("job {job_id}: {err}\n"),
+                },
+            };
+            let _ = tx.send(job);
+        });
+        self.running_jobs.lock().unwrap().insert(job_id, rx);
+        Ok(Some(RcStartedProcessJob { id: job_id }))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn start_process_graph_job(
+        &mut self,
+        _spec: RcExecutableGraphSpec,
+    ) -> star9_rc::RcResult<Option<RcStartedProcessJob>> {
+        Ok(None)
     }
 
     fn rfork(&mut self, flags: &str) -> star9_rc::RcResult<()> {
@@ -342,11 +479,314 @@ fn rc_error(message: &str) -> RcError {
 }
 
 fn resolve_graph_binding_path(graph_root: &str, binding_path: &str) -> String {
-    if let Some(rest) = binding_path.strip_prefix("pipe:0/") {
-        format!("{graph_root}/pipe0/{rest}")
+    if let Some(rest) = binding_path.strip_prefix("pipe:") {
+        let (pipe, path) = rest.split_once('/').unwrap_or((rest, "."));
+        format!("{graph_root}/pipe{pipe}/{path}")
     } else {
         format!("{graph_root}/{}", binding_path.trim_start_matches('/'))
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn can_execute_external_graph(spec: &RcExecutableGraphSpec, native_enabled: bool) -> bool {
+    !spec.stages.is_empty()
+        && spec.stages.iter().all(|stage| {
+            stage_execution_kind(stage, native_enabled)
+                .map(|kind| kind != ExecutionKind::JsWasm)
+                .unwrap_or(false)
+        })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn execute_external_graph(
+    host: RuntimeShellHost,
+    graph_root: String,
+    spec: RcExecutableGraphSpec,
+) -> star9_rc::RcResult<Option<RcOutput>> {
+    if !can_execute_external_graph(&spec, host.native_enabled()) {
+        return Ok(None);
+    }
+    for index in 0..spec.stages.len().saturating_sub(1) {
+        host.runtime()
+            .namespace()
+            .bind(
+                fs_ref(PipeFs::new(true)),
+                ".",
+                &format!("{graph_root}/pipe{index}"),
+                BindMode::Replace,
+            )
+            .map_err(to_rc_error)?;
+    }
+
+    if spec.stages.iter().any(|stage| {
+        stage_execution_kind(stage, host.native_enabled()) == Some(ExecutionKind::Wasi)
+    }) {
+        host.runtime()
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+    }
+    if spec.stages.iter().any(|stage| {
+        stage_execution_kind(stage, host.native_enabled()) == Some(ExecutionKind::Native)
+    }) {
+        host.runtime()
+            .execution_registry()
+            .register_kind(ExecutionKind::Native, NativePtyExecutionHandler::new());
+    }
+
+    let mut stages = Vec::new();
+    for (index, stage) in spec.stages.iter().enumerate() {
+        let task = host
+            .runtime()
+            .task_fs()
+            .alloc("auto", Some(host.runtime().root()))
+            .map_err(to_rc_error)?;
+        let exec = build_execution_spec(&host, &graph_root, index, stage).map_err(to_rc_error)?;
+        stages.push((task, exec, stage.fd_bindings.clone()));
+    }
+
+    let mut handles = Vec::new();
+    for (task, exec, fd_bindings) in &stages {
+        let registry = host.runtime().execution_registry();
+        let task = task.clone();
+        let exec = exec.clone();
+        let fd_bindings = fd_bindings.clone();
+        handles.push(thread::spawn(move || {
+            let result = registry.execute(&task, &exec);
+            for binding in fd_bindings.iter().filter(|binding| binding.writable) {
+                let _ = task.close_fd(binding.fd);
+            }
+            result
+        }));
+    }
+
+    let mut statuses = Vec::new();
+    for handle in handles {
+        let status = handle
+            .join()
+            .map_err(|_| RcError::new("execution graph stage panicked"))?
+            .map_err(to_rc_error)?;
+        statuses.push(exit_status_to_rc(&status));
+    }
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    for ((task, _, bindings), _) in stages.iter().zip(statuses.iter()) {
+        if !bindings
+            .iter()
+            .any(|binding| binding.fd == 1 && binding.writable)
+        {
+            stdout.push_str(&read_task_fd_string(task, 1).map_err(to_rc_error)?);
+        }
+        if !bindings
+            .iter()
+            .any(|binding| binding.fd == 2 && binding.writable)
+        {
+            stderr.push_str(&read_task_fd_string(task, 2).map_err(to_rc_error)?);
+        }
+    }
+
+    let status = statuses
+        .iter()
+        .cloned()
+        .reduce(|left, right| RcStatus::pipeline(&left, &right))
+        .unwrap_or_else(RcStatus::success);
+    Ok(Some(RcOutput {
+        status,
+        stdout,
+        stderr,
+        exited: false,
+    }))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_execution_spec(
+    host: &RuntimeShellHost,
+    graph_root: &str,
+    index: usize,
+    stage: &RcExecutableStageSpec,
+) -> Result<ExecutionSpec> {
+    let (kind, module, args) = stage_execution(stage, host.native_enabled())
+        .ok_or_else(|| Error::path("exec", stage.argv.join(" "), ErrorKind::NotSupported))?;
+    let stdin_path = if !stage.stdin.is_empty() {
+        let path = format!("{graph_root}/stage{index}-stdin");
+        write_file(
+            host.runtime().namespace().as_ref(),
+            &path,
+            stage.stdin.as_bytes(),
+            FileMode::from_perm(0o644),
+        )?;
+        Some(path)
+    } else {
+        None
+    };
+
+    let stdin = stream_for_fd(stage, graph_root, 0)
+        .or_else(|| stdin_path.map(|path| fd_stream(0, FdKind::File, path, true, false)))
+        .unwrap_or(StreamDescriptor::Null);
+    let stdout = stream_for_fd(stage, graph_root, 1).unwrap_or(StreamDescriptor::Inherit);
+    let stderr = stream_for_fd(stage, graph_root, 2).unwrap_or(StreamDescriptor::Inherit);
+    let fds = stage
+        .fd_bindings
+        .iter()
+        .filter(|binding| !matches!(binding.fd, 0..=2))
+        .map(|binding| fd_descriptor_from_binding(binding, graph_root))
+        .collect();
+
+    Ok(ExecutionSpec {
+        kind,
+        module,
+        args,
+        env: rc_env_entries(&stage.env),
+        cwd: Some(normalize_graph_cwd(&stage.cwd)),
+        stdio: StdioSet {
+            stdin,
+            stdout,
+            stderr,
+        },
+        fds,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stream_for_fd(
+    stage: &RcExecutableStageSpec,
+    graph_root: &str,
+    fd: u32,
+) -> Option<StreamDescriptor> {
+    stage
+        .fd_bindings
+        .iter()
+        .find(|binding| binding.fd == fd)
+        .map(|binding| {
+            let descriptor = fd_descriptor_from_binding(binding, graph_root);
+            StreamDescriptor::Fd(descriptor)
+        })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fd_descriptor_from_binding(binding: &RcFdBindingSpec, graph_root: &str) -> FdDescriptor {
+    FdDescriptor {
+        fd: binding.fd,
+        kind: if binding.path.starts_with("pipe:") {
+            FdKind::Pipe
+        } else {
+            FdKind::File
+        },
+        path: Some(resolve_executable_binding_path(graph_root, &binding.path)),
+        read: binding.readable,
+        write: binding.writable,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_executable_binding_path(graph_root: &str, binding_path: &str) -> String {
+    if let Some(rest) = binding_path.strip_prefix("pipe:") {
+        let (pipe, path) = rest.split_once('/').unwrap_or((rest, "."));
+        format!("{graph_root}/pipe{pipe}/{path}")
+    } else {
+        binding_path.to_string()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fd_stream(fd: u32, kind: FdKind, path: String, read: bool, write: bool) -> StreamDescriptor {
+    StreamDescriptor::Fd(FdDescriptor {
+        fd,
+        kind,
+        path: Some(path),
+        read,
+        write,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stage_execution_kind(
+    stage: &RcExecutableStageSpec,
+    native_enabled: bool,
+) -> Option<ExecutionKind> {
+    stage_execution(stage, native_enabled).map(|(kind, _, _)| kind)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stage_execution(
+    stage: &RcExecutableStageSpec,
+    native_enabled: bool,
+) -> Option<(ExecutionKind, String, Vec<String>)> {
+    let (command, rest) = stage.argv.split_first()?;
+    match command.as_str() {
+        "wasi" => {
+            let (module, args) = rest.split_first()?;
+            Some((ExecutionKind::Wasi, module.clone(), args.to_vec()))
+        }
+        "worker" => {
+            let (module, args) = rest.split_first()?;
+            Some((ExecutionKind::JsWasm, module.clone(), args.to_vec()))
+        }
+        "native" if native_enabled => {
+            let (module, args) = rest.split_first()?;
+            Some((ExecutionKind::Native, module.clone(), args.to_vec()))
+        }
+        command if command.ends_with(".wasm") || command.ends_with(".wat") => {
+            Some((ExecutionKind::Wasi, command.to_string(), rest.to_vec()))
+        }
+        command if command.ends_with(".js") || command.ends_with(".mjs") => {
+            Some((ExecutionKind::JsWasm, command.to_string(), rest.to_vec()))
+        }
+        command if native_enabled => {
+            Some((ExecutionKind::Native, command.to_string(), rest.to_vec()))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rc_env_entries(env: &BTreeMap<String, Vec<String>>) -> Vec<EnvironmentEntry> {
+    env.iter()
+        .map(|(name, values)| EnvironmentEntry {
+            name: name.clone(),
+            value: values.join("\0"),
+        })
+        .collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn normalize_graph_cwd(cwd: &str) -> String {
+    if cwd.trim().is_empty() {
+        ".".into()
+    } else {
+        cwd.to_string()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn exit_status_to_rc(status: &star9_protocol::runtime::ExitStatus) -> RcStatus {
+    match status {
+        star9_protocol::runtime::ExitStatus::ExitCode(code) => RcStatus::from_code(*code),
+        star9_protocol::runtime::ExitStatus::Signal(signal) => {
+            RcStatus::from_status(format!("signal:{signal}"))
+        }
+        star9_protocol::runtime::ExitStatus::Trap(reason) => {
+            RcStatus::from_status(format!("trap:{reason}"))
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_task_fd_string(task: &Task, fd: u32) -> Result<String> {
+    task.with_fd_mut(fd, |file| {
+        let _ = file.seek(SeekFrom::Start(0));
+        let mut out = Vec::new();
+        let mut buf = [0_u8; 8192];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    })
 }
 
 pub fn rc_to_star9_result(output: RcOutput) -> Result<crate::ShellResult> {
@@ -371,7 +811,13 @@ mod tests {
         let host = RuntimeShellHost::fresh().unwrap();
         let mut rc = RcShell::new(host);
         let out = rc.eval_line("mkdir demo; write demo/hello hello; cat demo/hello");
-        assert!(out.status.is_success(), "{}", out.stderr);
+        assert!(
+            out.status.is_success(),
+            "status={} stdout={:?} stderr={:?}",
+            out.status,
+            out.stdout,
+            out.stderr
+        );
         assert_eq!(out.stdout, "hello");
     }
 
@@ -380,7 +826,13 @@ mod tests {
         let host = RuntimeShellHost::fresh().unwrap();
         let mut rc = RcShell::new(host);
         let out = rc.eval_line("ls '#task'");
-        assert!(out.status.is_success(), "{}", out.stderr);
+        assert!(
+            out.status.is_success(),
+            "status={} stdout={:?} stderr={:?}",
+            out.status,
+            out.stdout,
+            out.stderr
+        );
         assert!(out.stdout.contains("1/"), "{}", out.stdout);
     }
 
@@ -486,6 +938,90 @@ mod tests {
     }
 
     #[test]
+    fn rc_shell_runs_external_wasi_pipeline_through_provider_fds() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        host.write_file("cat.wasm", &wasi_cat()).unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm | wasi cat.wasm");
+        assert!(
+            out.status.is_success(),
+            "status={} stdout={:?} stderr={:?}",
+            out.status,
+            out.stdout,
+            out.stderr
+        );
+        assert_eq!(out.status.to_string(), "0|0", "{out:?}");
+        assert_eq!(out.stdout, "pipe-ok\n", "{out:?}");
+
+        let tasks = runtime.task_fs().tasks();
+        let producer = tasks
+            .iter()
+            .find(|task| task.cmd() == "producer.wasm")
+            .expect("producer task");
+        let consumer = tasks
+            .iter()
+            .find(|task| task.cmd() == "cat.wasm")
+            .expect("consumer task");
+        assert_eq!(producer.exit(), "0");
+        assert_eq!(consumer.exit(), "0");
+        let fds = tasks
+            .iter()
+            .flat_map(|task| task.fd_entries())
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe0/data"), "{fds}");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe0/data1"), "{fds}");
+    }
+
+    #[test]
+    fn rc_shell_runs_three_stage_wasi_pipeline_through_provider_fds() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        host.write_file("cat.wasm", &wasi_cat()).unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm | wasi cat.wasm | wasi cat.wasm");
+        assert!(
+            out.status.is_success(),
+            "status={} stdout={:?} stderr={:?}",
+            out.status,
+            out.stdout,
+            out.stderr
+        );
+        assert_eq!(out.status.to_string(), "0|0|0", "{out:?}");
+        assert_eq!(out.stdout, "pipe-ok\n", "{out:?}");
+
+        let fds = runtime
+            .task_fs()
+            .tasks()
+            .iter()
+            .flat_map(|task| task.fd_entries())
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe0/data"), "{fds}");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe0/data1"), "{fds}");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe1/data"), "{fds}");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe1/data1"), "{fds}");
+    }
+
+    #[test]
+    fn rc_shell_runs_external_background_job_and_waits_through_provider() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm & wait 1");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stdout, "[1]\npipe-ok\n[1] 0\n");
+    }
+
+    #[test]
     fn rc_shell_reports_unavailable_plan9_service_providers() {
         let host = RuntimeShellHost::fresh().unwrap();
         let mut rc = RcShell::new(host);
@@ -496,5 +1032,76 @@ mod tests {
             "{}",
             out.stderr
         );
+    }
+
+    fn wasi_producer() -> Vec<u8> {
+        wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "fd_write"
+                (func $fd_write (param i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 128) "pipe-ok\n")
+              (func $assert_ok (param $errno i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  (call $proc_exit (local.get $errno))
+                end)
+              (func (export "_start")
+                (i32.store (i32.const 0) (i32.const 128))
+                (i32.store (i32.const 4) (i32.const 8))
+                (call $assert_ok
+                  (call $fd_write
+                    (i32.const 1)
+                    (i32.const 0)
+                    (i32.const 1)
+                    (i32.const 8)))))
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn wasi_cat() -> Vec<u8> {
+        wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "fd_read"
+                (func $fd_read (param i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "fd_write"
+                (func $fd_write (param i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+              (memory (export "memory") 1)
+              (func $assert_ok (param $errno i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  (call $proc_exit (local.get $errno))
+                end)
+              (func (export "_start")
+                (i32.store (i32.const 0) (i32.const 128))
+                (i32.store (i32.const 4) (i32.const 64))
+                (call $assert_ok
+                  (call $fd_read
+                    (i32.const 0)
+                    (i32.const 0)
+                    (i32.const 1)
+                    (i32.const 8)))
+                (i32.store (i32.const 16) (i32.const 128))
+                (i32.store (i32.const 20) (i32.load (i32.const 8)))
+                (call $assert_ok
+                  (call $fd_write
+                    (i32.const 1)
+                    (i32.const 16)
+                    (i32.const 1)
+                    (i32.const 24)))))
+            "#,
+        )
+        .unwrap()
     }
 }

@@ -14,3 +14,6 @@ star9-rc = { path = "../star9-rc" }
 star9-runtime = { path = "../star9-runtime" }
 star9-task = { path = "../star9-task" }
 star9-vfs = { path = "../star9-vfs" }
+
+[dev-dependencies]
+wat = "1"

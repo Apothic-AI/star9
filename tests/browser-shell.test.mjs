@@ -205,6 +205,71 @@ test("Star9ShellController keeps raw browser TCP unavailable", async () => {
     });
 });
 
+test("Star9ShellController registers and mounts browser network services", async () => {
+    const mounts = [];
+    const controller = createStar9Shell({
+        mountBrowserService(path, source, options) {
+            mounts.push({ path, source, options });
+        },
+    }, {
+        shell: {
+            eval() {
+                throw new Error("core shell should not run browser ws srv");
+            },
+        },
+    });
+
+    assert.deepEqual(await controller.eval("srv ws!example.test!star9 rem"), {
+        status: 0,
+        stdout: "srv rem ws!example.test!star9\n",
+        stderr: "",
+    });
+    assert.deepEqual(await controller.eval("mount rem n/rem"), {
+        status: 0,
+        stdout: "mounted rem at n/rem\n",
+        stderr: "",
+    });
+    assert.deepEqual(mounts, [{
+        path: "n/rem",
+        source: "ws!example.test!star9",
+        options: {
+            family: "ws",
+            source: "ws!example.test!star9",
+            url: "ws://example.test/star9",
+        },
+    }]);
+});
+
+test("Star9ShellController can srv -m browser WebTransport services when provider is configured", async () => {
+    const mounts = [];
+    const controller = createStar9Shell({
+        mountNetworkService(path, source, options) {
+            mounts.push({ path, source, options });
+        },
+    }, {
+        shell: {
+            eval() {
+                throw new Error("core shell should not run browser webtransport srv");
+            },
+        },
+    });
+
+    assert.deepEqual(await controller.eval("srv -m webtransport!example.test!star9 rem n/rem"), {
+        status: 0,
+        stdout: "srv rem webtransport!example.test!star9 mounted at n/rem\n",
+        stderr: "",
+    });
+    assert.deepEqual(mounts, [{
+        path: "n/rem",
+        source: "webtransport!example.test!star9",
+        options: {
+            family: "webtransport",
+            source: "webtransport!example.test!star9",
+            url: "https://example.test/star9",
+        },
+    }]);
+});
+
 test("Star9ShellController reports unavailable OPFS as a command error", async () => {
     const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
     Object.defineProperty(globalThis, "navigator", {

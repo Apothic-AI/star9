@@ -2,66 +2,147 @@
   "purpose": "Rc process-graph parity matrix for Star 9",
   "rule": "Pipelines, jobs, rfork, notes, and wait must be represented through Star 9 tasks, fd tables, pipes, namespaces, env files, and device files. Host shell side channels are not acceptable.",
   "layers": {
-    "portable_evaluator": "crates/star9-rc keeps deterministic captured execution for fake hosts, browser-limited hosts, and pure built-ins.",
-    "star9_adapter": "crates/star9-shell/src/rc.rs implements process-graph prepare/finish hooks over Star 9 task and fd surfaces.",
-    "future_external_streaming": "Concurrent streaming external process graphs remain future work behind Star 9 execution providers."
+    "portable_evaluator": "crates/star9-rc keeps deterministic captured execution for fake hosts, pure built-ins, browser-limited hosts, and hosts without a streaming execution provider.",
+    "star9_adapter": "crates/star9-shell/src/rc.rs implements process-graph hooks over Star 9 task, fd, pipe, namespace, and execution-registry surfaces.",
+    "provider_execution": "Native-host Star 9 rc can execute external WASI stages and opt-in native stages through provider-backed task/fd graphs. JS/WASM worker graph execution remains a browser/runtime-port provider boundary."
   },
   "features": [
     {
-      "feature": "host trait process graph hooks",
+      "feature": "host trait executable graph hooks",
       "status": "implemented",
-      "implementation": ["RcHost::prepare_process_graph", "RcHost::finish_process_graph", "RcHost::wait_process_job", "RcHost::send_note_to_processes"],
-      "evidence": ["cargo test -p star9-rc -p star9-shell"],
+      "implementation": [
+        "RcHost::prepare_process_graph",
+        "RcHost::finish_process_graph",
+        "RcHost::execute_process_graph",
+        "RcHost::start_process_graph_job",
+        "RcHost::wait_process_job",
+        "RcHost::send_note_to_processes"
+      ],
+      "evidence": [
+        "cargo test -p star9-rc -p star9-shell"
+      ],
       "notes": "The reusable rc crate exposes host-neutral graph specs and records without depending on Star 9 runtime types."
     },
     {
       "feature": "pipeline graph records",
-      "status": "implemented-with-host-limits",
-      "implementation": ["Node::Pipe", "Star9RcHost::prepare_process_graph"],
-      "evidence": ["rc_shell_pipeline_creates_task_fd_graph"],
-      "notes": "The Star 9 adapter creates per-stage task records, standard fds, and selected pipe fd bindings under .rc/graphs. Stage execution is still the deterministic evaluator path unless an external provider handles streaming execution."
+      "status": "implemented",
+      "implementation": [
+        "Node::Pipe",
+        "Star9RcHost::prepare_process_graph"
+      ],
+      "evidence": [
+        "rc_shell_pipeline_creates_task_fd_graph"
+      ],
+      "notes": "The Star 9 adapter creates per-stage task records, standard fds, and selected pipe fd bindings under .rc/graphs."
+    },
+    {
+      "feature": "provider-backed external pipelines",
+      "status": "implemented-with-provider-limits",
+      "implementation": [
+        "Star9RcHost::execute_process_graph",
+        "execute_external_graph",
+        "ExecutionRegistry",
+        "WasmiWasiHandler",
+        "NativePtyExecutionHandler"
+      ],
+      "evidence": [
+        "rc_shell_runs_external_wasi_pipeline_through_provider_fds",
+        "rc_shell_runs_three_stage_wasi_pipeline_through_provider_fds"
+      ],
+      "notes": "Native-host rc starts two-stage and linear multi-stage WASI pipelines plus opt-in native stages concurrently, installs pipe/file/stdio descriptors into task fd tables, closes writer endpoints for EOF, reads final stdout/stderr from task fds, and aggregates pipeline status. JS/WASM worker stages still fall back unless a browser/runtime provider handles them."
     },
     {
       "feature": "process substitution graph records",
       "status": "implemented-with-host-limits",
-      "implementation": ["RedirectTarget::Process", "FdSink::Process"],
-      "evidence": ["rc_shell_process_substitution_creates_task_fd_graph"],
-      "notes": "<{} and >{} remain evaluator data paths for portability, while the Star 9 adapter now creates task/fd graph records that expose the intended pipe endpoint."
+      "implementation": [
+        "RedirectTarget::Process",
+        "FdSink::Process"
+      ],
+      "evidence": [
+        "rc_shell_process_substitution_creates_task_fd_graph"
+      ],
+      "notes": "<{} and >{} remain evaluator data paths for portability, while the Star 9 adapter creates task/fd graph records that expose the intended pipe endpoint."
     },
     {
       "feature": "background jobs and wait",
-      "status": "implemented-with-host-limits",
-      "implementation": ["Node::Background", "run_wait"],
-      "evidence": ["background_wait_builtin_and_rfork_have_precise_behavior", "rc_shell_background_wait_records_task_job"],
-      "notes": "Background jobs have stable rc job ids and support wait or wait <job>. The Star 9 adapter records task graph state for the job. Full task-group scheduling remains future work."
+      "status": "implemented-with-provider-limits",
+      "implementation": [
+        "Node::Background",
+        "run_wait",
+        "Star9RcHost::start_process_graph_job",
+        "Star9RcHost::wait_process_job"
+      ],
+      "evidence": [
+        "background_wait_builtin_and_rfork_have_precise_behavior",
+        "rc_shell_background_wait_records_task_job",
+        "rc_shell_runs_external_background_job_and_waits_through_provider"
+      ],
+      "notes": "Pure built-ins keep deterministic job records. External WASI/native graph jobs can run in provider threads and wait through rc job ids. Persistent task-group files and cleanup controls remain future depth."
     },
     {
       "feature": "redirection fd graph",
       "status": "partial",
-      "implementation": ["prepare_redirect", "apply_output_sinks"],
-      "evidence": ["fd_dup_process_substitution_here_docs_and_exit_work"],
-      "notes": "Captured stdout/stderr redirection, fd dup/close, and process-substitution sink handling are implemented. Full arbitrary fd-table graph streaming through external task providers remains future work."
+      "implementation": [
+        "prepare_redirect",
+        "apply_output_sinks",
+        "build_execution_spec"
+      ],
+      "evidence": [
+        "fd_dup_process_substitution_here_docs_and_exit_work",
+        "rc_shell_runs_external_wasi_pipeline_through_provider_fds"
+      ],
+      "notes": "Captured stdout/stderr redirection, fd dup/close, process-substitution sink handling, and provider stdio descriptor installation are implemented. Full arbitrary fd graph streaming for every rc edge form remains future precision work."
     },
     {
       "feature": "rfork semantics",
       "status": "host-limited",
-      "implementation": ["RcHost::rfork", "Star9RcHost::rfork"],
-      "evidence": ["background_wait_builtin_and_rfork_have_precise_behavior"],
-      "notes": "rfork e is accepted through the host boundary. Namespace/env/fd/process-group sharing flags remain precisely rejected until Star 9 has matching process scope controls."
+      "implementation": [
+        "RcHost::rfork",
+        "Star9RcHost::rfork"
+      ],
+      "evidence": [
+        "background_wait_builtin_and_rfork_have_precise_behavior"
+      ],
+      "notes": "rfork e is accepted through the host boundary. Namespace/env/fd/process-group sharing flags remain precisely rejected until Star 9 has matching task scope controls."
     },
     {
       "feature": "notes and signals",
       "status": "partial",
-      "implementation": ["RcSession::deliver_note", "RcHost::send_note_to_processes"],
-      "evidence": ["environment_export_import_and_note_hooks_work"],
-      "notes": "sigexit and rc note functions work. The Star 9 adapter attempts to broadcast notes through #signal/data when present. Delivery to concurrent task groups remains future work."
+      "implementation": [
+        "RcSession::deliver_note",
+        "RcHost::send_note_to_processes",
+        "Star9RcHost::send_note_to_processes"
+      ],
+      "evidence": [
+        "environment_export_import_and_note_hooks_work"
+      ],
+      "notes": "sigexit and rc note functions work. The Star 9 adapter broadcasts notes through #signal/data when present. Delivery into active provider-backed task groups remains future work."
     },
     {
       "feature": "browser process graphs",
       "status": "portable-fallback",
-      "implementation": ["star9-rc deterministic evaluator", "browser rc facade"],
-      "evidence": ["tests/browser-smoke.html", "tests/browser-shell.test.mjs"],
+      "implementation": [
+        "star9-rc deterministic evaluator",
+        "browser rc facade"
+      ],
+      "evidence": [
+        "tests/browser-smoke.html",
+        "tests/browser-shell.test.mjs"
+      ],
       "notes": "Browser rc keeps deterministic evaluator behavior unless a worker-backed task/fd graph provider is explicitly added. Raw native process semantics are not a browser capability."
+    },
+    {
+      "feature": "browser service providers",
+      "status": "implemented-with-provider-limits",
+      "implementation": [
+        "Star9ShellController srv/mount service registry",
+        "SystemElement.mountBrowserService",
+        "SystemElement.mountWebSocket9p"
+      ],
+      "evidence": [
+        "node --test tests/browser-shell.test.mjs tests/browser-network-adapter.test.mjs"
+      ],
+      "notes": "import! services use cross-document MessagePort 9P. ws!/wss! services can be mounted through a configured WebSocket 9P provider. webtransport! addresses parse and route through the same provider hook, but the default SystemElement reports WebTransport provider-missing until a concrete provider is installed."
     }
   ]
 }

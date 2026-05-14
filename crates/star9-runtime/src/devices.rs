@@ -145,10 +145,25 @@ impl FileSystem for DeviceAllocator {
     }
 
     fn stat(&self, ctx: &FsContext, name: &str) -> Result<Metadata> {
-        let mut file = self.open(ctx, name)?;
-        let stat = file.stat();
-        let _ = file.close();
-        stat
+        if !valid_path(name) {
+            return Err(Error::path("stat", name, ErrorKind::NotFound));
+        }
+        let name = clean_path(name);
+        if name == "." {
+            return Ok(Metadata::dir(".", 0o555));
+        }
+        if name == "new" {
+            return Ok(Metadata::file("new", 0o555, 0));
+        }
+        let (head, rest) = name.split_once('/').unwrap_or((name.as_str(), "."));
+        let resource = self
+            .get(head)
+            .ok_or_else(|| Error::path("stat", head, ErrorKind::NotFound))?;
+        if rest == "." {
+            Ok(Metadata::dir(head, 0o555))
+        } else {
+            resource.stat(ctx, rest)
+        }
     }
 }
 

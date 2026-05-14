@@ -2,6 +2,15 @@
 
 ## 2026-05-14
 
+- Started the rc execution-provider parity sprint on `rc-execution-provider-parity`.
+- Extended the standalone `star9-rc` executable graph hooks so native adapters can execute or start provider-backed process graphs without adding Star 9 runtime dependencies to the reusable rc crate.
+- Added provider-backed external rc pipeline execution in `star9-shell::rc` for native-host two-stage and linear multi-stage WASI pipelines plus opt-in native stages. The adapter now builds real Star 9 task/fd/pipe graphs, starts stages concurrently, routes stdio through task fd descriptors, closes pipe writer ends for EOF, reads final stdout/stderr from task fds, and aggregates rc pipeline status.
+- Added provider-backed background job start/wait for external graph jobs. `cmd &` can now start a native-host provider job, and `wait`/`wait <job>` block on the provider result while preserving the deterministic evaluator path for pure built-ins.
+- Fixed the `PipeFs` stat/close interaction so namespace metadata probes no longer close live pipe endpoints before streaming providers use them.
+- Added focused Star 9 rc tests for a two-stage WASI pipeline and a provider-backed WASI background job waited through rc.
+- Added browser shell service support for `ws!`, `wss!`, and configured `webtransport!` service addresses through the same `srv`/`mount` flow as `import!url#system`; raw `tcp!` remains an explicit browser capability error.
+- Added `SystemElement.mountBrowserService`, `mountNetworkService`, and `mountWebSocket9p` hooks so configured WebSocket 9P services can be mounted through the browser async 9P namespace mount client.
+- Refreshed rc process-graph and browser service provider docs to distinguish implemented provider-backed WASI/native graph execution from remaining JS/WASM worker, task-group signal, exact `rfork`, and WebTransport provider depth.
 - Started the rc process-graph parity sprint on `rc-process-graph-parity`.
 - Extended the standalone `star9-rc` host trait with process-graph hooks for pipelines, background jobs, process substitution, job waits, and note delivery while keeping the reusable crate independent of Star 9 runtime/web/CLI dependencies.
 - Updated rc pipeline/background/process-substitution evaluation so embedders can prepare and finish graph records. The portable fake-host path still uses deterministic captured evaluator behavior.

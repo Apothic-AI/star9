@@ -1802,6 +1802,9 @@ impl FileHandle for PipePort {
     }
 
     fn close(&mut self) -> Result<()> {
+        let mut state = self.writer.state.lock().unwrap();
+        state.closed = true;
+        self.writer.ready.notify_all();
         Ok(())
     }
 }
@@ -1832,6 +1835,14 @@ impl FileSystem for PipeFs {
             "data" => Ok(Box::new(self.a.clone())),
             "data1" => Ok(Box::new(self.b.clone())),
             _ => Err(Error::path("open", name, ErrorKind::NotFound)),
+        }
+    }
+
+    fn stat(&self, _ctx: &FsContext, name: &str) -> Result<Metadata> {
+        match name {
+            "." => Ok(Metadata::dir(".", 0o555)),
+            "data" | "data1" => Ok(Metadata::file(name, 0o666, 0)),
+            _ => Err(Error::path("stat", name, ErrorKind::NotFound)),
         }
     }
 }

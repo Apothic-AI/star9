@@ -164,6 +164,11 @@ impl RuntimeShellHost {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_enabled(&self) -> bool {
+        self.native_enabled
+    }
+
     pub fn with_writable_workspace(self) -> Result<Self> {
         self.runtime
             .namespace()

@@ -168,7 +168,7 @@ This serves a `MemFs` export over loopback TCP, registers it with `srv tcp!127.0
 
 Browser network transport coverage is WebSocket/WebTransport-style and file-model-shaped. Raw TCP is not a browser API. The deterministic Node test uses a fake WebSocket transport; external browser network services should remain opt-in host checks.
 
-Browser shell service compatibility uses honest browser-capability service forms. `srv import!url#system name` registers a cross-document MessagePort/9P import service and `mount name path` mounts it through the existing import boundary. WebSocket/WebTransport-backed service providers should follow the same `#srv`/`mount` model when real external browser network checks are added. Raw `tcp!host!port` remains unavailable in browsers.
+Browser shell service compatibility uses honest browser-capability service forms. `srv import!url#system name` registers a cross-document MessagePort/9P import service and `mount name path` mounts it through the existing import boundary. `srv ws!host!path name` and `srv wss!host!path name` register WebSocket-backed 9P services; `mount name path` uses `SystemElement.mountWebSocket9p` when a real browser WebSocket endpoint is configured. `srv webtransport!host!path name` follows the same provider hook but the default system reports provider-missing until a concrete WebTransport adapter is installed. Raw `tcp!host!port` remains unavailable in browsers.
 
 ## Native PTY Execution
 

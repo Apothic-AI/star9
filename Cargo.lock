@@ -1380,6 +1380,7 @@ dependencies = [
  "star9-runtime",
  "star9-task",
  "star9-vfs",
+ "wat",
 ]
 
 [[package]]

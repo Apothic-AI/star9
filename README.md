@@ -25,13 +25,13 @@ This workspace implements the main Star 9 runtime surfaces in Rust:
 - Rust-native 9P import/export with hard-link and xattr read/list/write support, native stream/TCP transport helpers, async native `Tflush` cancellation, browser MessagePort frame-serving/client helpers, an async browser namespace mount client, and a browser storage-to-9P export bridge for async storage adapters.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
 - Host-neutral Star 9 shell core plus native/browser shell surfaces that route through namespaces, files, task fds, and device protocols rather than host side channels.
-- Reusable Plan 9 rc language core with a Star 9 host adapter for native/browser rc sessions, including task/fd graph records for pipelines, background jobs, and process substitution.
+- Reusable Plan 9 rc language core with a Star 9 host adapter for native/browser rc sessions, including task/fd graph records for pipelines, background jobs, process substitution, and native-host provider-backed WASI/opt-in-native pipeline execution.
 - Browser Worker/MessagePort JS glue for runtime message envelopes, transferred ports, typed namespace/fd request helpers, and CBOR request/task-message bridging into the Rust runtime host.
 - Browser Worker host facade and execution-worker helper for real module-worker startup, runtime port transfer, message routing, JS/WASM execution bootstrap, dynamic JS runner import, direct WASI-style `.wasm` instantiation, Go-compatible runner fixture execution, runner context, port handoff, exit/error reporting, and cleanup.
 - Browser worker export handoff for `{ export: MessagePort }` 9P exports, mounted into the task export namespace and optional VM guest namespace.
 - Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests, JS-side async namespace mount routing for real browser hosts, task-facing 9P proxy mounts, and browser timer-backed debounced sync scheduling for async targets.
 - StarFS as separate optional browser storage mount backends: a lightweight OPFS-backed compatible adapter with xattrs, KV, tool-call audit logs, and restorable snapshots, plus an additional `starfs-sdk` adapter hook for an external SDK/worker/wasm backend. Neither replaces raw OPFS.
-- Browser network transport adapters shaped like `#net` resources over WebSocket/WebTransport-style capabilities; browser raw TCP remains explicitly unavailable.
+- Browser network transport adapters and service providers shaped like `#net`/`#srv` resources over `import!`, WebSocket, and WebTransport-style capabilities; browser raw TCP remains explicitly unavailable.
 - Wasmi-backed WASI preview1 execution over Star 9 task namespaces, fd tables, fd directory/positional I/O/allocation/renumber/advice/flags/timestamps/sync/truncate syscalls, clock resolution/time, poll/yield/signal imports, hard-link and other path mutation syscalls, deterministic socket listener accept plus send/recv/shutdown over `#net` task fds, and explicit unsupported socket accept on non-listener fds.
 - Rust-owned WASI fixtures include checked-in compiled `.wasm` modules as well as focused WAT unit fixtures.
 - Native CLI acceptance commands for 9P loopback, deterministic devices, compiled WASI preview1 fixtures, runtime worker protocol flows, and fd-backed worker stdout routing, plus Rust-native `serve-p9` stdin/stdout export and opt-in native `srv tcp!host!port` service import checks.
@@ -76,7 +76,7 @@ cargo run -p star9-cli -- shell -c 'echo hello | cat'
 cargo run -p star9-cli -- rc ./script.rc arg1 arg2
 ```
 
-The reusable `star9-rc` crate owns the rc language core and can be embedded without depending on Star 9 runtime or browser crates. It covers rc lists, expansion, functions/control flow, globbing, fd redirection/duplication, process substitution, here documents, environment import/export, notes, `$path` rc script dispatch, and optional oracle checks. Star 9 integrates it through a host adapter that routes files, commands, devices, and process-graph records through namespaces, task fds, generated pipe resources, and runtime surfaces.
+The reusable `star9-rc` crate owns the rc language core and can be embedded without depending on Star 9 runtime or browser crates. It covers rc lists, expansion, functions/control flow, globbing, fd redirection/duplication, process substitution, here documents, environment import/export, notes, `$path` rc script dispatch, and optional oracle checks. Star 9 integrates it through a host adapter that routes files, commands, devices, process-graph records, and native-host provider-backed WASI/native pipelines through namespaces, task fds, generated pipe resources, and runtime surfaces.
 
 Plan 9-style service composition works through the same shell/rc path:
 
@@ -85,7 +85,7 @@ cargo run -p star9-cli -- rc -c 'mkdir exported; write exported/hello ok; srv ro
 cargo run -p star9-cli -- accept native-srv
 ```
 
-Native hosts can register 9P services from `tcp!host!port` addresses when explicitly used. Browser shells can register cross-document imports with `srv import!url#system name` and mount them with `mount name path`; browser raw TCP remains unavailable. Provider-heavy commands such as `dossrv` and `vacfs` are explicit provider-missing boundaries until matching Star 9 disk/vac/archive providers are configured.
+Native hosts can register 9P services from `tcp!host!port` addresses when explicitly used. Browser shells can register cross-document imports with `srv import!url#system name`, configured WebSocket services with `srv ws!host!path name` or `srv wss!host!path name`, and configured WebTransport services with `srv webtransport!host!path name`; all mount with `mount name path`. Browser raw TCP remains unavailable. Provider-heavy commands such as `dossrv` and `vacfs` are explicit provider-missing boundaries until matching Star 9 disk/vac/archive providers are configured.
 
 ## Verification
 

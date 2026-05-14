@@ -131,7 +131,11 @@ export class Star9ShellController {
         this.services.set(parsed.name, parsed);
         let mounted = "";
         if (parsed.mountpoint) {
-            await this.#mountBrowserService(parsed, parsed.mountpoint);
+            try {
+                await this.#mountBrowserService(parsed, parsed.mountpoint);
+            } catch (error) {
+                return failure(`${errorMessage(error)}\n`);
+            }
             mounted = ` mounted at ${parsed.mountpoint}`;
         }
         return success(`srv ${parsed.name} ${parsed.source}${mounted}\n`);
@@ -149,13 +153,29 @@ export class Star9ShellController {
         if (!service) {
             return null;
         }
-        await this.#mountBrowserService(service, parsed.mountpoint);
+        try {
+            await this.#mountBrowserService(service, parsed.mountpoint);
+        } catch (error) {
+            return failure(`${errorMessage(error)}\n`);
+        }
         return success(`mounted ${parsed.service} at ${parsed.mountpoint}\n`);
     }
 
     async #mountBrowserService(service, mountpoint) {
         if (service.kind === "import") {
             await this.system.mountImport(mountpoint, service.url, { targetOrigin: "*" });
+            return;
+        }
+        if (service.kind === "browser-network") {
+            const mountService = this.system.mountBrowserService || this.system.mountNetworkService;
+            if (typeof mountService !== "function") {
+                throw new Error(`browser network service provider is not configured: ${service.source}`);
+            }
+            await mountService.call(this.system, mountpoint, service.source, {
+                family: service.family,
+                source: service.source,
+                url: service.url,
+            });
             return;
         }
         throw new Error(`unsupported browser service kind: ${service.kind}`);
@@ -372,6 +392,10 @@ function stringifyOutput(value) {
     return String(value ?? "");
 }
 
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+
 function parseBrowserSrv(words) {
     const args = words.slice(1);
     let mount = false;
@@ -405,6 +429,13 @@ function parseBrowserSrv(words) {
     if (source.startsWith("tcp!")) {
         return { kind: "raw-tcp", source, name, mountpoint };
     }
+    if (source.startsWith("ws!") || source.startsWith("wss!") || source.startsWith("webtransport!")) {
+        const parsed = parseBrowserNetworkServiceSource(source);
+        if (parsed.error) {
+            return { error: `srv: ${source}: ${parsed.error}\n` };
+        }
+        return { kind: "browser-network", source, name, mountpoint, ...parsed };
+    }
     return { kind: "provider-missing", source, name, mountpoint };
 }
 
@@ -431,6 +462,39 @@ function isBrowserServiceSource(source) {
         || source.startsWith("ws!")
         || source.startsWith("wss!")
         || source.startsWith("webtransport!");
+}
+
+function parseBrowserNetworkServiceSource(source) {
+    const bang = source.indexOf("!");
+    const family = source.slice(0, bang);
+    const rest = source.slice(bang + 1);
+    if (!rest) {
+        return { error: "missing service address" };
+    }
+    if (family === "ws" || family === "wss") {
+        const url = familyUrl(family, rest);
+        return typeof url === "string" ? { family, url } : url;
+    }
+    if (family === "webtransport") {
+        const url = familyUrl("https", rest);
+        return typeof url === "string" ? { family, url } : url;
+    }
+    return { error: "unknown browser network service family" };
+}
+
+function familyUrl(scheme, address) {
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(address)) {
+        return address;
+    }
+    const [host, ...pathParts] = address.split("!");
+    const path = pathParts.join("/");
+    if (!host) {
+        return { error: "missing service host" };
+    }
+    if (!path) {
+        return `${scheme}://${host}`;
+    }
+    return `${scheme}://${host}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
 export function splitShellWords(line) {

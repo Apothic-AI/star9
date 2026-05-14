@@ -2,7 +2,18 @@
 
 ## Current Focus
 
-Finish the Star 9 rc/userland depth sprint while keeping the Rust tree primary, Plan 9-aligned, deterministic by default, reusable as crates, and free of GPL or Go runtime/build dependencies.
+Finish the Star 9 rc execution-provider parity sprint while keeping the Rust tree primary, Plan 9-aligned, deterministic by default, reusable as crates, and free of GPL or Go runtime/build dependencies.
+
+Current rc execution-provider contract:
+
+- Keep the standalone `star9-rc` crate independent of Star 9 concrete runtime types. Executable process graphs are expressed as host-neutral specs and optional host-provider hooks.
+- Preserve deterministic evaluator behavior for fake hosts, pure built-ins, and browser paths where a streaming provider is unavailable.
+- Use provider-backed graph execution for native-host external stages where Star 9 can install streaming fds. The current provider-backed path covers WASI stages and opt-in native stages; JS/WASM worker graph execution remains a browser/runtime-port provider boundary.
+- Represent provider-backed pipelines and jobs through Star 9 tasks, fd tables, generated pipe resources under `.rc/graphs/...`, and graph/job status returned through rc `status`/`wait`.
+- Keep `rfork` precise: `rfork e` remains supported, unsupported flags fail explicitly until Star 9 has matching namespace/env/fd/process-group sharing controls.
+- Route note delivery through rc note hooks and Star 9 `#signal/data` where present; delivery into active provider-backed task groups remains a documented future precision item.
+- Browser service providers must be honest about browser capabilities: `import!url#system`, `ws!`, `wss!`, and configured `webtransport!` services route through `#srv`/`mount`-style shell flow, while raw `tcp!` remains unavailable in browsers.
+- Keep docs/audits current for provider-backed execution, browser service providers, and the remaining process-graph boundaries.
 
 Current rc/userland depth contract:
 
