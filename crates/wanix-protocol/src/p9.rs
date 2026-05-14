@@ -4,11 +4,12 @@
 //! and native stream adapters can all deliver complete 9P packets to the same
 //! server/client bridge without depending on the reference Go implementation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, SeekFrom, Write};
 use std::ops::Range;
-use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 use std::time::{Duration, SystemTime};
 
 use wanix_core::{base_name, clean_path, parent_path, valid_path};
@@ -1569,6 +1570,131 @@ pub fn serve_frame_stream(
     Ok(served)
 }
 
+#[derive(Clone)]
+pub struct AsyncNinePServer {
+    inner: Arc<AsyncNinePServerInner>,
+}
+
+struct AsyncNinePServerInner {
+    server: Arc<NinePServer>,
+    pending: Mutex<HashMap<u16, AsyncPending>>,
+    responses: Mutex<VecDeque<Vec<u8>>>,
+    responses_ready: Condvar,
+}
+
+#[derive(Clone)]
+struct AsyncPending {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl AsyncNinePServer {
+    pub fn new(fsys: FsRef) -> Self {
+        Self::from_server(Arc::new(NinePServer::new(fsys)))
+    }
+
+    pub fn from_server(server: Arc<NinePServer>) -> Self {
+        Self {
+            inner: Arc::new(AsyncNinePServerInner {
+                server,
+                pending: Mutex::new(HashMap::new()),
+                responses: Mutex::new(VecDeque::new()),
+                responses_ready: Condvar::new(),
+            }),
+        }
+    }
+
+    pub fn handle_frame(&self, frame: &[u8]) -> Result<Option<Vec<u8>>> {
+        let (tag, request) = decode_request(frame)?;
+        if let NinePRequest::Flush { oldtag } = request {
+            self.cancel(oldtag);
+            return encode_response(tag, &NinePResponse::Flush).map(Some);
+        }
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let mut pending = self.inner.pending.lock().unwrap();
+            if let Some(existing) = pending.remove(&tag) {
+                existing.cancelled.store(true, Ordering::SeqCst);
+                return encode_response(
+                    tag,
+                    &NinePResponse::Lerror {
+                        ecode: errno_for_error(&ErrorKind::Invalid.into()),
+                    },
+                )
+                .map(Some);
+            }
+            pending.insert(
+                tag,
+                AsyncPending {
+                    cancelled: cancelled.clone(),
+                },
+            );
+        }
+
+        let frame = frame.to_vec();
+        let inner = self.inner.clone();
+        thread::spawn(move || {
+            let response = inner.server.handle_frame(&frame).unwrap_or_else(|_| {
+                encode_response(tag, &NinePResponse::Lerror { ecode: EIO })
+                    .expect("9P error response encodes")
+            });
+            let should_send = {
+                let mut pending = inner.pending.lock().unwrap();
+                match pending.get(&tag) {
+                    Some(state)
+                        if Arc::ptr_eq(&state.cancelled, &cancelled)
+                            && !state.cancelled.load(Ordering::SeqCst) =>
+                    {
+                        pending.remove(&tag);
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if should_send {
+                let mut responses = inner.responses.lock().unwrap();
+                responses.push_back(response);
+                inner.responses_ready.notify_all();
+            }
+        });
+
+        Ok(None)
+    }
+
+    pub fn cancel(&self, tag: u16) -> bool {
+        let pending = self.inner.pending.lock().unwrap().remove(&tag);
+        if let Some(pending) = pending {
+            pending.cancelled.store(true, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn next_response(&self) -> Option<Vec<u8>> {
+        self.inner.responses.lock().unwrap().pop_front()
+    }
+
+    pub fn recv_response_timeout(&self, timeout: Duration) -> Option<Vec<u8>> {
+        let mut responses = self.inner.responses.lock().unwrap();
+        if responses.is_empty() {
+            let (next, _) = self
+                .inner
+                .responses_ready
+                .wait_timeout(responses, timeout)
+                .unwrap();
+            responses = next;
+        }
+        responses.pop_front()
+    }
+
+    pub fn pending_tags(&self) -> Vec<u16> {
+        let mut tags: Vec<_> = self.inner.pending.lock().unwrap().keys().copied().collect();
+        tags.sort_unstable();
+        tags
+    }
+}
+
 fn encoded_frame_size(frame: &[u8]) -> Result<usize> {
     if frame.len() < 4 {
         return Err(ErrorKind::Invalid.into());
@@ -1602,6 +1728,32 @@ impl NinePTransport for LoopbackTransport {
         self.server.handle_frame(&request)
     }
 }
+
+pub struct StreamTransport<S> {
+    stream: Mutex<S>,
+}
+
+impl<S> StreamTransport<S> {
+    pub fn new(stream: S) -> Self {
+        Self {
+            stream: Mutex::new(stream),
+        }
+    }
+}
+
+impl<S> NinePTransport for StreamTransport<S>
+where
+    S: Read + Write + Send,
+{
+    fn round_trip(&self, request: Vec<u8>) -> Result<Vec<u8>> {
+        let mut stream = self.stream.lock().unwrap();
+        write_frame(&mut *stream, &request)?;
+        read_frame(&mut *stream)?.ok_or_else(|| ErrorKind::UnexpectedEof.into())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub type TcpStreamTransport = StreamTransport<std::net::TcpStream>;
 
 #[derive(Clone)]
 pub struct NinePClientFs {
@@ -2549,7 +2701,7 @@ fn errno_to_error(errno: u32) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wanix_fs::{fs_ref, MemFs};
+    use wanix_fs::{directory_file, fs_ref, MemFs};
 
     fn round_trip_request(request: NinePRequest) {
         let encoded = encode_request(42, &request).unwrap();
@@ -2586,6 +2738,108 @@ mod tests {
             .collect();
         fids.sort_by_key(|(fid, ..)| *fid);
         fids
+    }
+
+    fn async_exchange(server: &AsyncNinePServer, tag: u16, request: NinePRequest) -> NinePResponse {
+        let frame = encode_request(tag, &request).unwrap();
+        let response = match server.handle_frame(&frame).unwrap() {
+            Some(response) => response,
+            None => server
+                .recv_response_timeout(Duration::from_secs(2))
+                .expect("async 9P response"),
+        };
+        let (response_tag, response) = decode_response(&response).unwrap();
+        assert_eq!(response_tag, tag);
+        response
+    }
+
+    #[derive(Clone)]
+    struct BlockingReadFs {
+        state: Arc<BlockingReadState>,
+    }
+
+    struct BlockingReadState {
+        started: (Mutex<bool>, Condvar),
+        released: (Mutex<bool>, Condvar),
+    }
+
+    impl BlockingReadFs {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(BlockingReadState {
+                    started: (Mutex::new(false), Condvar::new()),
+                    released: (Mutex::new(false), Condvar::new()),
+                }),
+            }
+        }
+
+        fn wait_started(&self) {
+            let (lock, ready) = &self.state.started;
+            let mut started = lock.lock().unwrap();
+            while !*started {
+                started = ready.wait(started).unwrap();
+            }
+        }
+
+        fn release(&self) {
+            let (lock, ready) = &self.state.released;
+            *lock.lock().unwrap() = true;
+            ready.notify_all();
+        }
+    }
+
+    impl FileSystem for BlockingReadFs {
+        fn open(&self, _ctx: &FsContext, name: &str) -> Result<BoxFile> {
+            match clean_path(name).as_str() {
+                "." => Ok(directory_file(
+                    Metadata::dir(".", 0o555),
+                    vec![DirEntry::new(
+                        "slow.txt",
+                        Metadata::file("slow.txt", 0o444, "slow-data".len() as u64),
+                    )],
+                )),
+                "slow.txt" => Ok(Box::new(BlockingReadFile {
+                    state: self.state.clone(),
+                    data: b"slow-data".to_vec(),
+                })),
+                _ => Err(ErrorKind::NotFound.into()),
+            }
+        }
+    }
+
+    struct BlockingReadFile {
+        state: Arc<BlockingReadState>,
+        data: Vec<u8>,
+    }
+
+    impl FileHandle for BlockingReadFile {
+        fn read_at(&mut self, buf: &mut [u8], offset: u64) -> Result<usize> {
+            let (started_lock, started_ready) = &self.state.started;
+            *started_lock.lock().unwrap() = true;
+            started_ready.notify_all();
+
+            let (released_lock, released_ready) = &self.state.released;
+            let mut released = released_lock.lock().unwrap();
+            while !*released {
+                released = released_ready.wait(released).unwrap();
+            }
+
+            let start: usize = offset.try_into().map_err(|_| ErrorKind::Invalid)?;
+            if start >= self.data.len() {
+                return Ok(0);
+            }
+            let count = buf.len().min(self.data.len() - start);
+            buf[..count].copy_from_slice(&self.data[start..start + count]);
+            Ok(count)
+        }
+
+        fn stat(&self) -> Result<Metadata> {
+            Ok(Metadata::file(
+                "slow.txt",
+                0o444,
+                self.data.len().try_into().unwrap(),
+            ))
+        }
     }
 
     #[test]
@@ -2762,6 +3016,42 @@ mod tests {
             Some((3, NinePResponse::Flush))
         );
         assert_eq!(read_frame(&mut response_reader).unwrap(), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn stream_transport_imports_namespace_over_tcp_listener() {
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = NinePServer::new(fs_ref(MemFs::from_entries([(
+            "dir/file.txt",
+            b"hello".to_vec(),
+        )])));
+        let served = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = stream.try_clone().unwrap();
+            let mut writer = stream;
+            serve_frame_stream(&server, &mut reader, &mut writer).unwrap()
+        });
+
+        let stream = TcpStream::connect(addr).unwrap();
+        let client = NinePClientFs::connect(Arc::new(TcpStreamTransport::new(stream))).unwrap();
+        assert_eq!(fs::read_file(&client, "dir/file.txt").unwrap(), b"hello");
+        fs::write_file(
+            &client,
+            "dir/created.txt",
+            b"created",
+            FileMode::from_perm(0o644),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_file(&client, "dir/created.txt").unwrap(),
+            b"created"
+        );
+        drop(client);
+        assert!(served.join().unwrap() >= 4);
     }
 
     #[test]
@@ -3014,6 +3304,142 @@ mod tests {
             NinePResponse::GetAttr { attr } => assert_ne!(attr.mode & 0o040000, 0),
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn async_server_flush_cancels_pending_read_and_suppresses_late_reply() {
+        let blocking = BlockingReadFs::new();
+        let server = AsyncNinePServer::new(fs_ref(blocking.clone()));
+
+        assert!(matches!(
+            async_exchange(
+                &server,
+                1,
+                NinePRequest::Version {
+                    msize: DEFAULT_MSIZE,
+                    version: VERSION.to_string(),
+                },
+            ),
+            NinePResponse::Version { .. }
+        ));
+        assert!(matches!(
+            async_exchange(
+                &server,
+                2,
+                NinePRequest::Attach {
+                    fid: 1,
+                    afid: NOFID,
+                    uname: "u".into(),
+                    aname: String::new(),
+                    n_uname: 0,
+                },
+            ),
+            NinePResponse::Attach { .. }
+        ));
+        assert!(matches!(
+            async_exchange(
+                &server,
+                3,
+                NinePRequest::Walk {
+                    fid: 1,
+                    newfid: 2,
+                    names: vec!["slow.txt".into()],
+                },
+            ),
+            NinePResponse::Walk { qids } if qids.len() == 1
+        ));
+        assert!(matches!(
+            async_exchange(&server, 4, NinePRequest::Lopen { fid: 2, flags: 0 }),
+            NinePResponse::Lopen { .. }
+        ));
+
+        let read = encode_request(
+            5,
+            &NinePRequest::Read {
+                fid: 2,
+                offset: 0,
+                count: 9,
+            },
+        )
+        .unwrap();
+        assert!(server.handle_frame(&read).unwrap().is_none());
+        blocking.wait_started();
+        assert_eq!(server.pending_tags(), vec![5]);
+
+        assert_eq!(
+            async_exchange(&server, 6, NinePRequest::Flush { oldtag: 5 }),
+            NinePResponse::Flush
+        );
+        assert!(server.pending_tags().is_empty());
+
+        blocking.release();
+        assert!(server
+            .recv_response_timeout(Duration::from_millis(150))
+            .is_none());
+        assert_eq!(
+            async_exchange(&server, 7, NinePRequest::Clunk { fid: 2 }),
+            NinePResponse::Clunk
+        );
+    }
+
+    #[test]
+    fn async_server_duplicate_tag_cancels_previous_pending_operation() {
+        let blocking = BlockingReadFs::new();
+        let server = AsyncNinePServer::new(fs_ref(blocking.clone()));
+
+        async_exchange(
+            &server,
+            1,
+            NinePRequest::Attach {
+                fid: 1,
+                afid: NOFID,
+                uname: "u".into(),
+                aname: String::new(),
+                n_uname: 0,
+            },
+        );
+        async_exchange(
+            &server,
+            2,
+            NinePRequest::Walk {
+                fid: 1,
+                newfid: 2,
+                names: vec!["slow.txt".into()],
+            },
+        );
+        async_exchange(&server, 3, NinePRequest::Lopen { fid: 2, flags: 0 });
+
+        let read = encode_request(
+            4,
+            &NinePRequest::Read {
+                fid: 2,
+                offset: 0,
+                count: 9,
+            },
+        )
+        .unwrap();
+        assert!(server.handle_frame(&read).unwrap().is_none());
+        blocking.wait_started();
+
+        let duplicate = encode_request(
+            4,
+            &NinePRequest::GetAttr {
+                fid: 2,
+                request_mask: ATTR_BASIC,
+            },
+        )
+        .unwrap();
+        let duplicate_response = server.handle_frame(&duplicate).unwrap().unwrap();
+        assert_eq!(
+            decode_response(&duplicate_response).unwrap(),
+            (4, NinePResponse::Lerror { ecode: EINVAL })
+        );
+        assert!(server.pending_tags().is_empty());
+
+        blocking.release();
+        assert!(server
+            .recv_response_timeout(Duration::from_millis(150))
+            .is_none());
     }
 
     #[test]

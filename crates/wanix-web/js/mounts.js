@@ -1,7 +1,7 @@
 import { createFileSystemAccessStorageAdapter, createOpfsStorageAdapter } from "./storage-file-system.js";
 import { createCacheStorageAdapter, createDomStorageAdapter, createDownloadStorageAdapter } from "./storage-web.js";
 import { createJsValueStorageAdapter, createWorkerStorageAdapter } from "./storage-js-value.js";
-import { createStarFsStorageAdapter } from "./storage-starfs.js";
+import { createStarFsSdkStorageAdapter, createStarFsStorageAdapter } from "./storage-starfs.js";
 import { createWanixP9NamespaceMount } from "./p9-port.js";
 
 export class AsyncMountTable {
@@ -194,6 +194,8 @@ export async function createBrowserStorageAdapter(descriptor, options = {}) {
             backingAdapter,
         });
     }
+    case "starfs-sdk":
+        return createStarFsSdkStorageAdapter(descriptor, options.starfsSdk || options.starfsSDK || options);
     default:
         throw new Error(`Unsupported browser storage backend ${JSON.stringify(descriptor?.backend)}`);
     }

@@ -60,9 +60,9 @@
       },
       {
         "import": "sock_accept",
-        "errno": "NOTSUP for generic fd-backed sockets until a listener fd is installed",
-        "classification": "spec-level unsupported behavior on non-listener fds",
-        "evidence": "wasmi_wasi_handler_routes_socket_send_recv_over_task_fds"
+        "errno": "SUCCESS for #net listener fds; NOTSUP for generic non-listener fds",
+        "classification": "implemented through #net listener resources with explicit non-listener boundary",
+        "evidence": "wasmi_wasi_handler_accepts_listener_backed_net_socket"
       },
       {
         "import": "fd_fdstat_set_flags",
@@ -97,33 +97,35 @@
       "evidence": ["cargo run -p wanix-cli -- accept devices", "tests/browser-smoke.html"]
     },
     "vm": {
-      "implemented": ["deterministic provider contract surface through ctl/state/config/alias/console"],
-      "classification": "offline deterministic provider is the default; real VM provider remains opt-in host integration",
-      "evidence": ["cargo run -p wanix-cli -- accept devices"]
+      "implemented": ["VmProvider contract", "deterministic provider default", "ctl/state/config/alias/console/guest file surface"],
+      "classification": "offline deterministic provider is the default; real VM providers are opt-in VmProvider implementations",
+      "evidence": ["cargo run -p wanix-cli -- accept devices", "vm_device_routes_lifecycle_through_provider_contract"]
     },
     "network": {
-      "implemented": ["deterministic Plan 9-style listener/dial/accept/data/hangup resources"],
+      "implemented": ["deterministic Plan 9-style listener/dial/accept/data/hangup resources", "WASI listener-backed sock_accept", "browser WebSocket-style network adapter"],
       "classification": "native/browser real transports are opt-in host integration; deterministic model is default conformance",
-      "evidence": ["cargo run -p wanix-cli -- accept devices", "cargo run -p wanix-cli -- accept native-tcp"]
+      "evidence": ["cargo run -p wanix-cli -- accept devices", "cargo run -p wanix-cli -- accept native-tcp", "wasmi_wasi_handler_accepts_listener_backed_net_socket", "tests/browser-network-adapter.test.mjs"]
     }
   },
   "backends": {
     "http": {
       "implemented": ["cache validators", "conditional GET/HEAD", "native loopback transport tests", "server-side handler validators"],
-      "live": "environment-gated tests documented in docs/LIVE_TESTS.md"
+      "live": "environment-gated tests in crates/wanix-fs/tests/live_backends.rs documented in docs/LIVE_TESTS.md"
     },
     "s3_r2": {
       "implemented": ["SigV4 signing", "fake transport object operations", "CAS/conflict coverage"],
-      "live": "environment-gated tests documented in docs/LIVE_TESTS.md"
+      "live": "environment-gated tests in crates/wanix-fs/tests/live_backends.rs documented in docs/LIVE_TESTS.md"
     },
     "browser_storage": {
-      "implemented": ["OPFS", "File System Access", "Cache API", "DOM", "download", "JS value", "worker-backed adapters", "browser debounce scheduler", "storage-to-9P export bridge", "OPFS-backed task async mounts", "StarFS optional mount backend"],
+      "implemented": ["OPFS", "File System Access", "File System Access permission helper", "Cache API", "DOM", "download", "JS value", "worker-backed adapters", "browser debounce scheduler", "storage-to-9P export bridge", "OPFS-backed task async mounts", "StarFS optional mount backend", "StarFS SDK optional backend hook", "StarFS xattrs and restorable snapshots"],
       "evidence": ["tests/browser-storage-adapters.test.mjs", "tests/browser-mounts.test.mjs", "tests/browser-smoke.html"]
     }
   },
   "ninep": {
     "implemented": [
       "native frame stream serving",
+      "native TcpStreamTransport import over loopback TCP",
+      "Rust/native AsyncNinePServer Tflush cancellation and duplicate-tag cancellation",
       "browser MessagePort namespace mount",
       "client AbortSignal to Tflush",
       "server async Tflush cancellation for Promise-backed work",
@@ -134,16 +136,16 @@
       "origin-gated concurrent import responders",
       "malformed storage frame rejection"
     ],
-    "evidence": ["tests/browser-p9-port.test.mjs", "tests/browser-smoke.html"]
+    "evidence": ["stream_transport_imports_namespace_over_tcp_listener", "async_server_flush_cancels_pending_read_and_suppresses_late_reply", "tests/browser-p9-port.test.mjs", "tests/browser-smoke.html"]
   },
   "storage_direction": {
     "default_browser_persistence": "raw OPFS through existing async storage adapters",
     "starfs_role": "optional/additional OPFS-backed mount for durable/auditable workspaces; not a replacement for raw OPFS or existing storage mounts",
     "starfs_reference": "/home/bitnom/Code/apothic-monorepo/libs/rust/starfs",
-    "implementation_shape": "browser-side StarFS-compatible adapter over a backing storage adapter, exported through the storage 9P bridge when task/namespace handoff is required",
+    "implementation_shape": "browser-side StarFS-compatible adapter over a backing storage adapter, plus separate starfs-sdk adapter hook for an externally supplied SDK/worker/wasm adapter; both can be exported through the storage 9P bridge when task/namespace handoff is required",
     "explicit_boundaries": [
-      "The checked-in StarFS adapter preserves filesystem, KV, snapshot-manifest, and tool-call-log surfaces but does not vendor the external StarFS SDK into the default build.",
-      "Full StarFS inode, hard-link, xattr, and PrimaDB/SQLite semantics remain an optional future SDK-backed integration boundary.",
+      "The checked-in StarFS adapter preserves filesystem, xattr, KV, restorable snapshot, and tool-call-log surfaces but does not vendor the external StarFS SDK into the default build.",
+      "Full StarFS inode, hard-link, and PrimaDB/SQLite semantics remain optional SDK-backed integration behavior behind backend:starfs-sdk.",
       "Real OPFS mounts are browser-side async overlays and 9P exports; synchronous Rust Wasmi task namespaces use descriptor-backed stand-ins unless a browser worker proxy is mounted over 9P."
     ]
   },
@@ -161,12 +163,17 @@
     { "path": "crates/wanix-runtime/src/wasi.rs", "match": "sync_ignoring_unsupported", "classification": "fd sync host capability boundary" },
     { "path": "crates/wanix-web/js/bind.js", "match": "Unsupported wanix-bind kind", "classification": "browser binding descriptor validation boundary" },
     { "path": "crates/wanix-web/js/mounts.js", "match": "Unsupported browser storage backend", "classification": "browser storage descriptor validation boundary" },
+    { "path": "crates/wanix-web/js/network-adapter.js", "match": "browser raw listen is unavailable", "classification": "browser network capability boundary" },
+    { "path": "crates/wanix-web/js/network-adapter.js", "match": "unsupported command", "classification": "browser network ctl validation boundary" },
     { "path": "crates/wanix-web/js/p9-port.js", "match": "unsupported 9P version", "classification": "protocol negotiation boundary" },
+    { "path": "crates/wanix-web/js/storage-file-system.js", "match": "Unsupported File System Access picker mode", "classification": "browser permission helper validation boundary" },
     { "path": "crates/wanix-web/js/storage-file-system.js", "match": "Unsupported browser storage backend", "classification": "browser storage descriptor validation boundary" },
     { "path": "crates/wanix-web/js/storage-file-system.js", "match": "unsupported(", "classification": "browser capability detection boundary" },
     { "path": "crates/wanix-web/js/storage-js-value.js", "match": "Unsupported", "classification": "JS-value storage handle validation boundary" },
     { "path": "crates/wanix-web/js/storage-p9.js", "match": "unsupported 9P version", "classification": "storage 9P protocol negotiation boundary" },
     { "path": "crates/wanix-web/js/storage-p9.js", "match": "unsupported storage 9P request type", "classification": "storage 9P request validation boundary" },
+    { "path": "crates/wanix-web/js/storage-starfs.js", "match": "does not expose", "classification": "optional StarFS SDK semantic capability boundary" },
+    { "path": "crates/wanix-web/js/storage-starfs.js", "match": "does not support hard links", "classification": "lightweight StarFS backing capability boundary" },
     { "path": "crates/wanix-web/js/storage-web.js", "match": "Unsupported DOM target type", "classification": "DOM storage target validation boundary" },
     { "path": "crates/wanix-web/js/worker-runtime.js", "match": "Unsupported worker runtime message", "classification": "worker runtime envelope validation boundary" },
     { "path": "crates/wanix-web/js/storage-web.js", "match": "Browser anchor downloads are not supported", "classification": "browser download capability boundary" }

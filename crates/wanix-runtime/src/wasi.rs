@@ -16,6 +16,7 @@ use crate::NativeExecutionHandler;
 const WASI: &str = "wasi_snapshot_preview1";
 
 const ERRNO_SUCCESS: i32 = 0;
+const ERRNO_AGAIN: i32 = 6;
 const ERRNO_BADF: i32 = 8;
 const ERRNO_EXIST: i32 = 20;
 const ERRNO_INVAL: i32 = 28;
@@ -408,10 +409,56 @@ fn poll_oneoff(
         .map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
 }
 
-fn sock_accept(caller: Caller<'_, WasiState>, fd: i32, _flags: i32, _fd_ptr: i32) -> i32 {
-    match caller.data().task.fd_path(fd as u32) {
-        Ok(_) => ERRNO_NOTSUP,
-        Err(err) => errno_from_fd_lookup_error(&err),
+fn sock_accept(mut caller: Caller<'_, WasiState>, fd: i32, _flags: i32, fd_ptr: i32) -> i32 {
+    let task = caller.data().task.clone();
+    let path = match task.fd_path(fd as u32) {
+        Ok(path) => path,
+        Err(err) => return errno_from_fd_lookup_error(&err),
+    };
+    let Some(listener_id) = net_listener_id_from_path(&path) else {
+        return ERRNO_NOTSUP;
+    };
+
+    let mut accepted = vec![0_u8; 64];
+    let n = match task.with_fd_mut(fd as u32, |file| file.read(&mut accepted)) {
+        Ok(0) => return ERRNO_AGAIN,
+        Ok(n) => n,
+        Err(err) => return errno_from_error(&err),
+    };
+    accepted.truncate(n);
+    let Ok(accepted_id) = std::str::from_utf8(&accepted).map(str::trim) else {
+        return ERRNO_INVAL;
+    };
+    if accepted_id.is_empty() {
+        return ERRNO_AGAIN;
+    }
+    let data_path = format!("#net/{accepted_id}/data");
+    let file = match task.namespace().open(&FsContext::new(), &data_path) {
+        Ok(file) => file,
+        Err(err) => return errno_from_error(&err),
+    };
+    let accepted_fd = task.open_fd(file, data_path);
+    let _ = listener_id;
+    write_u32(&mut caller, fd_ptr, accepted_fd).map_or(ERRNO_INVAL, |_| ERRNO_SUCCESS)
+}
+
+fn net_listener_id_from_path(path: &str) -> Option<String> {
+    let path = clean_path(path);
+    let mut parts = path.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("#net"), Some(id), Some("listen"), None) if !id.is_empty() => Some(id.to_string()),
+        _ => None,
+    }
+}
+
+fn net_data_ctl_path(path: &str) -> Option<String> {
+    let path = clean_path(path);
+    let mut parts = path.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("#net"), Some(id), Some("data"), None) if !id.is_empty() => {
+            Some(format!("#net/{id}/ctl"))
+        }
+        _ => None,
     }
 }
 
@@ -457,10 +504,22 @@ fn sock_shutdown(caller: Caller<'_, WasiState>, fd: i32, how: i32) -> i32 {
     if !(0..=2).contains(&how) {
         return ERRNO_INVAL;
     }
-    match caller.data().task.fd_path(fd as u32) {
-        Ok(_) => ERRNO_SUCCESS,
-        Err(err) => errno_from_fd_lookup_error(&err),
+    let task = caller.data().task.clone();
+    let path = match task.fd_path(fd as u32) {
+        Ok(path) => path,
+        Err(err) => return errno_from_fd_lookup_error(&err),
+    };
+    if let Some(ctl_path) = net_data_ctl_path(&path) {
+        let mut ctl = match task.namespace().open(&FsContext::new(), &ctl_path) {
+            Ok(file) => file,
+            Err(err) => return errno_from_error(&err),
+        };
+        if let Err(err) = ctl.write(b"hangup\n") {
+            return errno_from_error(&err);
+        }
+        let _ = ctl.close();
     }
+    ERRNO_SUCCESS
 }
 
 fn fd_write(
@@ -1641,7 +1700,7 @@ fn wasmi_error(err: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wanix_fs::{fs_ref, read_file, MemFs};
+    use wanix_fs::{fs_ref, open, read_file, MemFs};
     use wanix_protocol::runtime::{
         EnvironmentEntry, ExecutionKind, ExecutionSpec, FdDescriptor, FdKind, StdioSet,
         StreamDescriptor,
@@ -2074,6 +2133,157 @@ mod tests {
             read_file(task.namespace().as_ref(), "workspace/socket.txt").unwrap(),
             b"inboundout"
         );
+    }
+
+    fn alloc_net(runtime: &crate::Runtime) -> String {
+        String::from_utf8(read_file(runtime.namespace().as_ref(), "#net/new").unwrap())
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    fn write_net_ctl(runtime: &crate::Runtime, id: &str, command: &str) {
+        let mut ctl = open(runtime.namespace().as_ref(), &format!("#net/{id}/ctl")).unwrap();
+        ctl.write(format!("{command}\n").as_bytes()).unwrap();
+        ctl.close().unwrap();
+    }
+
+    #[test]
+    fn wasmi_wasi_handler_accepts_listener_backed_net_socket() {
+        let runtime = crate::Runtime::new().unwrap();
+        let task = runtime
+            .task_fs()
+            .alloc("auto", Some(runtime.root()))
+            .unwrap();
+        let listener = alloc_net(&runtime);
+        let dialer = alloc_net(&runtime);
+        let address = "loopback:4400";
+        write_net_ctl(&runtime, &listener, &format!("announce {address}"));
+        write_net_ctl(&runtime, &dialer, &format!("dial {address}"));
+        let mut dialer_data =
+            open(runtime.namespace().as_ref(), &format!("#net/{dialer}/data")).unwrap();
+        dialer_data.write(b"ping").unwrap();
+
+        let program = wat::parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "sock_accept"
+                (func $sock_accept (param i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "sock_recv"
+                (func $sock_recv (param i32 i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "sock_send"
+                (func $sock_send (param i32 i32 i32 i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "sock_shutdown"
+                (func $sock_shutdown (param i32 i32) (result i32)))
+              (import "wasi_snapshot_preview1" "proc_exit"
+                (func $proc_exit (param i32)))
+
+              (memory (export "memory") 1)
+              (data (i32.const 256) "pong")
+
+              (func $assert_ok (param $errno i32) (param $code i32)
+                local.get $errno
+                i32.eqz
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func $assert_i32 (param $actual i32) (param $want i32) (param $code i32)
+                local.get $actual
+                local.get $want
+                i32.eq
+                if
+                else
+                  local.get $code
+                  call $proc_exit
+                end)
+
+              (func (export "_start")
+                (i32.store (i32.const 64) (i32.const 256))
+                (i32.store (i32.const 68) (i32.const 4))
+                (i32.store (i32.const 80) (i32.const 300))
+                (i32.store (i32.const 84) (i32.const 4))
+
+                (call $assert_ok
+                  (call $sock_accept
+                    (i32.const 3)
+                    (i32.const 0)
+                    (i32.const 32))
+                  (i32.const 10))
+                (call $assert_ok
+                  (call $sock_recv
+                    (i32.load (i32.const 32))
+                    (i32.const 80)
+                    (i32.const 1)
+                    (i32.const 0)
+                    (i32.const 40)
+                    (i32.const 44))
+                  (i32.const 11))
+                (call $assert_i32 (i32.load (i32.const 40)) (i32.const 4) (i32.const 12))
+                (call $assert_i32 (i32.load8_u (i32.const 300)) (i32.const 112) (i32.const 13))
+                (call $assert_i32 (i32.load8_u (i32.const 301)) (i32.const 105) (i32.const 14))
+                (call $assert_i32 (i32.load8_u (i32.const 302)) (i32.const 110) (i32.const 15))
+                (call $assert_i32 (i32.load8_u (i32.const 303)) (i32.const 103) (i32.const 16))
+
+                (call $assert_ok
+                  (call $sock_send
+                    (i32.load (i32.const 32))
+                    (i32.const 64)
+                    (i32.const 1)
+                    (i32.const 0)
+                    (i32.const 48))
+                  (i32.const 17))
+                (call $assert_i32 (i32.load (i32.const 48)) (i32.const 4) (i32.const 18))
+                (call $assert_ok
+                  (call $sock_shutdown
+                    (i32.load (i32.const 32))
+                    (i32.const 2))
+                  (i32.const 19)))
+            )
+            "#,
+        )
+        .unwrap();
+
+        task.namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([("program.wasm", program)])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+        runtime
+            .execution_registry()
+            .register_kind(ExecutionKind::Wasi, WasmiWasiHandler::new());
+
+        let status = runtime
+            .execution_registry()
+            .execute(
+                &task,
+                &ExecutionSpec {
+                    kind: ExecutionKind::Wasi,
+                    module: "program.wasm".into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: Some("workspace".into()),
+                    stdio: StdioSet::default(),
+                    fds: vec![FdDescriptor {
+                        fd: 3,
+                        kind: FdKind::Socket,
+                        path: Some(format!("#net/{listener}/listen")),
+                        read: true,
+                        write: false,
+                    }],
+                },
+            )
+            .unwrap();
+
+        assert_eq!(status, ExitStatus::ExitCode(0));
+        let mut buf = [0_u8; 4];
+        assert_eq!(dialer_data.read(&mut buf).unwrap(), 4);
+        assert_eq!(&buf, b"pong");
     }
 
     #[test]

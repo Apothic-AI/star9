@@ -24,20 +24,44 @@ Then open `http://127.0.0.1:4177/tests/browser-smoke.html` or drive it with Play
 
 ## HTTP
 
-`wanix-fs` includes native loopback coverage under the `native-http` feature. Broader live HTTP checks should use a temporary server that supports conditional GET/HEAD, validators, range responses, redirects, and auth failures. Keep those checks outside default test runs unless the server endpoint is explicitly configured.
+`wanix-fs` includes native loopback coverage under the `native-http` feature. Broader live HTTP checks use an environment-gated test and should point at a temporary server that supports conditional GET/HEAD, validators, range responses, redirects, and auth failures. These checks are outside default test runs unless explicitly configured.
 
-Expected environment for future live HTTP tests:
+Run:
 
 ```sh
+WANIX_LIVE_HTTP=1 \
+WANIX_LIVE_HTTP_BASE_URL=https://example.test/wanix/readme.txt \
+cargo test -p wanix-fs --features native-http --test live_backends live_http -- --nocapture
+```
+
+Supported environment:
+
+```sh
+WANIX_LIVE_HTTP=1
 WANIX_LIVE_HTTP_BASE_URL=https://example.test/wanix
 WANIX_LIVE_HTTP_AUTH=optional-token
+WANIX_LIVE_HTTP_RANGE_URL=https://example.test/wanix/range.bin
+WANIX_LIVE_HTTP_REDIRECT_URL=https://example.test/wanix/redirect
+WANIX_LIVE_HTTP_AUTH_FAILURE_URL=https://example.test/wanix/private
 ```
 
 ## S3 And R2
 
-The default suite validates `S3ObjectStore` and `AwsSigV4Signer` with deterministic fake transports. Live bucket checks must be explicitly enabled and should use disposable prefixes.
+The default suite validates `S3ObjectStore` and `AwsSigV4Signer` with deterministic fake transports. Live bucket checks must be explicitly enabled and should use disposable prefixes. The live test creates and deletes objects under the configured prefix and exercises `GET`, `PUT`, `DELETE`, prefix listing, metadata, compare-and-swap conflicts, and optional auth failure.
 
-Expected environment for future live S3/R2 tests:
+Run:
+
+```sh
+WANIX_LIVE_S3=1 \
+WANIX_S3_ENDPOINT=https://s3.example.com \
+WANIX_S3_REGION=auto \
+WANIX_S3_BUCKET=wanix-live \
+WANIX_S3_ACCESS_KEY_ID=... \
+WANIX_S3_SECRET_ACCESS_KEY=... \
+cargo test -p wanix-fs --features native-http --test live_backends live_s3 -- --nocapture
+```
+
+Supported environment:
 
 ```sh
 WANIX_LIVE_S3=1
@@ -47,9 +71,11 @@ WANIX_S3_BUCKET=wanix-live
 WANIX_S3_ACCESS_KEY_ID=...
 WANIX_S3_SECRET_ACCESS_KEY=...
 WANIX_S3_PREFIX=wanix-live-${USER}
+WANIX_S3_SERVICE=s3
+WANIX_LIVE_S3_AUTH_FAILURE=1
 ```
 
-Required live behaviors: `GET`, `PUT`, `DELETE`, prefix listing, pagination, metadata preservation, compare-and-swap conflict handling, auth failure reporting, and cleanup of the configured prefix.
+For Cloudflare R2, use the R2 S3-compatible endpoint, `WANIX_S3_REGION=auto`, and keep `WANIX_S3_SERVICE=s3`.
 
 ## Browser Storage
 
@@ -59,7 +85,7 @@ Required browser storage behaviors: read, write, list, stat, mkdir, remove, erro
 
 Raw OPFS is the preferred simple persistent browser filesystem. `wanix-system.mountStorage(...)` mounts OPFS directly into the browser async mount table. `wanix-system.mountStorageExport(...)` and `wanix-system.mountTaskStorage(...)` export the async adapter through a `MessagePort` 9P server, then mount the imported namespace at a normal browser Wanix path such as `#task/<id>/ns/storage/opfs`. This is the real browser storage boundary; synchronous Rust Wasmi task namespaces still use descriptor-backed stand-ins unless a browser worker proxy is mounted over 9P.
 
-StarFS is an additional optional mount backend, not a replacement for raw OPFS or the other browser storage mounts. The current adapter is StarFS-compatible and OPFS-backed by default:
+StarFS is an additional optional mount backend, not a replacement for raw OPFS or the other browser storage mounts. The current lightweight adapter is StarFS-compatible and OPFS-backed by default:
 
 ```js
 await system.mountStarFs("workspaces/starfs/agent-a", {
@@ -68,7 +94,17 @@ await system.mountStarFs("workspaces/starfs/agent-a", {
 });
 ```
 
-It exposes normal filesystem entries plus `.starfs/kv`, `.starfs/toolcalls`, and `.starfs/snapshots`. Full external StarFS SDK/PrimaDB inode semantics remain an opt-in worker/wasm integration boundary.
+It exposes normal filesystem entries plus xattr helpers, `.starfs/kv`, `.starfs/toolcalls`, and restorable `.starfs/snapshots`. A separate `backend: "starfs-sdk"` adapter hook can wrap a real external StarFS SDK/PrimaDB/Turso worker/wasm adapter:
+
+```js
+await createBrowserStorageAdapter({ backend: "starfs-sdk", id: "agent-a" }, {
+  starfsSdk: {
+    factory: async (descriptor) => createExternalStarFsAdapter(descriptor)
+  }
+});
+```
+
+The SDK-backed adapter is optional and must not replace raw OPFS, existing storage adapters, or the lightweight StarFS-compatible adapter.
 
 ## Native And Browser Network
 
@@ -81,6 +117,16 @@ cargo run -p wanix-cli -- accept native-tcp
 ```
 
 This opens a loopback `TcpListener`, connects a `TcpStream`, exchanges request/response bytes, and exits. It is separate from `accept all` so default verification remains deterministic and does not open sockets beyond explicit host opt-in.
+
+Run the native 9P stream import/serve check with:
+
+```sh
+cargo run -p wanix-cli -- accept native-p9
+```
+
+This serves a `MemFs` export over a loopback `TcpListener`, imports it through `TcpStreamTransport`, performs read/write operations, and closes cleanly.
+
+Browser network transport coverage is WebSocket/WebTransport-style and file-model-shaped. Raw TCP is not a browser API. The deterministic Node test uses a fake WebSocket transport; external browser network services should remain opt-in host checks.
 
 ## Native PTY Execution
 

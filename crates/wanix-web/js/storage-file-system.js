@@ -52,6 +52,43 @@ export function createFileSystemAccessStorageDescriptor(handle, options = {}) {
     }
 }
 
+export async function requestFileSystemAccessHandle(options = {}) {
+    const scope = resolveGlobalScope(options)
+    const mode = options.mode || "directory"
+    const pickerOptions = options.pickerOptions || options
+    let handle
+    if (mode === "directory") {
+        if (typeof scope?.showDirectoryPicker !== "function") {
+            throw unsupported("File System Access directory picker is not available in this host")
+        }
+        handle = await scope.showDirectoryPicker(pickerOptions)
+    } else if (mode === "open-file" || mode === "file") {
+        if (typeof scope?.showOpenFilePicker !== "function") {
+            throw unsupported("File System Access open-file picker is not available in this host")
+        }
+        const handles = await scope.showOpenFilePicker(pickerOptions)
+        handle = Array.isArray(handles) ? handles[0] : handles
+    } else if (mode === "save-file" || mode === "save") {
+        if (typeof scope?.showSaveFilePicker !== "function") {
+            throw unsupported("File System Access save-file picker is not available in this host")
+        }
+        handle = await scope.showSaveFilePicker(pickerOptions)
+    } else {
+        throw invalidArgument(`Unsupported File System Access picker mode ${JSON.stringify(mode)}`)
+    }
+    if (!handle) {
+        throw storageError("ENOENT", "File System Access picker returned no handle")
+    }
+    const permissionMode = options.writable ? "readwrite" : "read"
+    if (typeof handle.requestPermission === "function") {
+        const permission = await handle.requestPermission({ mode: permissionMode })
+        if (permission !== "granted") {
+            throw storageError("EACCES", `File System Access permission denied: ${permission}`)
+        }
+    }
+    return handle
+}
+
 export async function createOpfsStorageAdapter(descriptor = {}, options = {}) {
     if (descriptor?.backend && descriptor.backend !== "opfs") {
         throw invalidArgument(
@@ -570,6 +607,9 @@ function ensureWritable(writable, label) {
 }
 
 function resolveGlobalScope(options) {
+    if (options.globals) {
+        return options.globals
+    }
     if (options.globalThis) {
         return options.globalThis
     }

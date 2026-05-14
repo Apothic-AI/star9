@@ -120,6 +120,25 @@ pub struct SyncScheduleSnapshot {
     pub last_error: Option<String>,
 }
 
+impl SyncScheduleSnapshot {
+    pub fn status_text(&self) -> String {
+        let mut fields = vec![format!("pending={}", self.pending)];
+        if let Some(requested_at) = self.requested_at {
+            fields.push(format!(
+                "requested_at={}",
+                unix_millis(requested_at).unwrap_or(0)
+            ));
+        }
+        if let Some(due_at) = self.due_at {
+            fields.push(format!("due_at={}", unix_millis(due_at).unwrap_or(0)));
+        }
+        if let Some(error) = &self.last_error {
+            fields.push(format!("last_error={error}"));
+        }
+        fields.join(" ")
+    }
+}
+
 #[derive(Clone)]
 pub struct DebouncedSyncScheduler {
     sync: SyncFs,
@@ -399,6 +418,10 @@ impl DebouncedSyncScheduler {
                 .map(|requested_at| self.due_at(requested_at)),
             last_error: state.last_error.clone(),
         }
+    }
+
+    pub fn status_text(&self) -> String {
+        self.snapshot().status_text()
     }
 
     pub fn run_due(&self, now: SystemTime) -> Result<bool> {
@@ -945,6 +968,12 @@ fn remove_local_path(local: &dyn FileSystem, path: &str) -> Result<()> {
     } else {
         local.remove(path)
     }
+}
+
+fn unix_millis(time: SystemTime) -> Option<u128> {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis())
 }
 
 fn append_patch_path<W: std::io::Write>(
@@ -1694,6 +1723,10 @@ mod tests {
 
         assert!(scheduler.pending());
         assert_eq!(
+            scheduler.status_text(),
+            "pending=true requested_at=10000 due_at=12000"
+        );
+        assert_eq!(
             scheduler.snapshot().due_at,
             Some(start + Duration::from_secs(2))
         );
@@ -1706,6 +1739,7 @@ mod tests {
         assert_eq!(read_file(&remote.fs(), "notes.txt").unwrap(), b"local");
         assert_eq!(remote.patch_calls.load(Ordering::SeqCst), 1);
         assert!(scheduler.snapshot().last_error.is_none());
+        assert_eq!(scheduler.status_text(), "pending=false");
     }
 
     #[test]

@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use wanix_core::{ErrorKind, FileMode, OpenFlags, Result};
 use wanix_fs::{fs_ref, open, read_dir, read_file, stat, write_file, FileSystem, LocalFs, MemFs};
 use wanix_protocol::{
-    p9::{serve_frame_stream, LoopbackTransport, NinePClientFs, NinePServer},
+    p9::{serve_frame_stream, LoopbackTransport, NinePClientFs, NinePServer, TcpStreamTransport},
     runtime::{
         EnvironmentEntry, ExecutionKind, ExecutionSpec, PortDescriptor, PortHandoff,
         PortOpenRequest, RuntimeRequest, RuntimeResponse, StdioData, StdioSet, StdioStream,
@@ -59,6 +59,7 @@ enum AcceptanceCommand {
     Wasi,
     Worker,
     Native,
+    NativeP9,
     NativeTcp,
     All,
 }
@@ -128,6 +129,7 @@ fn render_acceptance_output(suite: AcceptanceCommand) -> Result<String> {
         AcceptanceCommand::Wasi => render_wasi_acceptance(),
         AcceptanceCommand::Worker => render_worker_acceptance(),
         AcceptanceCommand::Native => render_native_acceptance(),
+        AcceptanceCommand::NativeP9 => render_native_p9_acceptance(),
         AcceptanceCommand::NativeTcp => render_native_tcp_acceptance(),
         AcceptanceCommand::All => Ok(format!(
             "{}{}{}{}",
@@ -291,6 +293,61 @@ fn render_device_acceptance() -> Result<String> {
         escape_text(&payload),
         escape_text(&reply),
         closed,
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_native_p9_acceptance() -> Result<String> {
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|err| wanix_core::Error::Message(format!("native 9p bind failed: {err}")))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|err| wanix_core::Error::Message(format!("native 9p local_addr failed: {err}")))?;
+    let server = NinePServer::new(fs_ref(MemFs::from_entries([(
+        "dir/file.txt",
+        b"hello".to_vec(),
+    )])));
+
+    let serving = thread::spawn(move || -> Result<usize> {
+        let (stream, _) = listener
+            .accept()
+            .map_err(|err| wanix_core::Error::Message(format!("native 9p accept failed: {err}")))?;
+        let mut reader = stream
+            .try_clone()
+            .map_err(|err| wanix_core::Error::Message(format!("native 9p clone failed: {err}")))?;
+        let mut writer = stream;
+        serve_frame_stream(&server, &mut reader, &mut writer)
+    });
+
+    let stream = TcpStream::connect(addr)
+        .map_err(|err| wanix_core::Error::Message(format!("native 9p connect failed: {err}")))?;
+    let client = NinePClientFs::connect(Arc::new(TcpStreamTransport::new(stream)))?;
+    let read = read_trimmed(&client, "dir/file.txt")?;
+    write_file(
+        &client,
+        "dir/created.txt",
+        b"created",
+        FileMode::from_perm(0o644),
+    )?;
+    let created = read_trimmed(&client, "dir/created.txt")?;
+    drop(client);
+    let served = serving
+        .join()
+        .map_err(|_| wanix_core::Error::Message("native 9p server thread panicked".into()))??;
+
+    Ok(format!(
+        "native-p9 addr={} read={} created={} frames={}\n",
+        addr, read, created, served
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn render_native_p9_acceptance() -> Result<String> {
+    Err(wanix_core::Error::Message(
+        "native 9p acceptance requires a non-wasm host".into(),
     ))
 }
 
@@ -657,5 +714,13 @@ mod tests {
             render_wasi_acceptance().unwrap(),
             "wasi fixture=preview1-smoke exit=0 stdout=compiled-wasi-ok\\n\n"
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_p9_acceptance_uses_real_tcp_stream_transport() {
+        let output = render_native_p9_acceptance().unwrap();
+        assert!(output.starts_with("native-p9 addr=127.0.0.1:"));
+        assert!(output.contains(" read=hello created=created frames="));
     }
 }

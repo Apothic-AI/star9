@@ -18,6 +18,10 @@ impl RuntimeDevices {
     pub(crate) fn set_vm_guest(&self, vm_id: &str, guest: FsRef) -> Result<()> {
         self.vm.set_guest(vm_id, guest)
     }
+
+    pub(crate) fn set_vm_provider(&self, provider: Arc<dyn VmProvider>) {
+        self.vm.set_provider(provider);
+    }
 }
 
 pub(crate) fn bind_devices(root: &Task) -> Result<RuntimeDevices> {
@@ -225,16 +229,95 @@ fn terminal_fs(id: &str) -> FsRef {
     fs_ref(fs)
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct VmDevice {
     state: Arc<VmDeviceState>,
 }
 
-#[derive(Default)]
 struct VmDeviceState {
     next_id: Mutex<u32>,
     resources: RwLock<BTreeMap<String, VmResource>>,
     aliases: RwLock<BTreeMap<String, String>>,
+    provider: RwLock<Arc<dyn VmProvider>>,
+}
+
+impl Default for VmDeviceState {
+    fn default() -> Self {
+        Self {
+            next_id: Mutex::new(0),
+            resources: RwLock::new(BTreeMap::new()),
+            aliases: RwLock::new(BTreeMap::new()),
+            provider: RwLock::new(Arc::new(DeterministicVmProvider)),
+        }
+    }
+}
+
+impl Default for VmDevice {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(VmDeviceState::default()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VmProviderResource {
+    pub id: String,
+    pub kind: String,
+    pub alias: String,
+    pub config: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct VmProviderUpdate {
+    pub state: Option<String>,
+    pub console_lines: Vec<String>,
+    pub clear_console: bool,
+}
+
+impl VmProviderUpdate {
+    pub fn state(state: impl Into<String>) -> Self {
+        Self {
+            state: Some(state.into()),
+            console_lines: Vec::new(),
+            clear_console: false,
+        }
+    }
+}
+
+pub trait VmProvider: Send + Sync {
+    fn start(&self, resource: &VmProviderResource) -> Result<VmProviderUpdate>;
+    fn stop(&self, resource: &VmProviderResource) -> Result<VmProviderUpdate>;
+    fn reset(&self, resource: &VmProviderResource) -> Result<VmProviderUpdate>;
+}
+
+#[derive(Default)]
+pub struct DeterministicVmProvider;
+
+impl VmProvider for DeterministicVmProvider {
+    fn start(&self, _resource: &VmProviderResource) -> Result<VmProviderUpdate> {
+        Ok(VmProviderUpdate {
+            state: Some("running".to_string()),
+            console_lines: vec!["start".to_string()],
+            clear_console: false,
+        })
+    }
+
+    fn stop(&self, _resource: &VmProviderResource) -> Result<VmProviderUpdate> {
+        Ok(VmProviderUpdate {
+            state: Some("stopped".to_string()),
+            console_lines: vec!["stop".to_string()],
+            clear_console: false,
+        })
+    }
+
+    fn reset(&self, _resource: &VmProviderResource) -> Result<VmProviderUpdate> {
+        Ok(VmProviderUpdate {
+            state: Some("created".to_string()),
+            console_lines: Vec::new(),
+            clear_console: true,
+        })
+    }
 }
 
 impl VmDevice {
@@ -294,6 +377,14 @@ impl VmDevice {
     fn set_guest(&self, id: &str, guest: FsRef) -> Result<()> {
         self.resolve(id)?.set_guest(guest);
         Ok(())
+    }
+
+    fn set_provider(&self, provider: Arc<dyn VmProvider>) {
+        *self.state.provider.write().unwrap() = provider;
+    }
+
+    fn provider(&self) -> Arc<dyn VmProvider> {
+        self.state.provider.read().unwrap().clone()
     }
 }
 
@@ -420,6 +511,27 @@ impl VmResource {
     fn guest(&self) -> Option<FsRef> {
         self.guest.read().unwrap().clone()
     }
+
+    fn provider_resource(&self) -> VmProviderResource {
+        VmProviderResource {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            alias: self.alias.get(),
+            config: self.config.get(),
+        }
+    }
+
+    fn apply_provider_update(&self, update: VmProviderUpdate) {
+        if update.clear_console {
+            self.console.clear();
+        }
+        if let Some(state) = update.state {
+            self.state.set(state);
+        }
+        for line in update.console_lines {
+            self.console.append_line(&line);
+        }
+    }
 }
 
 impl FileSystem for VmResource {
@@ -479,18 +591,27 @@ impl FileSystem for VmResource {
                     let mut parts = cmd.split_whitespace();
                     match parts.next() {
                         Some("start") => {
-                            resource.state.set("running");
-                            resource.console.append_line("start");
+                            let update = resource
+                                .device
+                                .provider()
+                                .start(&resource.provider_resource())?;
+                            resource.apply_provider_update(update);
                             Ok(())
                         }
                         Some("stop") => {
-                            resource.state.set("stopped");
-                            resource.console.append_line("stop");
+                            let update = resource
+                                .device
+                                .provider()
+                                .stop(&resource.provider_resource())?;
+                            resource.apply_provider_update(update);
                             Ok(())
                         }
                         Some("reset") => {
-                            resource.state.set("created");
-                            resource.console.clear();
+                            let update = resource
+                                .device
+                                .provider()
+                                .reset(&resource.provider_resource())?;
+                            resource.apply_provider_update(update);
                             Ok(())
                         }
                         Some("alias") => {
@@ -1631,7 +1752,10 @@ impl FileHandle for SharedLogHandle {
 
 #[cfg(test)]
 mod tests {
+    use super::{VmProvider, VmProviderResource, VmProviderUpdate};
     use crate::Runtime;
+    use std::sync::{Arc, Mutex};
+    use wanix_core::Result;
     use wanix_fs::{open, read_dir, read_file};
 
     fn alloc_id(runtime: &Runtime, path: &str) -> String {
@@ -1819,6 +1943,74 @@ mod tests {
             )
             .unwrap(),
             b""
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingVmProvider {
+        starts: Mutex<Vec<VmProviderResource>>,
+    }
+
+    impl VmProvider for RecordingVmProvider {
+        fn start(&self, resource: &VmProviderResource) -> Result<VmProviderUpdate> {
+            self.starts.lock().unwrap().push(resource.clone());
+            Ok(VmProviderUpdate {
+                state: Some("provider-running".to_string()),
+                console_lines: vec![format!("provider-start {}", resource.kind)],
+                clear_console: false,
+            })
+        }
+
+        fn stop(&self, _resource: &VmProviderResource) -> Result<VmProviderUpdate> {
+            Ok(VmProviderUpdate::state("provider-stopped"))
+        }
+
+        fn reset(&self, _resource: &VmProviderResource) -> Result<VmProviderUpdate> {
+            Ok(VmProviderUpdate {
+                state: Some("provider-created".to_string()),
+                console_lines: Vec::new(),
+                clear_console: true,
+            })
+        }
+    }
+
+    #[test]
+    fn vm_device_routes_lifecycle_through_provider_contract() {
+        let runtime = Runtime::new().unwrap();
+        let provider = Arc::new(RecordingVmProvider::default());
+        runtime.set_vm_provider(provider.clone());
+        let vm_id = alloc_id(&runtime, "#vm/new/v86");
+
+        write_handle(&runtime, &format!("#vm/{vm_id}/alias"), b"provider-guest");
+        write_handle(&runtime, &format!("#vm/{vm_id}/config"), b"mem=64M");
+        write_handle(&runtime, &format!("#vm/{vm_id}/ctl"), b"start");
+
+        assert_eq!(
+            read_file(runtime.namespace().as_ref(), &format!("#vm/{vm_id}/state")).unwrap(),
+            b"provider-running\n"
+        );
+        assert_eq!(
+            read_file(
+                runtime.namespace().as_ref(),
+                &format!("#vm/{vm_id}/console")
+            )
+            .unwrap(),
+            b"provider-start v86\n"
+        );
+        assert_eq!(
+            provider.starts.lock().unwrap().as_slice(),
+            &[VmProviderResource {
+                id: vm_id.clone(),
+                kind: "v86".to_string(),
+                alias: "provider-guest".to_string(),
+                config: "mem=64M".to_string(),
+            }]
+        );
+
+        write_handle(&runtime, &format!("#vm/{vm_id}/ctl"), b"stop");
+        assert_eq!(
+            read_file(runtime.namespace().as_ref(), &format!("#vm/{vm_id}/state")).unwrap(),
+            b"provider-stopped\n"
         );
     }
 
