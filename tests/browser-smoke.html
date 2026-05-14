@@ -51,6 +51,7 @@
 <script type="module">
   import "../crates/star9-web/js/star9-elements.js";
   import { createStar9P9FramePort } from "../crates/star9-web/js/p9-port.js";
+  import { createStar9Shell } from "../crates/star9-web/js/shell.js";
 
   const status = document.querySelector("#status");
   const systemElement = document.querySelector("#smoke-system");
@@ -109,6 +110,10 @@
     const version = (await system.readText("#star9/version")).trim();
     const inlineText = (await system.readText("inline.txt")).trim();
     const fetchedText = (await system.readText("fetched.txt")).trim();
+
+    const shell = createStar9Shell(systemElement);
+    const shellResult = await shell.eval("mkdir shell-demo; write shell-demo/hello shell-ok; cat shell-demo/hello");
+    const shellPwd = await shell.eval("cd shell-demo; pwd");
 
     await system.writeText("cache-store/state.txt", "storage-ok");
     const storageText = await system.readText("cache-store/state.txt");
@@ -256,6 +261,9 @@
     assert(version === "0.1.0", `bad version ${version}`);
     assert(inlineText === "inline-browser-ok", `bad inline text ${inlineText}`);
     assert(fetchedText === "registered-browser-ok", `bad fetched text ${fetchedText}`);
+    assert(shellResult.status === 0, `bad shell status ${shellResult.status}: ${shellResult.stderr}`);
+    assert(shellResult.stdout === "shell-ok", `bad shell stdout ${JSON.stringify(shellResult.stdout)}`);
+    assert(shellPwd.stdout === "shell-demo\n", `bad shell pwd ${JSON.stringify(shellPwd.stdout)}`);
     assert(storageText === "storage-ok", `bad storage text ${storageText}`);
     assert(
       sharedMirrorText === "descriptor-ok",
@@ -362,6 +370,7 @@
         version,
         inlineText,
         fetchedText,
+        shellPwd: shellPwd.stdout.trim(),
         storageEntries,
         sharedEntries,
         remotePortEntries,

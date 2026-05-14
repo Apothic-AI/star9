@@ -22,6 +22,20 @@ python3 -m http.server 4177 --bind 127.0.0.1
 
 Then open `http://127.0.0.1:4177/tests/browser-smoke.html` or drive it with Playwright and verify `document.body.dataset.status === "ok"`.
 
+The browser shell demo is available from the same static server after the wasm package is built:
+
+```text
+http://127.0.0.1:4177/examples/shell.html
+```
+
+The native shell does not require live services:
+
+```sh
+cargo run -p star9-cli -- shell -c 'version'
+cargo run -p star9-cli -- shell -c 'mkdir demo; write demo/hello hello; cat demo/hello'
+cargo run -p star9-cli -- shell -c 'ls #task'
+```
+
 ## HTTP
 
 `star9-fs` includes native loopback coverage under the `native-http` feature. Broader live HTTP checks use an environment-gated test and should point at a temporary server that supports conditional GET/HEAD, validators, range responses, redirects, and auth failures. These checks are outside default test runs unless explicitly configured.

@@ -1,0 +1,57 @@
+{
+  "purpose": "Star 9 shell sprint dependency and license decisions",
+  "plan9_rule": "Shell and VM features operate through Star 9 namespaces, files, fds, tasks, terminals, device files, and 9P exports. Host capabilities may implement providers, but must not become privileged side APIs.",
+  "dependencies": [
+    {
+      "name": "reedline",
+      "version": "0.47",
+      "license": "MIT",
+      "decision": "accepted",
+      "role": "native interactive line editing for star9 shell",
+      "default_required": true,
+      "notes": "Used only for native CLI input; command behavior remains in star9-shell."
+    },
+    {
+      "name": "rcshell",
+      "version": "0.0.1-alpha.3",
+      "license": "GPL-3.0-or-later",
+      "decision": "rejected",
+      "role": "reference only",
+      "default_required": false,
+      "notes": "GPL dependency is not accepted for Star 9 shell implementation."
+    },
+    {
+      "name": "rs9p",
+      "version": "0.13.0",
+      "license": "BSD-3-Clause",
+      "decision": "future-optional-reference",
+      "role": "possible native Linux v9fs compatibility adapter",
+      "default_required": false,
+      "notes": "Does not replace Star 9's browser-aware Rust 9P stack."
+    },
+    {
+      "name": "unpfs",
+      "version": "0.13.0",
+      "license": "BSD-3-Clause",
+      "decision": "future-external-fixture",
+      "role": "possible external interoperability fixture",
+      "default_required": false,
+      "notes": "Useful as a reference or fixture, not a Star 9 runtime dependency."
+    }
+  ],
+  "shell_scope": {
+    "compatibility_claim": "Star 9-native shell command surface",
+    "not_claimed": ["POSIX sh", "Bash", "Plan 9 rc"],
+    "parser": ["words", "single quotes", "double quotes", "backslash escapes", "comments", "semicolon sequencing"],
+    "execution_boundary": "ShellHost routes commands through Star 9 runtime namespaces, task files, fd files, device files, and typed runtime requests."
+  },
+  "evidence": [
+    "crates/star9-shell/src/lib.rs",
+    "crates/star9-cli/src/main.rs",
+    "crates/star9-web/src/lib.rs",
+    "crates/star9-web/js/shell.js",
+    "tests/browser-shell.test.mjs",
+    "tests/browser-smoke.html",
+    "examples/shell.html"
+  ]
+}

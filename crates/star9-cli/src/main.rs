@@ -1,8 +1,10 @@
-use std::io::SeekFrom;
+use std::borrow::Cow;
+use std::io::{IsTerminal, Read, SeekFrom};
 use std::sync::Arc;
 use std::{io, path::PathBuf};
 
 use clap::{Parser, Subcommand};
+use reedline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 use star9_core::{ErrorKind, FileMode, OpenFlags, Result};
 use star9_fs::{fs_ref, open, read_dir, read_file, stat, write_file, FileSystem, LocalFs, MemFs};
 use star9_protocol::{
@@ -17,6 +19,7 @@ use star9_protocol::{
 #[cfg(not(target_arch = "wasm32"))]
 use star9_runtime::NativePtyExecutionHandler;
 use star9_runtime::{Runtime, WasmiWasiHandler};
+use star9_shell::{RuntimeShellHost, ShellResult, ShellSession};
 
 #[derive(Parser)]
 #[command(name = "star9")]
@@ -45,6 +48,13 @@ enum Command {
         #[arg(default_value = ".")]
         root: PathBuf,
     },
+    Shell {
+        #[arg(short = 'c', long = "command")]
+        command: Option<String>,
+        #[arg(long)]
+        native: bool,
+        script: Option<PathBuf>,
+    },
     Accept {
         #[command(subcommand)]
         suite: AcceptanceCommand,
@@ -65,13 +75,17 @@ enum AcceptanceCommand {
 }
 
 fn main() {
-    if let Err(err) = run() {
-        eprintln!("{err}");
-        std::process::exit(1);
+    match run() {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
     }
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<i32> {
     let cli = Cli::parse();
     let runtime = Runtime::new()?;
     let api = Star9Api::new(runtime.root());
@@ -80,12 +94,15 @@ fn run() -> Result<()> {
             for entry in api.read_dir(&path)? {
                 println!("{entry}");
             }
+            Ok(0)
         }
         Command::Read { path } => {
             print!("{}", String::from_utf8_lossy(&api.read_file(&path)?));
+            Ok(0)
         }
         Command::Write { path, value } => {
             api.write_file(&path, value.as_bytes())?;
+            Ok(0)
         }
         Command::Stat { path } => {
             let stat = api.stat(&path)?;
@@ -93,15 +110,27 @@ fn run() -> Result<()> {
                 "size={} mode={:o} dir={} modified_ms={}",
                 stat.size, stat.mode, stat.is_dir, stat.modified_ms
             );
+            Ok(0)
         }
         Command::ServeP9 { root } => {
             let server = NinePServer::new(fs_ref(LocalFs::new(root)));
             let mut stdin = io::stdin().lock();
             let mut stdout = io::stdout().lock();
             serve_frame_stream(&server, &mut stdin, &mut stdout)?;
+            Ok(0)
+        }
+        Command::Shell {
+            command,
+            native,
+            script,
+        } => {
+            let host = RuntimeShellHost::new(runtime).with_writable_workspace()?;
+            let host = if native { host.enable_native() } else { host };
+            run_shell(host, command, script)
         }
         Command::Accept { suite } => {
             print!("{}", render_acceptance_output(suite)?);
+            Ok(0)
         }
         Command::Smoke => {
             let ns = runtime.namespace();
@@ -117,9 +146,102 @@ fn run() -> Result<()> {
                 "{}",
                 String::from_utf8_lossy(&star9_fs::read_file(ns.as_ref(), "tmp/smoke")?)
             );
+            Ok(0)
         }
     }
-    Ok(())
+}
+
+fn run_shell(
+    host: RuntimeShellHost,
+    command: Option<String>,
+    script: Option<PathBuf>,
+) -> Result<i32> {
+    let mut shell = ShellSession::new(host);
+    if let Some(command) = command {
+        return Ok(print_shell_result(shell.eval_line(&command)));
+    }
+    if let Some(script) = script {
+        let source = std::fs::read_to_string(&script).map_err(|err| {
+            star9_core::Error::Message(format!("shell: failed to read {}: {err}", script.display()))
+        })?;
+        return Ok(run_shell_script(&mut shell, &source));
+    }
+    if !io::stdin().is_terminal() {
+        let mut source = String::new();
+        io::stdin().read_to_string(&mut source).map_err(|err| {
+            star9_core::Error::Message(format!("shell: failed to read stdin: {err}"))
+        })?;
+        return Ok(run_shell_script(&mut shell, &source));
+    }
+    run_interactive_shell(&mut shell)
+}
+
+fn run_shell_script(shell: &mut ShellSession<RuntimeShellHost>, source: &str) -> i32 {
+    let mut status = 0;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        status = print_shell_result(shell.eval_line(trimmed));
+    }
+    status
+}
+
+fn run_interactive_shell(shell: &mut ShellSession<RuntimeShellHost>) -> Result<i32> {
+    let mut editor = Reedline::create();
+    loop {
+        let prompt = Star9Prompt(shell.prompt());
+        match editor
+            .read_line(&prompt)
+            .map_err(|err| star9_core::Error::Message(format!("shell: {err}")))?
+        {
+            Signal::Success(line) => {
+                let _ = print_shell_result(shell.eval_line(&line));
+            }
+            Signal::CtrlD => return Ok(0),
+            Signal::CtrlC => {
+                eprintln!("^C");
+            }
+            Signal::ExternalBreak(line) => {
+                let _ = print_shell_result(shell.eval_line(&line));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn print_shell_result(result: ShellResult) -> i32 {
+    print!("{}", result.stdout);
+    eprint!("{}", result.stderr);
+    result.status
+}
+
+struct Star9Prompt(String);
+
+impl Prompt for Star9Prompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed(&self.0)
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("::: ")
+    }
+
+    fn render_prompt_history_search_indicator(
+        &self,
+        history_search: PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        Cow::Owned(format!("(reverse-search: {}) ", history_search.term))
+    }
 }
 
 fn render_acceptance_output(suite: AcceptanceCommand) -> Result<String> {
