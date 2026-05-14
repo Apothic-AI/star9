@@ -2,6 +2,12 @@
 
 ## 2026-05-14
 
+- Started the rc process-graph parity sprint on `rc-process-graph-parity`.
+- Extended the standalone `star9-rc` host trait with process-graph hooks for pipelines, background jobs, process substitution, job waits, and note delivery while keeping the reusable crate independent of Star 9 runtime/web/CLI dependencies.
+- Updated rc pipeline/background/process-substitution evaluation so embedders can prepare and finish graph records. The portable fake-host path still uses deterministic captured evaluator behavior.
+- Implemented Star 9 rc graph preparation in `star9-shell::rc`: pipelines, background jobs, and process substitution now create observable Star 9 task records with stdio fds and generated pipe fd paths under `.rc/graphs/...`, and task exits are updated from rc stage status.
+- Added focused tests proving Star 9 rc pipelines and process substitution create `#task`-visible fd graph state, and `wait <job>` drains a selected background job.
+- Added `docs/audits/rc-process-graph-matrix.json`, `docs/sprints/star9-rc-process-graph-parity-sprint-plan.md`, and refreshed the rc pipeline/job-control boundary docs to distinguish the new task/fd graph records from future true streaming/concurrent external process execution.
 - Continued the rc/userland depth sprint on `rc-userland-depth`.
 - Added a license-clean rc/userland fixture corpus under `crates/star9-rc/tests/fixtures`, covering functions/control flow, environment/jobs, redirection, pipelines, service commands, and namespace workflows without importing upstream scripts.
 - Added a runtime environment registry mounted at hidden `#env` and visible `env`. Rc variables are exported as NUL-separated entries, exported functions use `fn#name`, and Star 9 rc sessions import/export this surface through the host adapter.

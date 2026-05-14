@@ -14,7 +14,7 @@ Current rc/userland depth contract:
 - Make native `srv tcp!host!port name` real on native hosts by registering a 9P client service in `#srv`, while keeping browser raw TCP explicitly unavailable.
 - Add browser service compatibility for honest browser transports: `srv import!url#system name` and `mount name path` route through the existing cross-document import/MessagePort 9P boundary; WebSocket/WebTransport providers stay documented provider hooks.
 - Keep `dossrv` and `vacfs` as precise provider-missing commands until disk/partition and vac/Venti/archive providers exist.
-- Keep pipelines deterministic in the evaluator for now. Full OS-concurrent task/fd graph pipelines remain a future precision tranche tied to stronger task execution and job control.
+- Preserve the portable deterministic rc evaluator while exposing Star 9 process-graph hooks. The Star 9 adapter now materializes pipeline, background-job, and process-substitution graph records as `#task` entries with fd paths bound to generated pipe resources; true streaming/concurrent external stage execution remains tied to stronger task execution and job control.
 
 Current rc sprint contract:
 
@@ -26,6 +26,7 @@ Current rc sprint contract:
 - Compatibility is tracked in `docs/audits/rc-compatibility-matrix.json`; unsupported or partial behaviors are explicit rather than hidden behind brittle parsing.
 - The remaining parity pass added 9front-style `if not` parsing across command separators, parenthesized groups, fd dup/close redirection, `/dev/null`, fd-selected pipelines, process substitution, parsed here documents, `exit` propagation, `sigexit`/note hooks, environment export/import, `$path` rc script dispatch, CLI script args, and Star 9 adapter dispatch for WASI/JS-looking namespace commands.
 - Plan 9 command/service compatibility is tracked in `docs/audits/plan9-command-compatibility-matrix.json`. `bind`, `unmount`, `srv`, and `mount` are now implemented as shell/rc-visible frontends over namespace binds, `#srv`, loopback 9P exports, and ordinary mount points. Provider-heavy commands such as `dossrv` and `vacfs` are precise provider-missing boundaries until matching Star 9 devices exist.
+- Rc process-graph compatibility is tracked in `docs/audits/rc-process-graph-matrix.json` and `docs/audits/rc-pipeline-job-control-boundary.md`.
 
 ### Star 9 Rc Feature Completion Sprint Plan
 

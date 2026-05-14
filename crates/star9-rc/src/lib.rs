@@ -163,6 +163,68 @@ pub struct RcCommandInvocation {
     pub env: BTreeMap<String, Vec<String>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RcProcessGraphKind {
+    Pipeline,
+    Background,
+    ProcessSubstitutionRead,
+    ProcessSubstitutionWrite,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcFdBindingSpec {
+    pub fd: u32,
+    pub path: String,
+    pub readable: bool,
+    pub writable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcProcessStageSpec {
+    pub command: String,
+    pub cwd: String,
+    pub env: BTreeMap<String, Vec<String>>,
+    pub stdin: Option<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub fd_bindings: Vec<RcFdBindingSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcProcessGraphSpec {
+    pub kind: RcProcessGraphKind,
+    pub job_id: Option<u32>,
+    pub stages: Vec<RcProcessStageSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcProcessStageRecord {
+    pub command: String,
+    pub task_id: Option<String>,
+    pub fd_bindings: Vec<RcFdBindingSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcProcessGraphRecord {
+    pub graph_id: String,
+    pub kind: RcProcessGraphKind,
+    pub job_id: Option<u32>,
+    pub stages: Vec<RcProcessStageRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcProcessStageOutcome {
+    pub status: RcStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RcProcessJobResult {
+    pub id: u32,
+    pub status: RcStatus,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 pub trait RcHost {
     fn current_dir(&self) -> String;
     fn set_current_dir(&mut self, path: &str) -> RcResult<()>;
@@ -176,6 +238,28 @@ pub trait RcHost {
         Ok(None)
     }
     fn store_environment(&mut self, _env: &BTreeMap<String, Vec<u8>>) -> RcResult<()> {
+        Ok(())
+    }
+    fn prepare_process_graph(
+        &mut self,
+        _spec: &RcProcessGraphSpec,
+    ) -> RcResult<Option<RcProcessGraphRecord>> {
+        Ok(None)
+    }
+    fn finish_process_graph(
+        &mut self,
+        _record: &RcProcessGraphRecord,
+        _outcomes: &[RcProcessStageOutcome],
+    ) -> RcResult<()> {
+        Ok(())
+    }
+    fn wait_process_job(
+        &mut self,
+        _job_id: Option<u32>,
+    ) -> RcResult<Option<Vec<RcProcessJobResult>>> {
+        Ok(None)
+    }
+    fn send_note_to_processes(&mut self, _note: &str) -> RcResult<()> {
         Ok(())
     }
     fn rfork(&mut self, flags: &str) -> RcResult<()> {
@@ -1175,6 +1259,7 @@ struct RcJob {
     status: RcStatus,
     stdout: String,
     stderr: String,
+    graph: Option<RcProcessGraphRecord>,
 }
 
 impl<H: RcHost> RcSession<H> {
@@ -1265,6 +1350,7 @@ impl<H: RcHost> RcSession<H> {
     }
 
     pub fn deliver_note(&mut self, note: &str) -> RcOutput {
+        self.host.send_note_to_processes(note).ok();
         let name = format!("sig{note}");
         self.run_note_function(&name)
             .unwrap_or_else(|| RcOutput::failure(note, format!("rc: unhandled note {note}\n")))
@@ -1343,6 +1429,107 @@ impl<H: RcHost> RcSession<H> {
         out
     }
 
+    fn prepare_pipeline_graph(
+        &mut self,
+        left: &Node,
+        right: &Node,
+        from_fd: u32,
+        to_fd: u32,
+    ) -> Option<RcProcessGraphRecord> {
+        let mut left_stage = self.stage_spec(left);
+        left_stage.fd_bindings.push(RcFdBindingSpec {
+            fd: from_fd,
+            path: "pipe:0/data".into(),
+            readable: false,
+            writable: true,
+        });
+        let mut right_stage = self.stage_spec(right);
+        right_stage.fd_bindings.push(RcFdBindingSpec {
+            fd: to_fd,
+            path: "pipe:0/data1".into(),
+            readable: true,
+            writable: false,
+        });
+        self.host
+            .prepare_process_graph(&RcProcessGraphSpec {
+                kind: RcProcessGraphKind::Pipeline,
+                job_id: None,
+                stages: vec![left_stage, right_stage],
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn prepare_background_graph(&mut self, id: u32, node: &Node) -> Option<RcProcessGraphRecord> {
+        let mut stage = self.stage_spec(node);
+        stage.stdout = Some(format!("job:{id}/stdout"));
+        stage.stderr = Some(format!("job:{id}/stderr"));
+        self.host
+            .prepare_process_graph(&RcProcessGraphSpec {
+                kind: RcProcessGraphKind::Background,
+                job_id: Some(id),
+                stages: vec![stage],
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn prepare_process_substitution_graph(
+        &mut self,
+        kind: RcProcessGraphKind,
+        node: &Node,
+        fd: u32,
+    ) -> Option<RcProcessGraphRecord> {
+        let mut stage = self.stage_spec(node);
+        let readable = matches!(&kind, RcProcessGraphKind::ProcessSubstitutionRead);
+        stage.fd_bindings.push(RcFdBindingSpec {
+            fd,
+            path: if readable {
+                "pipe:0/data".into()
+            } else {
+                "pipe:0/data1".into()
+            },
+            readable,
+            writable: !readable,
+        });
+        self.host
+            .prepare_process_graph(&RcProcessGraphSpec {
+                kind,
+                job_id: None,
+                stages: vec![stage],
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn stage_spec(&self, node: &Node) -> RcProcessStageSpec {
+        RcProcessStageSpec {
+            command: render_node(node),
+            cwd: self.host.current_dir(),
+            env: self.vars.clone(),
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            fd_bindings: Vec::new(),
+        }
+    }
+
+    fn finish_process_graph(
+        &mut self,
+        record: Option<&RcProcessGraphRecord>,
+        statuses: &[RcStatus],
+    ) {
+        let Some(record) = record else {
+            return;
+        };
+        let outcomes = statuses
+            .iter()
+            .cloned()
+            .map(|status| RcProcessStageOutcome { status })
+            .collect::<Vec<_>>();
+        self.host.finish_process_graph(record, &outcomes).ok();
+    }
+
     fn eval_node(&mut self, node: &Node, input: String) -> RcOutput {
         match node {
             Node::Empty => RcOutput::default(),
@@ -1369,18 +1556,22 @@ impl<H: RcHost> RcSession<H> {
                 }
             }
             Node::Pipe(left, right, spec) => {
-                let mut left = self.eval_node(left, input);
                 let from_fd = spec.as_ref().map(|spec| spec.from_fd).unwrap_or(1);
                 let to_fd = spec.as_ref().map(|spec| spec.to_fd).unwrap_or(0);
+                let graph = self.prepare_pipeline_graph(left, right, from_fd, to_fd);
+                let mut left = self.eval_node(left, input);
+                let left_status = left.status.clone();
                 let piped = match from_fd {
                     2 => std::mem::take(&mut left.stderr),
                     _ => std::mem::take(&mut left.stdout),
                 };
                 let right_input = if to_fd == 0 { piped } else { String::new() };
                 let mut right = self.eval_node(right, right_input);
-                right.status = RcStatus::pipeline(&left.status, &right.status);
+                let right_status = right.status.clone();
+                right.status = RcStatus::pipeline(&left_status, &right_status);
                 right.stdout = left.stdout + &right.stdout;
                 right.stderr = left.stderr + &right.stderr;
+                self.finish_process_graph(graph.as_ref(), &[left_status, right_status]);
                 right
             }
             Node::Not(inner) => {
@@ -1389,14 +1580,17 @@ impl<H: RcHost> RcSession<H> {
                 out
             }
             Node::Background(inner) => {
-                let out = self.eval_node(inner, input);
                 let id = self.next_job_id;
                 self.next_job_id += 1;
+                let graph = self.prepare_background_graph(id, inner);
+                let out = self.eval_node(inner, input);
+                self.finish_process_graph(graph.as_ref(), std::slice::from_ref(&out.status));
                 self.jobs.push(RcJob {
                     id,
                     status: out.status,
                     stdout: out.stdout,
                     stderr: out.stderr,
+                    graph,
                 });
                 RcOutput::success(format!("[{id}]\n"))
             }
@@ -1744,10 +1938,31 @@ impl<H: RcHost> RcSession<H> {
     }
 
     fn run_wait(&mut self, args: &[String]) -> RcOutput {
-        if !args.is_empty() {
-            return RcOutput::failure("usage", "usage: wait\n");
+        if args.len() > 1 {
+            return RcOutput::failure("usage", "usage: wait [job]\n");
         }
-        let jobs = std::mem::take(&mut self.jobs);
+        let requested = match args.first() {
+            Some(arg) => match arg.parse::<u32>() {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    return RcOutput::failure("usage", format!("wait: {arg}: bad job id\n"));
+                }
+            },
+            None => None,
+        };
+
+        if let Ok(Some(results)) = self.host.wait_process_job(requested) {
+            return self.render_wait_results(results);
+        }
+
+        let jobs = if let Some(id) = requested {
+            let Some(index) = self.jobs.iter().position(|job| job.id == id) else {
+                return RcOutput::failure("wait", format!("wait: {id}: no such job\n"));
+            };
+            vec![self.jobs.remove(index)]
+        } else {
+            std::mem::take(&mut self.jobs)
+        };
         let mut out = String::new();
         let mut status = RcStatus::success();
         for job in jobs {
@@ -1759,7 +1974,29 @@ impl<H: RcHost> RcSession<H> {
             }
             out.push_str(&format!("[{}] {}\n", job.id, job.status));
             if !job.status.is_success() {
-                status = job.status;
+                status = job.status.clone();
+            }
+            if let Some(graph) = &job.graph {
+                self.finish_process_graph(Some(graph), std::slice::from_ref(&job.status));
+            }
+        }
+        RcOutput {
+            status,
+            stdout: out,
+            stderr: String::new(),
+            exited: false,
+        }
+    }
+
+    fn render_wait_results(&self, results: Vec<RcProcessJobResult>) -> RcOutput {
+        let mut out = String::new();
+        let mut status = RcStatus::success();
+        for job in results {
+            out.push_str(&job.stdout);
+            out.push_str(&job.stderr);
+            out.push_str(&format!("[{}] {}\n", job.id, job.status));
+            if !job.status.is_success() {
+                status = job.status.clone();
             }
         }
         RcOutput {
@@ -1859,7 +2096,17 @@ impl<H: RcHost> RcSession<H> {
             RedirectMode::Read => {
                 match redirect.target.as_ref() {
                     Some(RedirectTarget::Process(node)) => {
-                        *input = self.eval_node(node, String::new()).stdout;
+                        let graph = self.prepare_process_substitution_graph(
+                            RcProcessGraphKind::ProcessSubstitutionRead,
+                            node,
+                            1,
+                        );
+                        let out = self.eval_node(node, String::new());
+                        self.finish_process_graph(
+                            graph.as_ref(),
+                            std::slice::from_ref(&out.status),
+                        );
+                        *input = out.stdout;
                     }
                     _ => {
                         let path = self.redirect_path(redirect)?;
@@ -1878,7 +2125,18 @@ impl<H: RcHost> RcSession<H> {
             }
             RedirectMode::Write | RedirectMode::Append => match redirect.target.as_ref() {
                 Some(RedirectTarget::Process(node)) => {
-                    sinks.insert(redirect.fd, FdSink::Process(node.clone()));
+                    let graph = self.prepare_process_substitution_graph(
+                        RcProcessGraphKind::ProcessSubstitutionWrite,
+                        node,
+                        redirect.fd,
+                    );
+                    sinks.insert(
+                        redirect.fd,
+                        FdSink::Process {
+                            node: node.clone(),
+                            graph,
+                        },
+                    );
                     Ok(())
                 }
                 _ => {
@@ -1977,8 +2235,9 @@ impl<H: RcHost> RcSession<H> {
                     self.host.write_file(&path, data.as_bytes())?;
                 }
             }
-            FdSink::Process(node) => {
+            FdSink::Process { node, graph } => {
                 let next = self.eval_node(&node, data);
+                self.finish_process_graph(graph.as_ref(), std::slice::from_ref(&next.status));
                 output.stdout.push_str(&next.stdout);
                 output.stderr.push_str(&next.stderr);
                 output.status = next.status;
@@ -2199,8 +2458,14 @@ impl<H: RcHost> RcSession<H> {
 enum FdSink {
     Stdout,
     Stderr,
-    File { path: String, append: bool },
-    Process(Box<Node>),
+    File {
+        path: String,
+        append: bool,
+    },
+    Process {
+        node: Box<Node>,
+        graph: Option<RcProcessGraphRecord>,
+    },
     Closed,
 }
 
@@ -2809,6 +3074,11 @@ mod tests {
         let out = rc.eval_source("echo background & wait");
         assert_eq!(out.status, RcStatus::success());
         assert_eq!(out.stdout, "[1]\nbackground\n[1] 0\n");
+
+        let mut rc = RcSession::new(FakeHost::default());
+        let out = rc.eval_source("echo one & echo two & wait 1; wait");
+        assert_eq!(out.status, RcStatus::success());
+        assert_eq!(out.stdout, "[1]\n[2]\none\n[1] 0\ntwo\n[2] 0\n");
 
         let out = rc.eval_source("builtin echo ok; rfork e; rfork z");
         assert!(!out.status.is_success());

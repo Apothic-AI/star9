@@ -124,7 +124,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `docs/audits/plan9-command-compatibility-matrix.json` records shell/rc-visible Plan 9 command compatibility for `bind`, `unmount`, `srv`, and `mount`, plus provider-missing boundaries for `dossrv`, `vacfs`, and network service sources.
 
-`docs/audits/rc-pipeline-job-control-boundary.md` records the current deterministic rc pipeline/job/rfork boundary and the required task/fd graph shape for future full process-style parity.
+`docs/audits/rc-process-graph-matrix.json` and `docs/audits/rc-pipeline-job-control-boundary.md` record the rc process-graph boundary. The portable rc evaluator remains deterministic, while the Star 9 adapter now creates task/fd/pipe graph records for pipelines, background jobs, and process substitution. Full concurrent external stage execution remains a documented host/provider boundary.
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 

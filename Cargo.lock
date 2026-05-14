@@ -1378,6 +1378,7 @@ dependencies = [
  "star9-protocol",
  "star9-rc",
  "star9-runtime",
+ "star9-task",
  "star9-vfs",
 ]
 

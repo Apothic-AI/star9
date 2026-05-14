@@ -109,7 +109,7 @@ Complete within Star 9's current in-process evaluator model.
 
 Remaining host-model limitation:
 
-- Pipelines are deterministic evaluator pipelines, not OS-concurrent process graphs. That is acceptable for the current Star 9/browser-capable model, but should be documented if exact process timing matters.
+- The portable evaluator still executes pipelines deterministically for browser/fake-host compatibility. The Star 9 adapter now creates task/fd/pipe graph records for pipelines and process substitution, making the intended graph visible through `#task`; true concurrent external stage execution remains a provider-backed future step.
 
 ### 5. Environment And Notes
 
@@ -347,7 +347,7 @@ srv/
 
 4. Exact edge semantics:
    - Exact `rfork`, `flag`, `builtin`, and `whatis` edge parity where real script coverage requires it.
-   - Full OS-concurrent process/task pipeline graph behavior.
+   - Full OS-concurrent process/task pipeline execution beyond the current task/fd graph records.
 
 ## Recommendation
 

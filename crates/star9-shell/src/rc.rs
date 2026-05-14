@@ -1,9 +1,14 @@
 use std::collections::BTreeMap;
 
-use star9_core::{clean_path, Error, ErrorKind, Result};
+use star9_core::{clean_path, Error, ErrorKind, FileMode, FsContext, Result};
+use star9_fs::{fs_ref, FileSystem, MemFs, Node, PipeFs};
 use star9_rc::{
-    RcCommandInvocation, RcCommandResult, RcError, RcHost, RcOutput, RcSession, RcStat, RcStatus,
+    RcCommandInvocation, RcCommandResult, RcError, RcFdBindingSpec, RcHost, RcOutput,
+    RcProcessGraphKind, RcProcessGraphRecord, RcProcessGraphSpec, RcProcessJobResult,
+    RcProcessStageOutcome, RcProcessStageRecord, RcSession, RcStat, RcStatus,
 };
+use star9_task::Task;
+use star9_vfs::BindMode;
 
 use crate::{RuntimeShellHost, ShellHost, ShellSession};
 
@@ -13,6 +18,7 @@ pub type Star9RcSession = RcSession<Star9RcHost>;
 pub struct Star9RcHost {
     host: RuntimeShellHost,
     cwd: String,
+    next_graph_id: u32,
 }
 
 impl Star9RcHost {
@@ -20,6 +26,7 @@ impl Star9RcHost {
         Self {
             host,
             cwd: ".".into(),
+            next_graph_id: 1,
         }
     }
 
@@ -46,6 +53,47 @@ impl Star9RcHost {
         } else {
             clean_path(&format!("{}/{}", self.cwd, path))
         }
+    }
+
+    fn graph_root(&mut self) -> Result<String> {
+        let graph_id = self.next_graph_id;
+        self.next_graph_id += 1;
+        let root = format!(".rc/graphs/rcgraph{graph_id}");
+        self.host.runtime().namespace().bind(
+            fs_ref(MemFs::new()),
+            ".",
+            &root,
+            BindMode::Replace,
+        )?;
+        Ok(root)
+    }
+
+    fn open_task_file(task: &Task, path: &str) -> Result<star9_fs::BoxFile> {
+        task.namespace().open(&FsContext::new(), path)
+    }
+
+    fn install_standard_fds(task: &Task) -> Result<()> {
+        for (fd, name) in [(0, "stdin"), (1, "stdout"), (2, "stderr")] {
+            let node = Node::file(name, Vec::new(), FileMode::from_perm(0o666));
+            task.set_fd(fd, node.open(&FsContext::new(), ".")?, name);
+        }
+        Ok(())
+    }
+
+    fn install_task_binding(
+        task: &Task,
+        binding: &RcFdBindingSpec,
+        graph_root: &str,
+    ) -> Result<RcFdBindingSpec> {
+        let path = resolve_graph_binding_path(graph_root, &binding.path);
+        let file = Self::open_task_file(task, &path)?;
+        task.set_fd(binding.fd, file, path.clone());
+        Ok(RcFdBindingSpec {
+            fd: binding.fd,
+            path,
+            readable: binding.readable,
+            writable: binding.writable,
+        })
     }
 }
 
@@ -132,6 +180,104 @@ impl RcHost for Star9RcHost {
         Ok(())
     }
 
+    fn prepare_process_graph(
+        &mut self,
+        spec: &RcProcessGraphSpec,
+    ) -> star9_rc::RcResult<Option<RcProcessGraphRecord>> {
+        let graph_root = self.graph_root().map_err(to_rc_error)?;
+        let graph_id = graph_root
+            .rsplit('/')
+            .next()
+            .unwrap_or(&graph_root)
+            .to_string();
+        if matches!(
+            spec.kind,
+            RcProcessGraphKind::Pipeline
+                | RcProcessGraphKind::ProcessSubstitutionRead
+                | RcProcessGraphKind::ProcessSubstitutionWrite
+        ) {
+            self.host
+                .runtime()
+                .namespace()
+                .bind(
+                    fs_ref(PipeFs::new(false)),
+                    ".",
+                    &format!("{graph_root}/pipe0"),
+                    BindMode::Replace,
+                )
+                .map_err(to_rc_error)?;
+        }
+
+        let mut stages = Vec::new();
+        for stage in &spec.stages {
+            let task = self
+                .host
+                .runtime()
+                .task_fs()
+                .alloc("auto", Some(self.host.runtime().root()))
+                .map_err(to_rc_error)?;
+            task.set_cmd(stage.command.clone());
+            task.set_dir(stage.cwd.clone());
+            task.set_env(stage.env.iter().map(|(name, values)| {
+                if values.is_empty() {
+                    format!("{name}=()")
+                } else {
+                    format!("{name}={}", values.join("\0"))
+                }
+            }));
+            task.set_exit("planned");
+            Self::install_standard_fds(&task).map_err(to_rc_error)?;
+            let mut fd_bindings = Vec::new();
+            for binding in &stage.fd_bindings {
+                fd_bindings.push(
+                    Self::install_task_binding(&task, binding, &graph_root).map_err(to_rc_error)?,
+                );
+            }
+            stages.push(RcProcessStageRecord {
+                command: stage.command.clone(),
+                task_id: Some(task.id()),
+                fd_bindings,
+            });
+        }
+
+        Ok(Some(RcProcessGraphRecord {
+            graph_id,
+            kind: spec.kind.clone(),
+            job_id: spec.job_id,
+            stages,
+        }))
+    }
+
+    fn finish_process_graph(
+        &mut self,
+        record: &RcProcessGraphRecord,
+        outcomes: &[RcProcessStageOutcome],
+    ) -> star9_rc::RcResult<()> {
+        for (stage, outcome) in record.stages.iter().zip(outcomes.iter()) {
+            let Some(task_id) = &stage.task_id else {
+                continue;
+            };
+            if let Ok(task) = self.host.runtime().task_fs().lookup(task_id) {
+                task.set_exit(outcome.status.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_process_job(
+        &mut self,
+        _job_id: Option<u32>,
+    ) -> star9_rc::RcResult<Option<Vec<RcProcessJobResult>>> {
+        Ok(None)
+    }
+
+    fn send_note_to_processes(&mut self, note: &str) -> star9_rc::RcResult<()> {
+        match self.host.write_existing("#signal/data", note.as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(_) => Ok(()),
+        }
+    }
+
     fn rfork(&mut self, flags: &str) -> star9_rc::RcResult<()> {
         if flags.chars().all(|flag| flag == 'e') {
             Ok(())
@@ -195,6 +341,14 @@ fn rc_error(message: &str) -> RcError {
     RcError::new(message)
 }
 
+fn resolve_graph_binding_path(graph_root: &str, binding_path: &str) -> String {
+    if let Some(rest) = binding_path.strip_prefix("pipe:0/") {
+        format!("{graph_root}/pipe0/{rest}")
+    } else {
+        format!("{graph_root}/{}", binding_path.trim_start_matches('/'))
+    }
+}
+
 pub fn rc_to_star9_result(output: RcOutput) -> Result<crate::ShellResult> {
     let status = if output.status.is_success() { 0 } else { 1 };
     Ok(crate::ShellResult {
@@ -256,6 +410,79 @@ mod tests {
         let out = rc.eval_line("echo $shape");
         assert!(out.status.is_success(), "{}", out.stderr);
         assert_eq!(out.stdout, "circle\n");
+    }
+
+    #[test]
+    fn rc_shell_pipeline_creates_task_fd_graph() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        let mut rc = RcShell::new(host);
+        let out = rc.eval_line("echo hello | cat");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stdout, "hello\n");
+
+        let tasks = runtime.task_fs().tasks();
+        let echo = tasks
+            .iter()
+            .find(|task| task.cmd() == "echo hello")
+            .expect("pipeline left task");
+        let cat = tasks
+            .iter()
+            .find(|task| task.cmd() == "cat")
+            .expect("pipeline right task");
+        assert_eq!(echo.exit(), "0");
+        assert_eq!(cat.exit(), "0");
+        let fds = tasks
+            .iter()
+            .flat_map(|task| task.fd_entries())
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe0/data"), "{fds}");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe0/data1"), "{fds}");
+    }
+
+    #[test]
+    fn rc_shell_background_wait_records_task_job() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        let mut rc = RcShell::new(host);
+        let out = rc.eval_line("echo bg & wait 1");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stdout, "[1]\nbg\n[1] 0\n");
+
+        let task = runtime
+            .task_fs()
+            .tasks()
+            .into_iter()
+            .find(|task| task.cmd() == "echo bg")
+            .expect("background task");
+        assert_eq!(task.exit(), "0");
+    }
+
+    #[test]
+    fn rc_shell_process_substitution_creates_task_fd_graph() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        let mut rc = RcShell::new(host);
+        let out = rc.eval_line("cat <{echo proc}");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stdout, "proc\n");
+
+        let task = runtime
+            .task_fs()
+            .tasks()
+            .into_iter()
+            .find(|task| task.cmd().contains("echo proc"))
+            .expect("process substitution task");
+        assert_eq!(task.exit(), "0");
+        let fds = task
+            .fd_entries()
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(fds.contains(".rc/graphs/rcgraph1/pipe0/data"), "{fds}");
     }
 
     #[test]

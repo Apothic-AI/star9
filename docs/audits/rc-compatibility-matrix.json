@@ -27,14 +27,14 @@
     {
       "feature": "evaluation-status-control-flow",
       "status": "implemented",
-      "evidence": ["functions_for_if_switch_and_status_work", "background_wait_builtin_and_rfork_have_precise_behavior", "license_clean_rc_corpus_runs"],
-      "notes": "Supports sequencing, &&, ||, !, deterministic background jobs, wait reporting, if, for, while, switch, functions, and rc-style status strings including all-zero pipeline success. Pipelines remain deterministic evaluator pipelines, not OS-concurrent process graphs."
+      "evidence": ["functions_for_if_switch_and_status_work", "background_wait_builtin_and_rfork_have_precise_behavior", "rc_shell_background_wait_records_task_job", "license_clean_rc_corpus_runs"],
+      "notes": "Supports sequencing, &&, ||, !, deterministic background jobs, wait reporting, wait <job>, if, for, while, switch, functions, and rc-style status strings including all-zero pipeline success. The Star 9 adapter now materializes background graph records as task entries; true task-group scheduling remains host-limited."
     },
     {
       "feature": "redirection-pipelines-here-docs",
       "status": "implemented-with-host-limits",
-      "evidence": ["redirection_pipeline_and_source_work", "fd_dup_process_substitution_here_docs_and_exit_work"],
-      "notes": "Implements <, >, >>, fd-specific output redirects, fd dup/close for captured stdout/stderr, /dev/null handling, stdout/stderr pipe selection, <{} and >{} process substitution through evaluator pipes, and parsed here documents with quoted-delimiter expansion suppression. Pipelines are deterministic in-process evaluator pipelines rather than OS-concurrent process graphs."
+      "evidence": ["redirection_pipeline_and_source_work", "fd_dup_process_substitution_here_docs_and_exit_work", "rc_shell_pipeline_creates_task_fd_graph", "rc_shell_process_substitution_creates_task_fd_graph"],
+      "notes": "Implements <, >, >>, fd-specific output redirects, fd dup/close for captured stdout/stderr, /dev/null handling, stdout/stderr pipe selection, <{} and >{} process substitution through evaluator pipes, and parsed here documents with quoted-delimiter expansion suppression. The reusable evaluator remains deterministic; the Star 9 adapter now creates observable task/fd graph records for pipelines and process substitution. Concurrent streaming external stage execution remains host-limited."
     },
     {
       "feature": "command-substitution",

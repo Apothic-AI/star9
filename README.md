@@ -25,7 +25,7 @@ This workspace implements the main Star 9 runtime surfaces in Rust:
 - Rust-native 9P import/export with hard-link and xattr read/list/write support, native stream/TCP transport helpers, async native `Tflush` cancellation, browser MessagePort frame-serving/client helpers, an async browser namespace mount client, and a browser storage-to-9P export bridge for async storage adapters.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
 - Host-neutral Star 9 shell core plus native/browser shell surfaces that route through namespaces, files, task fds, and device protocols rather than host side channels.
-- Reusable Plan 9 rc language core with a Star 9 host adapter for native/browser rc sessions.
+- Reusable Plan 9 rc language core with a Star 9 host adapter for native/browser rc sessions, including task/fd graph records for pipelines, background jobs, and process substitution.
 - Browser Worker/MessagePort JS glue for runtime message envelopes, transferred ports, typed namespace/fd request helpers, and CBOR request/task-message bridging into the Rust runtime host.
 - Browser Worker host facade and execution-worker helper for real module-worker startup, runtime port transfer, message routing, JS/WASM execution bootstrap, dynamic JS runner import, direct WASI-style `.wasm` instantiation, Go-compatible runner fixture execution, runner context, port handoff, exit/error reporting, and cleanup.
 - Browser worker export handoff for `{ export: MessagePort }` 9P exports, mounted into the task export namespace and optional VM guest namespace.
@@ -76,7 +76,7 @@ cargo run -p star9-cli -- shell -c 'echo hello | cat'
 cargo run -p star9-cli -- rc ./script.rc arg1 arg2
 ```
 
-The reusable `star9-rc` crate owns the rc language core and can be embedded without depending on Star 9 runtime or browser crates. It covers rc lists, expansion, functions/control flow, globbing, fd redirection/duplication, process substitution, here documents, environment import/export, notes, `$path` rc script dispatch, and optional oracle checks. Star 9 integrates it through a host adapter that routes files, commands, and devices through namespaces, task fds, and runtime surfaces.
+The reusable `star9-rc` crate owns the rc language core and can be embedded without depending on Star 9 runtime or browser crates. It covers rc lists, expansion, functions/control flow, globbing, fd redirection/duplication, process substitution, here documents, environment import/export, notes, `$path` rc script dispatch, and optional oracle checks. Star 9 integrates it through a host adapter that routes files, commands, devices, and process-graph records through namespaces, task fds, generated pipe resources, and runtime surfaces.
 
 Plan 9-style service composition works through the same shell/rc path:
 
