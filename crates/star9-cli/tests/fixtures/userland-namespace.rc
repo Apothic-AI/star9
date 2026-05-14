@@ -1,0 +1,16 @@
+# Independently authored Star 9 rc/userland compatibility fixture.
+mkdir exported
+write exported/hello ok
+bind exported mirror
+cat mirror/hello
+echo
+unmount exported mirror
+srv root rootsrv
+mount rootsrv n/root
+cat n/root/exported/hello
+echo
+unmount n/root
+rm #srv/rootsrv
+mkdir bin
+write bin/hello 'echo path-ok'
+hello

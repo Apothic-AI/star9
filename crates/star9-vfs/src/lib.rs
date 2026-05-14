@@ -97,6 +97,30 @@ impl Namespace {
         }
     }
 
+    pub fn unbind_source_path(&self, src_path: &str, dst_path: &str) -> Result<()> {
+        if !valid_path(src_path) {
+            return Err(Error::path("unmount", src_path, ErrorKind::NotFound));
+        }
+        if !valid_path(dst_path) {
+            return Err(Error::path("unmount", dst_path, ErrorKind::NotFound));
+        }
+        let src_path = clean_path(src_path);
+        let dst_path = clean_path(dst_path);
+        let mut bindings = self.bindings.write().unwrap();
+        let Some(targets) = bindings.get_mut(&dst_path) else {
+            return Err(Error::path("unmount", dst_path, ErrorKind::NotFound));
+        };
+        let before = targets.len();
+        targets.retain(|target| target.path != src_path);
+        if targets.is_empty() {
+            bindings.remove(&dst_path);
+        }
+        if before == bindings.get(&dst_path).map_or(0, Vec::len) {
+            return Err(Error::path("unmount", src_path, ErrorKind::NotFound));
+        }
+        Ok(())
+    }
+
     pub fn unbind_all(&self) {
         self.bindings
             .write()
@@ -112,8 +136,12 @@ impl Namespace {
         let bindings = self.bindings.read().unwrap();
         let mut lines = Vec::new();
         for (dst, targets) in bindings.iter() {
-            for target in targets {
-                lines.push(format!("{dst} -> fs:{}", target.path));
+            for (index, target) in targets.iter().enumerate() {
+                if targets.len() == 1 {
+                    lines.push(format!("{dst} -> fs:{}", target.path));
+                } else {
+                    lines.push(format!("{dst}[{index}] -> fs:{}", target.path));
+                }
             }
         }
         lines.join("\n")
@@ -555,6 +583,23 @@ mod tests {
             ns.unbind_path("mnt/export").unwrap_err().kind(),
             ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn unbind_source_path_removes_one_layer() {
+        let left = fs_ref(MemFs::from_entries([("file", b"left".to_vec())]));
+        let right = fs_ref(MemFs::from_entries([("file", b"right".to_vec())]));
+        let ns = Namespace::new();
+        ns.bind(left, ".", "left", BindMode::Replace).unwrap();
+        ns.bind(right, ".", "right", BindMode::Replace).unwrap();
+        ns.bind(fs_ref(ns.clone()), "left", "view", BindMode::Replace)
+            .unwrap();
+        ns.bind(fs_ref(ns.clone()), "right", "view", BindMode::After)
+            .unwrap();
+
+        assert_eq!(read_file(&ns, "view/file").unwrap(), b"right");
+        ns.unbind_source_path("right", "view").unwrap();
+        assert_eq!(read_file(&ns, "view/file").unwrap(), b"left");
     }
 
     #[test]

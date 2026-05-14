@@ -118,7 +118,13 @@ pub trait ShellHost: Clone {
     fn unmount_path(&self, _dst: &str) -> Result<()> {
         Err(ErrorKind::NotSupported.into())
     }
+    fn unmount_binding(&self, _src: &str, _dst: &str) -> Result<()> {
+        Err(ErrorKind::NotSupported.into())
+    }
     fn register_service(&self, _name: &str) -> Result<()> {
+        Err(ErrorKind::NotSupported.into())
+    }
+    fn register_service_from_source(&self, _source: &str, _name: &str) -> Result<()> {
         Err(ErrorKind::NotSupported.into())
     }
     fn mount_service(&self, _service: &str, _dst: &str, _mode: BindMode) -> Result<()> {
@@ -329,8 +335,22 @@ impl ShellHost for RuntimeShellHost {
         self.runtime.namespace().unbind_path(dst)
     }
 
+    fn unmount_binding(&self, src: &str, dst: &str) -> Result<()> {
+        self.runtime.namespace().unbind_source_path(src, dst)
+    }
+
     fn register_service(&self, name: &str) -> Result<()> {
         self.runtime.register_loopback_service(name)
+    }
+
+    fn register_service_from_source(&self, source: &str, name: &str) -> Result<()> {
+        if is_loopback_service_source(source) {
+            self.runtime.register_loopback_service(name)
+        } else if source.starts_with("tcp!") {
+            self.runtime.register_tcp_9p_service(source, name)
+        } else {
+            Err(Error::path("srv", source, ErrorKind::NotSupported))
+        }
     }
 
     fn mount_service(&self, service: &str, dst: &str, mode: BindMode) -> Result<()> {
@@ -661,10 +681,21 @@ impl<H: ShellHost> ShellSession<H> {
         if command.args.is_empty() || command.args.len() > 2 {
             return usage("unmount [src] <dst>");
         }
-        let dst = self.resolve_path(command.args.last().map(String::as_str).unwrap_or("."));
-        match self.host.unmount_path(&dst) {
+        let result = if command.args.len() == 2 {
+            let src = self.resolve_path(&command.args[0]);
+            let dst = self.resolve_path(&command.args[1]);
+            self.host
+                .unmount_binding(&src, &dst)
+                .map_err(|err| (format!("{src} {dst}"), err))
+        } else {
+            let dst = self.resolve_path(&command.args[0]);
+            self.host
+                .unmount_path(&dst)
+                .map_err(|err| (dst.clone(), err))
+        };
+        match result {
             Ok(()) => ShellResult::default(),
-            Err(err) => ShellResult::failure(format!("unmount: {dst}: {err}\n")),
+            Err((target, err)) => ShellResult::failure(format!("unmount: {target}: {err}\n")),
         }
     }
 
@@ -688,11 +719,11 @@ impl<H: ShellHost> ShellSession<H> {
             }
             _ => unreachable!(),
         };
-        if !is_loopback_service_source(source) {
-            return provider_missing("srv", source);
-        }
-        if let Err(err) = self.host.register_service(name) {
-            return ShellResult::failure(format!("srv: {name}: {err}\n"));
+        if let Err(err) = self.host.register_service_from_source(source, name) {
+            if err.kind() == ErrorKind::NotSupported {
+                return provider_missing("srv", source);
+            }
+            return ShellResult::failure(format!("srv: {source} {name}: {err}\n"));
         }
         if mount_after {
             let default_mountpoint = format!("n/{name}");
@@ -1253,6 +1284,54 @@ mod tests {
         let services = shell.eval_line("ls #srv");
         assert_eq!(services.status, 0, "{}", services.stderr);
         assert!(services.stdout.contains("rootsrv"), "{}", services.stdout);
+    }
+
+    #[test]
+    fn shell_unmount_can_remove_one_source_layer() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let mut shell = ShellSession::new(host);
+        let result = shell.eval_line(
+            "mkdir left right; write left/file left; write right/file right; bind left view; bind -a right view; cat view/file; unmount right view; cat view/file",
+        );
+        assert_eq!(result.status, 0, "{}", result.stderr);
+        assert_eq!(result.stdout, "rightleft");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn shell_srv_mounts_native_tcp_9p_service() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = star9_protocol::p9::NinePServer::new(fs_ref(MemFs::from_entries([(
+            "hello.txt",
+            b"tcp-service".to_vec(),
+        )])));
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let reader = stream.try_clone().unwrap();
+            let mut writer = stream;
+            star9_protocol::p9::serve_frame_stream(
+                &server,
+                &mut std::io::BufReader::new(reader),
+                &mut writer,
+            )
+            .unwrap();
+            writer.flush().ok();
+        });
+
+        let host = RuntimeShellHost::fresh().unwrap();
+        let mut shell = ShellSession::new(host);
+        let result = shell.eval_line(&format!(
+            "srv tcp!127.0.0.1!{port} rem; mount rem n/rem; cat n/rem/hello.txt; unmount n/rem; rm #srv/rem"
+        ));
+        assert_eq!(result.status, 0, "{}", result.stderr);
+        assert_eq!(result.stdout, "tcp-service");
+        drop(shell);
+        handle.join().unwrap();
     }
 
     #[test]

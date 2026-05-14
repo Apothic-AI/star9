@@ -16,7 +16,8 @@ This workspace implements the main Star 9 runtime surfaces in Rust:
 - Explicit metadata caching through `MetaCacheFs` and local-first sync orchestration through `SyncFs`, including reusable tar patch application and a native background debounce scheduler.
 - Task/resource filesystem with per-task namespaces, aliases, drivers, and file descriptors.
 - Task export filesystems exposed at `#task/<id>/export`, plus bind introspection through `#task/<id>/binds`.
-- Runtime service registry exposed at hidden `#srv` and visible `srv`, with `n`/`mnt` compatibility mount points and shell/rc-visible `bind`, `unmount`, `srv`, and `mount` commands.
+- Runtime environment registry exposed at hidden `#env` and visible `env`, with rc list variables represented as NUL-separated files and exported functions represented as `fn#name` entries.
+- Runtime service registry exposed at hidden `#srv` and visible `srv`, with `n`/`mnt` compatibility mount points and shell/rc-visible `bind`, source-specific `unmount`, `srv`, and `mount` commands.
 - Typed public file API for the Star 9 JS handle operation set.
 - CBOR encode/decode helpers for the typed public API boundary.
 - Runtime root construction with built-in `#star9`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net` surfaces.
@@ -33,7 +34,7 @@ This workspace implements the main Star 9 runtime surfaces in Rust:
 - Browser network transport adapters shaped like `#net` resources over WebSocket/WebTransport-style capabilities; browser raw TCP remains explicitly unavailable.
 - Wasmi-backed WASI preview1 execution over Star 9 task namespaces, fd tables, fd directory/positional I/O/allocation/renumber/advice/flags/timestamps/sync/truncate syscalls, clock resolution/time, poll/yield/signal imports, hard-link and other path mutation syscalls, deterministic socket listener accept plus send/recv/shutdown over `#net` task fds, and explicit unsupported socket accept on non-listener fds.
 - Rust-owned WASI fixtures include checked-in compiled `.wasm` modules as well as focused WAT unit fixtures.
-- Native CLI acceptance commands for 9P loopback, deterministic devices, compiled WASI preview1 fixtures, runtime worker protocol flows, and fd-backed worker stdout routing, plus a Rust-native `serve-p9` stdin/stdout stream hook for local filesystem export.
+- Native CLI acceptance commands for 9P loopback, deterministic devices, compiled WASI preview1 fixtures, runtime worker protocol flows, and fd-backed worker stdout routing, plus Rust-native `serve-p9` stdin/stdout export and opt-in native `srv tcp!host!port` service import checks.
 - Opt-in native PTY execution acceptance on native hosts with `cargo run -p star9-cli -- accept native`.
 - Opt-in native TCP loopback acceptance on native hosts with `cargo run -p star9-cli -- accept native-tcp`.
 - Opt-in native 9P TCP stream acceptance on native hosts with `cargo run -p star9-cli -- accept native-p9`.
@@ -81,9 +82,10 @@ Plan 9-style service composition works through the same shell/rc path:
 
 ```sh
 cargo run -p star9-cli -- rc -c 'mkdir exported; write exported/hello ok; srv root rootsrv; mount rootsrv n/root; cat n/root/exported/hello'
+cargo run -p star9-cli -- accept native-srv
 ```
 
-Provider-heavy commands such as `dossrv` and `vacfs`, plus network service sources such as `tcp!host`, are explicit provider-missing boundaries until matching Star 9 disk/vac/network providers are configured.
+Native hosts can register 9P services from `tcp!host!port` addresses when explicitly used. Browser shells can register cross-document imports with `srv import!url#system name` and mount them with `mount name path`; browser raw TCP remains unavailable. Provider-heavy commands such as `dossrv` and `vacfs` are explicit provider-missing boundaries until matching Star 9 disk/vac/archive providers are configured.
 
 ## Verification
 

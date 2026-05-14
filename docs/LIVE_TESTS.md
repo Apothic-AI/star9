@@ -52,7 +52,7 @@ cargo run -p star9-cli -- rc -c 'mkdir exported; write exported/hello ok; srv ro
 cargo run -p star9-cli -- shell -c 'mkdir exported; write exported/hello ok; bind exported mirror; cat mirror/hello; unmount mirror'
 ```
 
-The `srv` command can register loopback Star 9 namespace exports by default. Network service providers such as `srv tcp!host name`, disk providers such as `dossrv`, and vac/Venti providers such as `vacfs` remain provider-gated and currently return precise provider-missing errors unless a matching Star 9 device/provider is configured.
+The `srv` command can register loopback Star 9 namespace exports by default. Native `srv tcp!host!port name` is available when explicitly used. Browser raw TCP, shorthand `tcp!host` without an explicit port, disk providers such as `dossrv`, and vac/Venti providers such as `vacfs` remain provider-gated and currently return precise provider-missing errors unless a matching Star 9 device/provider is configured.
 
 ## HTTP
 
@@ -158,7 +158,17 @@ cargo run -p star9-cli -- accept native-p9
 
 This serves a `MemFs` export over a loopback `TcpListener`, imports it through `TcpStreamTransport`, performs read/write operations, and closes cleanly.
 
+Run the native service-registry check with:
+
+```sh
+cargo run -p star9-cli -- accept native-srv
+```
+
+This serves a `MemFs` export over loopback TCP, registers it with `srv tcp!127.0.0.1!port name`, mounts it through `mount name n/name`, reads through the mounted namespace, then unmounts and unregisters the service before closing the stream.
+
 Browser network transport coverage is WebSocket/WebTransport-style and file-model-shaped. Raw TCP is not a browser API. The deterministic Node test uses a fake WebSocket transport; external browser network services should remain opt-in host checks.
+
+Browser shell service compatibility uses honest browser-capability service forms. `srv import!url#system name` registers a cross-document MessagePort/9P import service and `mount name path` mounts it through the existing import boundary. WebSocket/WebTransport-backed service providers should follow the same `#srv`/`mount` model when real external browser network checks are added. Raw `tcp!host!port` remains unavailable in browsers.
 
 ## Native PTY Execution
 

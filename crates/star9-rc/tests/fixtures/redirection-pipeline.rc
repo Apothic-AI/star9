@@ -1,0 +1,4 @@
+# Independently authored Star 9 rc compatibility fixture.
+echo hello | upper >out
+cat <out
+cat <{echo proc}

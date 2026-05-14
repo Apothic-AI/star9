@@ -172,6 +172,19 @@ pub trait RcHost {
     fn read_dir(&mut self, path: &str) -> RcResult<Vec<String>>;
     fn stat(&mut self, path: &str) -> RcResult<RcStat>;
     fn run_command(&mut self, invocation: RcCommandInvocation) -> RcResult<RcCommandResult>;
+    fn load_environment(&mut self) -> RcResult<Option<BTreeMap<String, Vec<u8>>>> {
+        Ok(None)
+    }
+    fn store_environment(&mut self, _env: &BTreeMap<String, Vec<u8>>) -> RcResult<()> {
+        Ok(())
+    }
+    fn rfork(&mut self, flags: &str) -> RcResult<()> {
+        if flags.chars().all(|flag| flag == 'e') {
+            Ok(())
+        } else {
+            Err(RcError::new(format!("unsupported rfork flags {flags}")))
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1151,7 +1164,17 @@ pub struct RcSession<H: RcHost> {
     last_status: RcStatus,
     argv0: String,
     argv: Vec<String>,
+    jobs: Vec<RcJob>,
+    next_job_id: u32,
     notes_in_progress: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RcJob {
+    id: u32,
+    status: RcStatus,
+    stdout: String,
+    stderr: String,
 }
 
 impl<H: RcHost> RcSession<H> {
@@ -1159,15 +1182,20 @@ impl<H: RcHost> RcSession<H> {
         let mut vars = BTreeMap::new();
         vars.insert("path".into(), vec![".".into(), "bin".into()]);
         vars.insert("ifs".into(), vec![" \t\n".into()]);
-        Self {
+        let mut session = Self {
             host,
             vars,
             functions: BTreeMap::new(),
             last_status: RcStatus::success(),
             argv0: "rc".into(),
             argv: Vec::new(),
+            jobs: Vec::new(),
+            next_job_id: 1,
             notes_in_progress: BTreeSet::new(),
-        }
+        };
+        session.import_host_environment().ok();
+        session.publish_environment().ok();
+        session
     }
 
     pub fn host(&self) -> &H {
@@ -1181,6 +1209,7 @@ impl<H: RcHost> RcSession<H> {
     pub fn set_args(&mut self, args: Vec<String>) {
         self.argv = args;
         self.refresh_arg_vars();
+        self.publish_environment().ok();
     }
 
     pub fn set_argv0(&mut self, argv0: impl Into<String>) {
@@ -1189,6 +1218,7 @@ impl<H: RcHost> RcSession<H> {
 
     pub fn set_var(&mut self, name: impl Into<String>, values: Vec<String>) {
         self.vars.insert(name.into(), values);
+        self.publish_environment().ok();
     }
 
     pub fn get_var(&self, name: &str) -> Vec<String> {
@@ -1231,6 +1261,7 @@ impl<H: RcHost> RcSession<H> {
                 .collect::<Vec<_>>();
             self.vars.insert(name, values);
         }
+        self.publish_environment().ok();
     }
 
     pub fn deliver_note(&mut self, note: &str) -> RcOutput {
@@ -1244,6 +1275,7 @@ impl<H: RcHost> RcSession<H> {
     }
 
     pub fn eval_source(&mut self, source: &str) -> RcOutput {
+        self.import_host_environment().ok();
         match parse(source) {
             Ok(script) => self.eval_script(&script, String::new()),
             Err(err) => {
@@ -1258,7 +1290,43 @@ impl<H: RcHost> RcSession<H> {
         self.last_status = output.status.clone();
         self.vars
             .insert("status".into(), vec![self.last_status.to_string()]);
+        self.publish_environment().ok();
         output
+    }
+
+    fn import_host_environment(&mut self) -> RcResult<()> {
+        if let Some(env) = self.host.load_environment()? {
+            self.import_environment_without_publish(env);
+        }
+        Ok(())
+    }
+
+    fn publish_environment(&mut self) -> RcResult<()> {
+        self.host.store_environment(&self.export_environment())
+    }
+
+    fn import_environment_without_publish(&mut self, env: BTreeMap<String, Vec<u8>>) {
+        for (name, data) in env {
+            if let Some(function) = name.strip_prefix("fn#") {
+                if let Ok(source) = String::from_utf8(data) {
+                    if let Ok(script) = parse(&format!("fn {function} {source}")) {
+                        if let Some(Node::Function {
+                            body: Some(body), ..
+                        }) = script.commands.into_iter().next()
+                        {
+                            self.functions.insert(function.to_string(), *body);
+                        }
+                    }
+                }
+                continue;
+            }
+            let values = data
+                .split(|byte| *byte == 0)
+                .map(|part| String::from_utf8_lossy(part).into_owned())
+                .collect::<Vec<_>>();
+            self.vars.insert(name, values);
+        }
+        self.refresh_arg_vars();
     }
 
     fn eval_nodes(&mut self, nodes: &[Node], input: String) -> RcOutput {
@@ -1321,10 +1389,16 @@ impl<H: RcHost> RcSession<H> {
                 out
             }
             Node::Background(inner) => {
-                let mut out = self.eval_node(inner, input);
-                out.status = RcStatus::success();
-                out.stdout.clear();
-                out
+                let out = self.eval_node(inner, input);
+                let id = self.next_job_id;
+                self.next_job_id += 1;
+                self.jobs.push(RcJob {
+                    id,
+                    status: out.status,
+                    stdout: out.stdout,
+                    stderr: out.stderr,
+                });
+                RcOutput::success(format!("[{id}]\n"))
             }
             Node::If {
                 condition,
@@ -1428,6 +1502,7 @@ impl<H: RcHost> RcSession<H> {
             for (name, values) in assignment_values {
                 self.vars.insert(name, values);
             }
+            self.publish_environment().ok();
             return RcOutput::default();
         }
 
@@ -1477,6 +1552,7 @@ impl<H: RcHost> RcSession<H> {
                 Err(err) => RcOutput::failure("notfound", format!("{}: {err}\n", words[0])),
             }
         };
+        self.import_host_environment().ok();
 
         if let Err(err) = self.apply_output_sinks(&mut out, sinks) {
             out.status = RcStatus::failure();
@@ -1488,6 +1564,7 @@ impl<H: RcHost> RcSession<H> {
         for (name, old) in restore {
             restore_var(&mut self.vars, &name, old);
         }
+        self.publish_environment().ok();
         out
     }
 
@@ -1656,11 +1733,73 @@ impl<H: RcHost> RcSession<H> {
                 out.exited = true;
                 out
             }
-            "wait" | "rfork" | "flag" | "builtin" => RcOutput::default(),
+            "wait" => self.run_wait(args),
+            "rfork" => self.run_rfork(args),
+            "flag" => self.run_flag(args),
+            "builtin" => self.run_builtin_command(args, input),
             "cat" if args.is_empty() => RcOutput::success(input.to_string()),
             _ => return None,
         };
         Some(out)
+    }
+
+    fn run_wait(&mut self, args: &[String]) -> RcOutput {
+        if !args.is_empty() {
+            return RcOutput::failure("usage", "usage: wait\n");
+        }
+        let jobs = std::mem::take(&mut self.jobs);
+        let mut out = String::new();
+        let mut status = RcStatus::success();
+        for job in jobs {
+            if !job.stdout.is_empty() {
+                out.push_str(&job.stdout);
+            }
+            if !job.stderr.is_empty() {
+                out.push_str(&job.stderr);
+            }
+            out.push_str(&format!("[{}] {}\n", job.id, job.status));
+            if !job.status.is_success() {
+                status = job.status;
+            }
+        }
+        RcOutput {
+            status,
+            stdout: out,
+            stderr: String::new(),
+            exited: false,
+        }
+    }
+
+    fn run_rfork(&mut self, args: &[String]) -> RcOutput {
+        let flags = args.join("");
+        match self.host.rfork(&flags) {
+            Ok(()) => RcOutput::default(),
+            Err(err) => RcOutput::failure("rfork", format!("rfork: {err}\n")),
+        }
+    }
+
+    fn run_flag(&self, args: &[String]) -> RcOutput {
+        match args {
+            [] => RcOutput::success("\n"),
+            [flag] if flag == "x" || flag == "e" || flag == "r" || flag == "i" => {
+                RcOutput::default()
+            }
+            [flag] => RcOutput::failure("flag", format!("flag: unknown flag {flag}\n")),
+            _ => RcOutput::failure("usage", "usage: flag [name]\n"),
+        }
+    }
+
+    fn run_builtin_command(&mut self, args: &[String], input: &str) -> RcOutput {
+        if args.is_empty() {
+            return RcOutput::failure("usage", "usage: builtin command [args ...]\n");
+        }
+        match args[0].as_str() {
+            "builtin" => RcOutput::default(),
+            name if BUILTINS.contains(&name) && name != "builtin" => {
+                self.run_builtin(args, input).unwrap_or_default()
+            }
+            name => RcOutput::failure("builtin", format!("builtin: {name}: not a builtin\n")),
+        }
     }
 
     fn run_test(&mut self, args: &[String]) -> RcOutput {
@@ -2662,6 +2801,66 @@ mod tests {
 
         let out = restored.deliver_note("exit");
         assert_eq!(out.stdout, "bye\n");
+    }
+
+    #[test]
+    fn background_wait_builtin_and_rfork_have_precise_behavior() {
+        let mut rc = RcSession::new(FakeHost::default());
+        let out = rc.eval_source("echo background & wait");
+        assert_eq!(out.status, RcStatus::success());
+        assert_eq!(out.stdout, "[1]\nbackground\n[1] 0\n");
+
+        let out = rc.eval_source("builtin echo ok; rfork e; rfork z");
+        assert!(!out.status.is_success());
+        assert_eq!(out.stdout, "ok\n");
+        assert!(out.stderr.contains("unsupported rfork flags z"));
+    }
+
+    #[test]
+    fn license_clean_rc_corpus_runs() {
+        struct Fixture {
+            name: &'static str,
+            source: &'static str,
+            stdout: &'static str,
+            stderr: &'static str,
+            success: bool,
+        }
+        let fixtures = [
+            Fixture {
+                name: "functions-control",
+                source: include_str!("../tests/fixtures/functions-control.rc"),
+                stdout: "one one\ntwo two\nmatched\n",
+                stderr: "",
+                success: true,
+            },
+            Fixture {
+                name: "redirection-pipeline",
+                source: include_str!("../tests/fixtures/redirection-pipeline.rc"),
+                stdout: "HELLO\nproc\n",
+                stderr: "",
+                success: true,
+            },
+            Fixture {
+                name: "env-jobs",
+                source: include_str!("../tests/fixtures/env-jobs.rc"),
+                stdout: "two\n[1]\njob\n[1] 0\n",
+                stderr: "",
+                success: true,
+            },
+        ];
+        for fixture in fixtures {
+            let mut rc = RcSession::new(FakeHost::default());
+            let out = rc.eval_source(fixture.source);
+            assert_eq!(
+                out.status.is_success(),
+                fixture.success,
+                "{} status {:?}",
+                fixture.name,
+                out.status
+            );
+            assert_eq!(out.stdout, fixture.stdout, "{} stdout", fixture.name);
+            assert_eq!(out.stderr, fixture.stderr, "{} stderr", fixture.name);
+        }
     }
 
     #[test]

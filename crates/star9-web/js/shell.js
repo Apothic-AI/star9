@@ -13,6 +13,7 @@ export class Star9ShellController {
         }
         this.system = system;
         this.rc = options.rc === undefined ? !Boolean(options.simple) : Boolean(options.rc);
+        this.services = new Map();
         this.shell = options.shell || this.#createFacadeShell(system);
         if (!this.shell || typeof this.shell.eval !== "function") {
             throw new Error("star9 shell facade is not available");
@@ -68,6 +69,10 @@ export class Star9ShellController {
             return this.#mountStarFs(words);
         case "import":
             return this.#mountImport(words);
+        case "srv":
+            return this.#browserSrv(words);
+        case "mount":
+            return this.#browserMount(words);
         case "browser-worker":
         case "worker-browser":
             return this.#startBrowserWorker(words);
@@ -107,6 +112,53 @@ export class Star9ShellController {
         }
         await this.system.mountImport(words[1], words[2], { targetOrigin: "*" });
         return success(`mounted import ${words[2]} at ${words[1]}\n`);
+    }
+
+    async #browserSrv(words) {
+        const parsed = parseBrowserSrv(words);
+        if (!parsed) {
+            return null;
+        }
+        if (parsed.error) {
+            return failure(parsed.error, 2);
+        }
+        if (parsed.kind === "raw-tcp") {
+            return failure(`srv: ${parsed.source}: raw TCP is not available in browsers\n`);
+        }
+        if (parsed.kind === "provider-missing") {
+            return failure(`srv: ${parsed.source}: browser provider not configured\n`);
+        }
+        this.services.set(parsed.name, parsed);
+        let mounted = "";
+        if (parsed.mountpoint) {
+            await this.#mountBrowserService(parsed, parsed.mountpoint);
+            mounted = ` mounted at ${parsed.mountpoint}`;
+        }
+        return success(`srv ${parsed.name} ${parsed.source}${mounted}\n`);
+    }
+
+    async #browserMount(words) {
+        const parsed = parseMountWords(words);
+        if (!parsed) {
+            return null;
+        }
+        if (parsed.error) {
+            return failure(parsed.error, 2);
+        }
+        const service = this.services.get(parsed.service);
+        if (!service) {
+            return null;
+        }
+        await this.#mountBrowserService(service, parsed.mountpoint);
+        return success(`mounted ${parsed.service} at ${parsed.mountpoint}\n`);
+    }
+
+    async #mountBrowserService(service, mountpoint) {
+        if (service.kind === "import") {
+            await this.system.mountImport(mountpoint, service.url, { targetOrigin: "*" });
+            return;
+        }
+        throw new Error(`unsupported browser service kind: ${service.kind}`);
     }
 
     async #startBrowserWorker(words) {
@@ -318,6 +370,67 @@ function stringifyOutput(value) {
         return textDecoder.decode(value);
     }
     return String(value ?? "");
+}
+
+function parseBrowserSrv(words) {
+    const args = words.slice(1);
+    let mount = false;
+    while (args[0]?.startsWith("-")) {
+        const flag = args.shift();
+        if (flag === "-m") {
+            mount = true;
+        } else {
+            return { error: `usage: srv [-m] <service-address> <name> [mountpoint]\n` };
+        }
+    }
+    if (args.length === 0) {
+        return null;
+    }
+    const source = args[0];
+    if (!isBrowserServiceSource(source)) {
+        return null;
+    }
+    if (args.length < 2 || args.length > 3 || (mount && args.length !== 3) || (!mount && args.length === 3)) {
+        return { error: "usage: srv [-m] <service-address> <name> [mountpoint]\n" };
+    }
+    const name = args[1];
+    const mountpoint = mount ? args[2] : null;
+    if (source.startsWith("import!")) {
+        const url = source.slice("import!".length);
+        if (!url) {
+            return { error: "srv: import service requires a url#system address\n" };
+        }
+        return { kind: "import", source, name, url, mountpoint };
+    }
+    if (source.startsWith("tcp!")) {
+        return { kind: "raw-tcp", source, name, mountpoint };
+    }
+    return { kind: "provider-missing", source, name, mountpoint };
+}
+
+function parseMountWords(words) {
+    const args = words.slice(1);
+    while (args[0]?.startsWith("-")) {
+        const flag = args.shift();
+        if (!["-a", "-b", "-c", "-n", "-C"].includes(flag)) {
+            return { error: "usage: mount [-a|-b|-c|-n|-C] <service> <mountpoint> [aname]\n" };
+        }
+    }
+    if (args.length === 0) {
+        return null;
+    }
+    if (args.length < 2) {
+        return { error: "usage: mount [-a|-b|-c|-n|-C] <service> <mountpoint> [aname]\n" };
+    }
+    return { service: args[0], mountpoint: args[1] };
+}
+
+function isBrowserServiceSource(source) {
+    return source.startsWith("import!")
+        || source.startsWith("tcp!")
+        || source.startsWith("ws!")
+        || source.startsWith("wss!")
+        || source.startsWith("webtransport!");
 }
 
 export function splitShellWords(line) {

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use star9_core::{clean_path, Error, ErrorKind, Result};
 use star9_rc::{
     RcCommandInvocation, RcCommandResult, RcError, RcHost, RcOutput, RcSession, RcStat, RcStatus,
@@ -120,6 +122,25 @@ impl RcHost for Star9RcHost {
             stderr: result.stderr,
         })
     }
+
+    fn load_environment(&mut self) -> star9_rc::RcResult<Option<BTreeMap<String, Vec<u8>>>> {
+        Ok(Some(self.host.runtime().env_registry().snapshot()))
+    }
+
+    fn store_environment(&mut self, env: &BTreeMap<String, Vec<u8>>) -> star9_rc::RcResult<()> {
+        self.host.runtime().env_registry().replace_all(env.clone());
+        Ok(())
+    }
+
+    fn rfork(&mut self, flags: &str) -> star9_rc::RcResult<()> {
+        if flags.chars().all(|flag| flag == 'e') {
+            Ok(())
+        } else {
+            Err(RcError::new(format!(
+                "unsupported Star 9 rfork flags {flags}"
+            )))
+        }
+    }
 }
 
 pub struct RcShell {
@@ -218,6 +239,23 @@ mod tests {
         );
         assert!(out.status.is_success(), "{}", out.stderr);
         assert_eq!(out.stdout, "ok");
+    }
+
+    #[test]
+    fn rc_shell_syncs_environment_with_env_device() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        let mut rc = RcShell::new(host);
+        let out = rc.eval_line("color=(red blue); cat '#env/color'");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stdout, "red\0blue");
+
+        runtime
+            .env_registry()
+            .replace_all(BTreeMap::from([("shape".to_string(), b"circle".to_vec())]));
+        let out = rc.eval_line("echo $shape");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stdout, "circle\n");
     }
 
     #[test]

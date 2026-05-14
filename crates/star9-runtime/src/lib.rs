@@ -1,6 +1,7 @@
 //! Star 9 runtime composition.
 
 use std::collections::BTreeMap;
+use std::io::SeekFrom;
 use std::sync::{Arc, RwLock};
 
 mod devices;
@@ -13,8 +14,11 @@ use star9_core::{
     Result,
 };
 use star9_fs::{
-    directory_file, fs_ref, read_file, write_file, BoxFile, FileSystem, FsRef, MapFs, MemFs, Node,
+    directory_file, fs_ref, read_file, write_file, BoxFile, FileHandle, FileSystem, FsRef, MapFs,
+    MemFs, Node,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use star9_protocol::p9::TcpStreamTransport;
 use star9_protocol::p9::{LoopbackTransport, NinePClientFs, NinePServer, NinePTransport};
 use star9_task::{Task, TaskFs};
 use star9_vfs::{BindMode, Namespace};
@@ -27,6 +31,164 @@ pub use wasi::WasmiWasiHandler;
 pub use worker::{RuntimeProtocolHost, WorkerHost};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Clone, Default)]
+pub struct EnvRegistry {
+    entries: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
+}
+
+impl EnvRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> BTreeMap<String, Vec<u8>> {
+        self.entries.read().unwrap().clone()
+    }
+
+    pub fn replace_all(&self, entries: BTreeMap<String, Vec<u8>>) {
+        *self.entries.write().unwrap() = entries;
+    }
+
+    fn set(&self, name: String, data: Vec<u8>) {
+        self.entries.write().unwrap().insert(name, data);
+    }
+
+    fn get(&self, name: &str) -> Option<Vec<u8>> {
+        self.entries.read().unwrap().get(name).cloned()
+    }
+}
+
+impl FileSystem for EnvRegistry {
+    fn open(&self, _ctx: &FsContext, name: &str) -> Result<BoxFile> {
+        let name = clean_path(name);
+        if name == "." {
+            let entries = self
+                .entries
+                .read()
+                .unwrap()
+                .iter()
+                .map(|(name, data)| {
+                    DirEntry::new(name.clone(), Metadata::file(name, 0o666, data.len() as u64))
+                })
+                .collect();
+            return Ok(directory_file(Metadata::dir("env", 0o777), entries));
+        }
+        let key = env_key(&name)?;
+        let data = self
+            .get(&key)
+            .ok_or_else(|| Error::path("open", &key, ErrorKind::NotFound))?;
+        Ok(Box::new(EnvFile {
+            registry: self.clone(),
+            name: key,
+            data,
+            offset: 0,
+            dirty: false,
+        }))
+    }
+
+    fn stat(&self, _ctx: &FsContext, name: &str) -> Result<Metadata> {
+        let name = clean_path(name);
+        if name == "." {
+            return Ok(Metadata::dir("env", 0o777));
+        }
+        let key = env_key(&name)?;
+        let len = self
+            .get(&key)
+            .map(|data| data.len())
+            .ok_or_else(|| Error::path("stat", &key, ErrorKind::NotFound))?;
+        Ok(Metadata::file(base_name(&key), 0o666, len as u64))
+    }
+
+    fn create(&self, name: &str) -> Result<BoxFile> {
+        let key = env_key(name)?;
+        Ok(Box::new(EnvFile {
+            registry: self.clone(),
+            name: key,
+            data: Vec::new(),
+            offset: 0,
+            dirty: true,
+        }))
+    }
+
+    fn remove(&self, name: &str) -> Result<()> {
+        let key = env_key(name)?;
+        if self.entries.write().unwrap().remove(&key).is_some() {
+            Ok(())
+        } else {
+            Err(Error::path("remove", key, ErrorKind::NotFound))
+        }
+    }
+
+    fn chmod(&self, name: &str, _mode: FileMode) -> Result<()> {
+        let key = env_key(name)?;
+        if self.get(&key).is_some() {
+            Ok(())
+        } else {
+            Err(Error::path("chmod", key, ErrorKind::NotFound))
+        }
+    }
+}
+
+struct EnvFile {
+    registry: EnvRegistry,
+    name: String,
+    data: Vec<u8>,
+    offset: usize,
+    dirty: bool,
+}
+
+impl FileHandle for EnvFile {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.offset >= self.data.len() {
+            return Ok(0);
+        }
+        let n = buf.len().min(self.data.len() - self.offset);
+        buf[..n].copy_from_slice(&self.data[self.offset..self.offset + n]);
+        self.offset += n;
+        Ok(n)
+    }
+
+    fn write(&mut self, data: &[u8]) -> Result<usize> {
+        let end = self.offset + data.len();
+        if end > self.data.len() {
+            self.data.resize(end, 0);
+        }
+        self.data[self.offset..end].copy_from_slice(data);
+        self.offset = end;
+        self.dirty = true;
+        Ok(data.len())
+    }
+
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(offset) => offset as i64,
+            SeekFrom::End(offset) => self.data.len() as i64 + offset,
+            SeekFrom::Current(offset) => self.offset as i64 + offset,
+        };
+        if next < 0 {
+            return Err(ErrorKind::Invalid.into());
+        }
+        self.offset = next as usize;
+        Ok(self.offset as u64)
+    }
+
+    fn stat(&self) -> Result<Metadata> {
+        Ok(Metadata::file(
+            base_name(&self.name),
+            0o666,
+            self.data.len() as u64,
+        ))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        if self.dirty {
+            self.registry.set(self.name.clone(), self.data.clone());
+            self.dirty = false;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 struct ServiceEntry {
@@ -143,6 +305,7 @@ impl FileSystem for ServiceRegistry {
 pub struct Runtime {
     root: Task,
     task_fs: TaskFs,
+    env_registry: EnvRegistry,
     service_registry: ServiceRegistry,
     devices: devices::RuntimeDevices,
     execution_registry: ExecutionRegistry,
@@ -154,14 +317,20 @@ impl Runtime {
         let task_fs = TaskFs::new();
         let root = task_fs.alloc("auto", None)?;
         bind_core(&root, task_fs.clone())?;
+        let env_registry = EnvRegistry::new();
         let service_registry = ServiceRegistry::new();
-        bind_services_and_compatibility_dirs(&root, service_registry.clone())?;
+        bind_services_and_compatibility_dirs(
+            &root,
+            env_registry.clone(),
+            service_registry.clone(),
+        )?;
         let devices = bind_devices(&root)?;
         let execution_registry = ExecutionRegistry::new();
         let protocol_host = RuntimeProtocolHost::new(root.clone(), task_fs.clone());
         Ok(Self {
             root,
             task_fs,
+            env_registry,
             service_registry,
             devices,
             execution_registry,
@@ -187,6 +356,10 @@ impl Runtime {
 
     pub fn execution_registry(&self) -> ExecutionRegistry {
         self.execution_registry.clone()
+    }
+
+    pub fn env_registry(&self) -> EnvRegistry {
+        self.env_registry.clone()
     }
 
     pub fn service_registry(&self) -> ServiceRegistry {
@@ -260,6 +433,24 @@ impl Runtime {
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn register_tcp_9p_service(&self, source: &str, name: &str) -> Result<()> {
+        let addr = tcp_service_addr(source)?;
+        let stream = std::net::TcpStream::connect(&addr)
+            .map_err(|err| Error::Message(format!("connect {addr}: {err}")))?;
+        let client = NinePClientFs::connect(Arc::new(TcpStreamTransport::new(stream)))?;
+        self.register_service(
+            name,
+            fs_ref(client),
+            format!("tcp 9p service {source} as {}\n", service_key(name)?),
+        )
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn register_tcp_9p_service(&self, source: &str, _name: &str) -> Result<()> {
+        Err(Error::path("srv", source, ErrorKind::NotSupported))
+    }
+
     pub fn mount_service(&self, service: &str, dst: &str, mode: BindMode) -> Result<()> {
         let fs = self.service_registry.get(service)?;
         self.root.namespace().bind(fs, ".", dst, mode)
@@ -302,8 +493,13 @@ fn bind_core(root: &Task, task_fs: TaskFs) -> Result<()> {
 
 fn bind_services_and_compatibility_dirs(
     root: &Task,
+    env_registry: EnvRegistry,
     service_registry: ServiceRegistry,
 ) -> Result<()> {
+    root.namespace()
+        .bind(fs_ref(env_registry.clone()), ".", "#env", BindMode::Replace)?;
+    root.namespace()
+        .bind(fs_ref(env_registry), ".", "env", BindMode::Replace)?;
     root.namespace().bind(
         fs_ref(service_registry.clone()),
         ".",
@@ -334,6 +530,32 @@ fn service_key(input: &str) -> Result<String> {
         return Err(Error::path("srv", input, ErrorKind::Invalid));
     }
     Ok(key.to_string())
+}
+
+fn env_key(input: &str) -> Result<String> {
+    let trimmed = input.trim();
+    let path = trimmed.trim_start_matches('/');
+    let key = path
+        .strip_prefix("#env/")
+        .or_else(|| path.strip_prefix("env/"))
+        .unwrap_or(path);
+    if key.is_empty() || key == "." || key.contains('/') || !valid_path(key) {
+        return Err(Error::path("env", input, ErrorKind::Invalid));
+    }
+    Ok(key.to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tcp_service_addr(source: &str) -> Result<String> {
+    let Some(rest) = source.strip_prefix("tcp!") else {
+        return Err(Error::path("srv", source, ErrorKind::NotSupported));
+    };
+    let parts = rest.split('!').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [host, port] if !host.is_empty() && !port.is_empty() => Ok(format!("{host}:{port}")),
+        [host] if !host.is_empty() => Err(Error::path("srv", source, ErrorKind::NotSupported)),
+        _ => Err(Error::path("srv", source, ErrorKind::Invalid)),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -439,7 +661,7 @@ mod tests {
             .into_iter()
             .map(|entry| entry.name)
             .collect();
-        assert_eq!(root_entries, vec!["mnt", "n", "srv"]);
+        assert_eq!(root_entries, vec!["env", "mnt", "n", "srv"]);
         assert!(read_dir(runtime.namespace().as_ref(), "#task").is_ok());
         assert!(read_dir(runtime.namespace().as_ref(), "#pipe").is_ok());
         assert!(read_dir(runtime.namespace().as_ref(), "#term").is_ok());
@@ -784,6 +1006,10 @@ mod tests {
             root_entries.contains(&"srv".to_string()),
             "{root_entries:?}"
         );
+        assert!(
+            root_entries.contains(&"env".to_string()),
+            "{root_entries:?}"
+        );
         assert!(root_entries.contains(&"n".to_string()), "{root_entries:?}");
         assert!(
             root_entries.contains(&"mnt".to_string()),
@@ -800,6 +1026,29 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&read_file(ns.as_ref(), "srv/rootfs").unwrap())
                 .contains("loopback root namespace export")
+        );
+    }
+
+    #[test]
+    fn runtime_installs_env_registry() {
+        let runtime = Runtime::new().unwrap();
+        runtime
+            .env_registry()
+            .replace_all(BTreeMap::from([("name".to_string(), b"one\0two".to_vec())]));
+        assert_eq!(
+            read_file(runtime.namespace().as_ref(), "#env/name").unwrap(),
+            b"one\0two"
+        );
+        write_file(
+            runtime.namespace().as_ref(),
+            "env/color",
+            b"blue",
+            FileMode::from_perm(0o666),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime.env_registry().snapshot().get("color").cloned(),
+            Some(b"blue".to_vec())
         );
     }
 

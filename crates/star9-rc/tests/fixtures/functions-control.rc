@@ -1,0 +1,10 @@
+# Independently authored Star 9 rc compatibility fixture.
+fn twice {
+    echo $1 $1
+}
+for(i in one two) {
+    twice $i
+}
+if(~ two t*) {
+    echo matched
+}

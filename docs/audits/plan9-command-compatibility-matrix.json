@@ -8,26 +8,26 @@
       "surface": "star9-shell command, reachable from star9 rc external command dispatch",
       "implementation": "ShellHost::bind_path over star9-vfs::Namespace::bind",
       "supported_forms": ["bind src dst", "bind -a src dst", "bind -b src dst", "bind -c src dst"],
-      "evidence": ["shell_binds_and_unmounts_namespace_paths", "shell_command_mode_runs_service_mount_commands"],
+      "evidence": ["shell_binds_and_unmounts_namespace_paths", "shell_command_mode_runs_service_mount_commands", "rc_runs_userland_namespace_fixture"],
       "notes": "-c is accepted as a compatibility flag; namespace creation remains governed by Star 9 filesystem behavior."
     },
     {
       "command": "unmount",
       "status": "implemented",
       "surface": "star9-shell command, reachable from star9 rc external command dispatch",
-      "implementation": "ShellHost::unmount_path over star9-vfs::Namespace::unbind_path",
+      "implementation": "ShellHost::unmount_path over star9-vfs::Namespace::unbind_path and ShellHost::unmount_binding over Namespace::unbind_source_path",
       "supported_forms": ["unmount dst", "unmount src dst"],
-      "evidence": ["unbind_path_removes_exact_mountpoint", "shell_binds_and_unmounts_namespace_paths"],
-      "notes": "The two-argument form removes the destination mountpoint. Source-specific unmount by filesystem identity remains a future precision improvement if scripts require it."
+      "evidence": ["unbind_path_removes_exact_mountpoint", "unbind_source_path_removes_one_layer", "shell_binds_and_unmounts_namespace_paths", "shell_unmount_can_remove_one_source_layer", "rc_runs_userland_namespace_fixture"],
+      "notes": "The one-argument form removes the destination mountpoint. The two-argument form removes only bind layers whose recorded source path matches src, avoiding pointer-identity surprises for namespace self-binds."
     },
     {
       "command": "srv",
       "status": "implemented-with-provider-limits",
-      "surface": "star9-shell command, #srv and /srv service registry files",
-      "implementation": "Runtime::register_loopback_service plus ServiceRegistry",
-      "supported_forms": ["srv", "srv name", "srv root name", "srv self name", "srv loopback name", "srv -m root name mountpoint"],
-      "evidence": ["runtime_installs_service_registry_and_compatibility_dirs", "shell_registers_and_mounts_loopback_services", "rc_shell_can_use_star9_service_mount_commands", "rc_shell_reports_unavailable_plan9_service_providers"],
-      "notes": "Loopback Star 9 namespace exports are implemented by default. Network service providers such as tcp!host are precise provider-missing errors until a configured native/browser transport is installed."
+      "surface": "star9-shell command, #srv and /srv service registry files, browser shell controller import services",
+      "implementation": "Runtime::register_loopback_service, Runtime::register_tcp_9p_service, ServiceRegistry, and browser import service registration",
+      "supported_forms": ["srv", "srv name", "srv root name", "srv self name", "srv loopback name", "srv -m root name mountpoint", "srv tcp!host!port name on native hosts", "srv import!url#system name in browser shell", "srv -m import!url#system name mountpoint in browser shell"],
+      "evidence": ["runtime_installs_service_registry_and_compatibility_dirs", "shell_registers_and_mounts_loopback_services", "shell_srv_mounts_native_tcp_9p_service", "rc_shell_can_use_star9_service_mount_commands", "rc_shell_reports_unavailable_plan9_service_providers", "rc_runs_userland_namespace_fixture", "Star9ShellController registers browser import services and mounts them through mount"],
+      "notes": "Loopback Star 9 namespace exports are implemented by default. Native tcp!host!port registers a 9P client service through TcpStreamTransport when explicitly used. Browser raw TCP remains unavailable; browser services use import!/MessagePort now and should use WebSocket/WebTransport-shaped providers later."
     },
     {
       "command": "mount",
@@ -35,7 +35,7 @@
       "surface": "star9-shell command over service registry and namespace binds",
       "implementation": "Runtime::mount_service over ServiceRegistry::get and Namespace::bind",
       "supported_forms": ["mount service mountpoint", "mount -a service mountpoint", "mount -b service mountpoint", "mount -c service mountpoint [aname]", "mount -n service mountpoint [aname]", "mount -C service mountpoint [aname]"],
-      "evidence": ["runtime_mounts_registered_services", "shell_registers_and_mounts_loopback_services", "rc_shell_can_use_star9_service_mount_commands", "rc_command_mode_runs_service_mount_commands"],
+      "evidence": ["runtime_mounts_registered_services", "shell_registers_and_mounts_loopback_services", "rc_shell_can_use_star9_service_mount_commands", "rc_command_mode_runs_service_mount_commands", "rc_runs_userland_namespace_fixture"],
       "notes": "Service lookup accepts names plus srv/name or #srv/name forms. Auth/create flags are accepted where they do not change Star 9's local mount semantics."
     },
     {
@@ -58,6 +58,16 @@
     }
   ],
   "namespace_surfaces": [
+    {
+      "path": "#env",
+      "status": "implemented",
+      "notes": "Hidden environment registry device. Entries are NUL-separated list variables; fn#name entries represent exported rc functions."
+    },
+    {
+      "path": "env",
+      "status": "implemented",
+      "notes": "Visible compatibility bind to #env for scripts expecting /env-style access."
+    },
     {
       "path": "#srv",
       "status": "implemented",

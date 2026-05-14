@@ -86,6 +86,7 @@ enum AcceptanceCommand {
     Worker,
     Native,
     NativeP9,
+    NativeSrv,
     NativeTcp,
     All,
 }
@@ -352,6 +353,7 @@ fn render_acceptance_output(suite: AcceptanceCommand) -> Result<String> {
         AcceptanceCommand::Worker => render_worker_acceptance(),
         AcceptanceCommand::Native => render_native_acceptance(),
         AcceptanceCommand::NativeP9 => render_native_p9_acceptance(),
+        AcceptanceCommand::NativeSrv => render_native_srv_acceptance(),
         AcceptanceCommand::NativeTcp => render_native_tcp_acceptance(),
         AcceptanceCommand::All => Ok(format!(
             "{}{}{}{}",
@@ -570,6 +572,67 @@ fn render_native_p9_acceptance() -> Result<String> {
 fn render_native_p9_acceptance() -> Result<String> {
     Err(star9_core::Error::Message(
         "native 9p acceptance requires a non-wasm host".into(),
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_native_srv_acceptance() -> Result<String> {
+    use std::net::TcpListener;
+    use std::thread;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|err| star9_core::Error::Message(format!("native srv bind failed: {err}")))?;
+    let addr = listener.local_addr().map_err(|err| {
+        star9_core::Error::Message(format!("native srv local_addr failed: {err}"))
+    })?;
+    let server = NinePServer::new(fs_ref(MemFs::from_entries([(
+        "hello.txt",
+        b"native-srv".to_vec(),
+    )])));
+
+    let serving = thread::spawn(move || -> Result<usize> {
+        let (stream, _) = listener.accept().map_err(|err| {
+            star9_core::Error::Message(format!("native srv accept failed: {err}"))
+        })?;
+        let mut reader = stream
+            .try_clone()
+            .map_err(|err| star9_core::Error::Message(format!("native srv clone failed: {err}")))?;
+        let mut writer = stream;
+        serve_frame_stream(&server, &mut reader, &mut writer)
+    });
+
+    let output = {
+        let runtime = Runtime::new()?;
+        let host = RuntimeShellHost::new(runtime).with_writable_workspace()?;
+        let mut shell = ShellSession::new(host);
+        let result = shell.eval_line(&format!(
+            "srv tcp!127.0.0.1!{} rem; mount rem n/rem; cat n/rem/hello.txt; unmount n/rem; rm #srv/rem",
+            addr.port()
+        ));
+        if result.status != 0 {
+            return Err(star9_core::Error::Message(format!(
+                "native srv shell failed: {}",
+                result.stderr.trim()
+            )));
+        }
+        result.stdout
+    };
+    let served = serving
+        .join()
+        .map_err(|_| star9_core::Error::Message("native srv server thread panicked".into()))??;
+
+    Ok(format!(
+        "native-srv addr={} read={} frames={}\n",
+        addr,
+        output.trim(),
+        served
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn render_native_srv_acceptance() -> Result<String> {
+    Err(star9_core::Error::Message(
+        "native srv acceptance requires a non-wasm host".into(),
     ))
 }
 

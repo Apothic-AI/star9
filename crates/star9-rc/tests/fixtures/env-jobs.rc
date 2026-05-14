@@ -1,0 +1,5 @@
+# Independently authored Star 9 rc compatibility fixture.
+x=(one two)
+echo $x(2)
+echo job &
+wait

@@ -123,6 +123,88 @@ test("Star9ShellController handles StarFS browser mount commands without bypassi
     }]);
 });
 
+test("Star9ShellController registers browser import services and mounts them through mount", async () => {
+    const calls = [];
+    const mounts = [];
+    const controller = createStar9Shell({
+        mountImport(path, url, options) {
+            mounts.push({ path, url, options });
+        },
+    }, {
+        shell: {
+            eval(line) {
+                calls.push(line);
+                return { status: 0, stdout: "core\n", stderr: "" };
+            },
+            prompt() {
+                return "star9:.$ ";
+            },
+            cwd() {
+                return ".";
+            },
+        },
+    });
+
+    assert.deepEqual(await controller.eval("srv import!./export.html#star9 rem"), {
+        status: 0,
+        stdout: "srv rem import!./export.html#star9\n",
+        stderr: "",
+    });
+    assert.deepEqual(await controller.eval("mount rem n/rem"), {
+        status: 0,
+        stdout: "mounted rem at n/rem\n",
+        stderr: "",
+    });
+    assert.deepEqual(mounts, [{
+        path: "n/rem",
+        url: "./export.html#star9",
+        options: { targetOrigin: "*" },
+    }]);
+    assert.deepEqual(calls, []);
+});
+
+test("Star9ShellController can srv -m a browser import service", async () => {
+    const mounts = [];
+    const controller = createStar9Shell({
+        mountImport(path, url, options) {
+            mounts.push({ path, url, options });
+        },
+    }, {
+        shell: {
+            eval() {
+                throw new Error("core shell should not run browser import srv");
+            },
+        },
+    });
+
+    assert.deepEqual(await controller.eval("srv -m import!./export.html#star9 rem n/rem"), {
+        status: 0,
+        stdout: "srv rem import!./export.html#star9 mounted at n/rem\n",
+        stderr: "",
+    });
+    assert.deepEqual(mounts, [{
+        path: "n/rem",
+        url: "./export.html#star9",
+        options: { targetOrigin: "*" },
+    }]);
+});
+
+test("Star9ShellController keeps raw browser TCP unavailable", async () => {
+    const controller = createStar9Shell({}, {
+        shell: {
+            eval() {
+                throw new Error("core shell should not run browser tcp srv");
+            },
+        },
+    });
+
+    assert.deepEqual(await controller.eval("srv tcp!host!564 rem"), {
+        status: 1,
+        stdout: "",
+        stderr: "srv: tcp!host!564: raw TCP is not available in browsers\n",
+    });
+});
+
 test("Star9ShellController reports unavailable OPFS as a command error", async () => {
     const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
     Object.defineProperty(globalThis, "navigator", {

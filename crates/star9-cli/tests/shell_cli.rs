@@ -140,6 +140,47 @@ fn rc_command_mode_runs_service_mount_commands() {
 }
 
 #[test]
+fn rc_runs_checked_in_compatibility_corpus_fixture() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/star9-rc/tests/fixtures/functions-control.rc");
+    let output = Command::new(env!("CARGO_BIN_EXE_star9"))
+        .arg("rc")
+        .arg(&fixture)
+        .output()
+        .expect("star9 rc fixture runs");
+
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "one one\ntwo two\nmatched\n"
+    );
+}
+
+#[test]
+fn rc_runs_userland_namespace_fixture() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/userland-namespace.rc");
+    let output = Command::new(env!("CARGO_BIN_EXE_star9"))
+        .arg("rc")
+        .arg(&fixture)
+        .output()
+        .expect("star9 rc userland fixture runs");
+
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\nok\npath-ok\n");
+}
+
+#[test]
 fn rc_script_mode_sets_argv0_and_script_args() {
     let id = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -2,7 +2,19 @@
 
 ## Current Focus
 
-Finish the Star 9 rc feature completion sprint while keeping the Rust tree primary, Plan 9-aligned, deterministic by default, reusable as crates, and free of GPL or Go runtime/build dependencies.
+Finish the Star 9 rc/userland depth sprint while keeping the Rust tree primary, Plan 9-aligned, deterministic by default, reusable as crates, and free of GPL or Go runtime/build dependencies.
+
+Current rc/userland depth contract:
+
+- Keep rc script compatibility evidence license-clean: Star 9 owns its fixtures, while 9front/plan9port scripts remain external oracle/reference inputs unless licensing and attribution are explicitly handled.
+- Preserve the standalone `star9-rc` crate boundary. Userland behavior should be expressed through host traits and Star 9 adapters, not by adding Star 9 runtime dependencies to the language crate.
+- Expose Plan 9 environment state through `#env` plus visible `env`, with list variables represented as NUL-separated entries and functions represented as `fn#name` entries where exported.
+- Tighten rc built-ins so `builtin`, `flag`, `wait`, `whatis`, `exec`, `rfork`, and environment import/export have stable, tested behavior under current Star 9 host limits.
+- Make source-specific `unmount src dst` remove only matching bind layers while preserving destination-only `unmount dst`.
+- Make native `srv tcp!host!port name` real on native hosts by registering a 9P client service in `#srv`, while keeping browser raw TCP explicitly unavailable.
+- Add browser service compatibility for honest browser transports: `srv import!url#system name` and `mount name path` route through the existing cross-document import/MessagePort 9P boundary; WebSocket/WebTransport providers stay documented provider hooks.
+- Keep `dossrv` and `vacfs` as precise provider-missing commands until disk/partition and vac/Venti/archive providers exist.
+- Keep pipelines deterministic in the evaluator for now. Full OS-concurrent task/fd graph pipelines remain a future precision tranche tied to stronger task execution and job control.
 
 Current rc sprint contract:
 

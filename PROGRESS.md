@@ -2,6 +2,17 @@
 
 ## 2026-05-14
 
+- Continued the rc/userland depth sprint on `rc-userland-depth`.
+- Added a license-clean rc/userland fixture corpus under `crates/star9-rc/tests/fixtures`, covering functions/control flow, environment/jobs, redirection, pipelines, service commands, and namespace workflows without importing upstream scripts.
+- Added a runtime environment registry mounted at hidden `#env` and visible `env`. Rc variables are exported as NUL-separated entries, exported functions use `fn#name`, and Star 9 rc sessions import/export this surface through the host adapter.
+- Tightened rc built-ins under current Star 9 host limits: `wait` now reports deterministic background jobs, `builtin` dispatches to rc built-ins explicitly, `flag` has stable supported/unsupported behavior, and `rfork e` is routed to the host while unsupported flags fail precisely.
+- Added source-specific namespace unmount support with `Namespace::unbind_source_path`, preserving destination-only `unmount dst` and adding layered bind coverage so `unmount src dst` removes only one matching layer.
+- Added native 9P service resolution for `srv tcp!host!port name` on native hosts. The command connects with `TcpStreamTransport`, registers the imported filesystem in `#srv`, and can be mounted through ordinary `mount name n/name` semantics.
+- Added `cargo run -p star9-cli -- accept native-srv` as an opt-in native host-capability check. It serves a local 9P export over TCP, registers it through `srv tcp!127.0.0.1!port`, mounts it under `n`, reads through the mount, then unmounts and unregisters the service.
+- Added browser service command parity for honest browser transports: `srv import!url#system name` and `srv -m import!url#system name mountpoint` register/mount cross-document MessagePort 9P imports through the browser shell controller, while `tcp!` remains an explicit raw-browser-TCP error.
+- Added provider-design documentation for future `dossrv` and `vacfs` work so those commands remain provider-missing until real disk/partition and vac/Venti/archive services exist.
+- Documented the remaining rc process-graph boundary: pipelines, process substitution, background jobs, `wait`, `sigexit`, and host-routed `rfork e` are implemented deterministically; full concurrent external pipeline/job control waits for Star 9 task/fd graph plumbing.
+- Refreshed rc and Plan 9 command compatibility docs to show `#env`, source-specific unmount, native `srv tcp!host!port`, browser import services, and remaining host/provider boundaries.
 - Rebranded the project from its legacy name to Star 9 / `star9`, including Rust crate packages, crate directories, Rust module imports, CLI command metadata, browser custom elements, JS facade/helper names, namespace root naming, live-test environment variables, examples, fixtures, docs, and audit matrices.
 - Started the rc feature completion sprint on `rc-features`.
 - Added `crates/star9-rc`, a reusable rc language crate with no Star 9 runtime/web/CLI dependency. It owns lexer/parser/AST, rc list/status models, variable and positional expansion, rc quote handling, caret concatenation, command substitution, glob and pattern matching, evaluator control flow, functions, built-ins, redirection, pipelines, a fake host, and focused tests.

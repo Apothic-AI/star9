@@ -1,12 +1,12 @@
 # Star 9 Rc Feature Completion Sprint Plan
 
 Updated status: 2026-05-14  
-Implementation branch: `rc-features`  
-Latest implementation state: rc language parity, Plan 9 service command compatibility, and rc-first shell entry points are included in this branch.
+Implementation branch: `rc-userland-depth`  
+Latest implementation state: rc language parity, Plan 9 service command compatibility, rc-first shell entry points, environment-device integration, source-specific unmount, native 9P service import, and browser import service commands are included in this branch.
 
 ## Executive Status
 
-The rc language sprint is complete for the current Star 9 host model, and the first recommended Plan 9 command/service compatibility tranche has now landed.
+The rc language sprint is complete for the current Star 9 host model, and the recommended rc/userland depth tranche has now landed for offline and opt-in native/browser service paths.
 
 Current evidence:
 
@@ -16,12 +16,17 @@ Current evidence:
 - The smaller Star 9 admin parser remains explicitly available as `star9 shell --simple` and `<star9-shell simple>`.
 - `docs/audits/rc-compatibility-matrix.json` records current rc compatibility status.
 - `docs/audits/plan9-command-compatibility-matrix.json` records Plan 9 command/service compatibility status.
+- Checked-in Star 9-owned fixtures cover rc functions/control flow, environment/jobs, redirection/pipelines, and userland namespace/service flows.
 - The current 9front `rc/bin/9fs` script parses and runs its no-argument usage path under `star9 rc`.
 - Unquoted Plan 9 service addresses such as `tcp!9p.io` now remain single rc words.
 - `bind`, `unmount`, `srv`, and `mount` are available as Star 9 shell commands and therefore as rc external commands.
 - `srv` supports loopback Star 9 namespace exports by default through `#srv`/`srv`.
 - `mount` mounts registered services through ordinary Star 9 namespace binds, including `/n`-style paths represented as `n/...`.
-- `dossrv`, `vacfs`, and network service sources such as `tcp!host` now return precise provider-missing errors rather than unknown-command behavior.
+- `#env` and visible `env` expose rc environment entries as files; rc sessions import/export variables and functions through this surface.
+- Source-specific `unmount src dst` removes one matching bind layer rather than dropping the whole destination.
+- Native `srv tcp!host!port name` registers an imported 9P filesystem in `#srv` when explicitly used.
+- Browser shells support `srv import!url#system name` and `srv -m import!url#system name mountpoint` over the existing cross-document MessagePort/9P import boundary.
+- `dossrv` and `vacfs` now return precise provider-missing errors rather than unknown-command behavior.
 
 ## Current Compatibility Claim
 
@@ -117,7 +122,7 @@ Complete at reusable rc-core level.
 
 Remaining host/device work:
 
-- Add a mounted `#env` or `/env` Star 9 device surface if scripts need direct filesystem access to environment entries.
+- Star 9 now mounts hidden `#env` plus visible `env`; the rc adapter synchronizes variables/functions with this file surface.
 
 ### 6. Built-ins
 
@@ -142,16 +147,16 @@ Implemented or improved:
 - `whatis`
 - `~`
 
-Host-limited placeholders:
+Host-limited but stable:
 
-- `rfork`
-- `flag`
-- `builtin`
+- `rfork` supports host-routed supported flags and returns precise unsupported errors for unavailable namespace/process behavior.
+- `flag` returns stable no-op success for supported current shell flags and precise failure for unknown flags.
+- `builtin` explicitly dispatches to rc built-ins.
 
 Remaining work:
 
-- Exact `rfork` namespace/process semantics should wait for matching Star 9 provider behavior.
-- `flag` and exact `builtin` behavior can be tightened later if real scripts require their exact 9front/plan9port edge behavior.
+- Exact `rfork` namespace/env/fd/process sharing semantics should wait for matching Star 9 task/process behavior.
+- Exact 9front/plan9port edge formatting for `flag`, `builtin`, and `whatis` can be tightened later if real scripts require it.
 
 ### 7. `$path` Command Search And Dispatch
 
@@ -193,26 +198,26 @@ Implementation surface:
 
 ### 3. `unmount`
 
-Complete for destination-based unmount.
+Complete for destination-based and source-specific unmount.
 
 Supported:
 
 - `unmount dst`
-- `unmount src dst`, currently implemented as destination mountpoint removal
+- `unmount src dst`
 
 Implementation surface:
 
 - Added `star9-vfs::Namespace::unbind_path`
+- Added `star9-vfs::Namespace::unbind_source_path`
 - `ShellHost::unmount_path`
+- `ShellHost::unmount_binding`
 - Shell command available to rc external command dispatch
 
-Remaining precision work:
-
-- Source-specific unmount by filesystem identity can be added later if scripts need exact Plan 9 two-argument semantics.
+The two-argument form removes only bind layers whose recorded source path matches `src`, which avoids pointer-identity surprises for namespace self-binds.
 
 ### 4. `#srv` / `srv`
 
-Complete for loopback Star 9 services.
+Complete for loopback Star 9 services and opt-in native TCP 9P services.
 
 Implemented:
 
@@ -222,6 +227,7 @@ Implemented:
 - Service descriptor files
 - Service unregister via remove
 - Loopback root namespace exports
+- Native `tcp!host!port` 9P imports through `TcpStreamTransport`
 
 ### 5. `srv`
 
@@ -235,13 +241,16 @@ Supported:
 - `srv self name`
 - `srv loopback name`
 - `srv -m root name mountpoint`
+- `srv tcp!host!port name` on native hosts
+- browser shell `srv import!url#system name`
+- browser shell `srv -m import!url#system name mountpoint`
 
 Provider-limited:
 
-- `srv tcp!host name`
 - `srv -nqC tcp!host name /n/name`
+- browser `ws!`/`wss!`/`webtransport!` service addresses until configured providers exist
 
-Those return precise provider-missing errors until a native/browser network service provider is configured.
+Native `tcp!host!port` is implemented as a 9P service import. Browser raw TCP returns an explicit capability error because raw TCP is not a browser API.
 
 ### 6. `mount`
 
@@ -268,6 +277,8 @@ Complete for current defaults.
 
 Installed in the runtime root namespace:
 
+- `#env`
+- `env`
 - `#srv`
 - `srv`
 - `n`
@@ -297,15 +308,18 @@ Do not fully port these yet. They should be implemented when Star 9 has correspo
 ```sh
 cargo fmt
 cargo test -p star9-rc -p star9-vfs -p star9-runtime -p star9-shell -p star9-cli --tests
-cargo run -q -p star9-cli -- rc -c 'srv -nqC tcp!9p.io sources /n/sources'
+cargo test -p star9-cli --tests rc_runs_userland_namespace_fixture
+cargo run -q -p star9-cli -- rc -c 'shape=(circle square); cat #env/shape'
+cargo run -q -p star9-cli -- accept native-srv
 cargo run -q -p star9-cli -- shell -c 'srv root rootsrv; mount rootsrv n/root; ls #srv; ls n/root'
 cargo run -q -p star9-cli -- shell --simple -c 'mkdir demo; write demo/hello ok; cat demo/hello'
+node --test tests/browser-shell.test.mjs
 ```
 
-Expected provider-boundary behavior:
+Expected browser raw-TCP boundary behavior:
 
 ```text
-srv: tcp!9p.io: provider not configured for this Star 9 runtime
+srv: tcp!host!564: raw TCP is not available in browsers
 ```
 
 Expected loopback service behavior:
@@ -323,18 +337,17 @@ srv/
    - Build an independently authored fixture suite for common rc scripts that use `bind`, `unmount`, `srv`, and `mount`.
    - Keep 9front scripts as external references unless license/attribution is handled.
 
-2. Native/browser network service providers:
-   - Add configured providers for `srv tcp!host name` style flows.
-   - Route them through `#net`, 9P transports, service files, and ordinary namespace mounts.
+2. Browser network service providers:
+   - Add configured providers for `ws!`, `wss!`, and `webtransport!` service flows.
+   - Route them through `#net`-shaped resources, 9P transports, service files, and ordinary namespace mounts.
 
 3. Provider-backed commands:
    - Implement `dossrv` only after a disk/partition provider exists.
    - Implement `vacfs` only after a vac/Venti/archive provider exists.
 
 4. Exact edge semantics:
-   - Source-specific `unmount src dst` behavior.
    - Exact `rfork`, `flag`, `builtin`, and `whatis` edge parity where real script coverage requires it.
-   - A mounted `#env` or `/env` surface if scripts need direct environment-file access.
+   - Full OS-concurrent process/task pipeline graph behavior.
 
 ## Recommendation
 

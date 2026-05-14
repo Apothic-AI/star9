@@ -27,8 +27,8 @@
     {
       "feature": "evaluation-status-control-flow",
       "status": "implemented",
-      "evidence": ["functions_for_if_switch_and_status_work"],
-      "notes": "Supports sequencing, &&, ||, !, background status, if, for, while, switch, functions, and rc-style status strings including all-zero pipeline success."
+      "evidence": ["functions_for_if_switch_and_status_work", "background_wait_builtin_and_rfork_have_precise_behavior", "license_clean_rc_corpus_runs"],
+      "notes": "Supports sequencing, &&, ||, !, deterministic background jobs, wait reporting, if, for, while, switch, functions, and rc-style status strings including all-zero pipeline success. Pipelines remain deterministic evaluator pipelines, not OS-concurrent process graphs."
     },
     {
       "feature": "redirection-pipelines-here-docs",
@@ -45,19 +45,19 @@
     {
       "feature": "environment-and-notes",
       "status": "implemented-with-host-limits",
-      "evidence": ["environment_export_import_and_note_hooks_work"],
-      "notes": "Variables, local command assignments, zero-byte-separated environment export/import, fn#name function export/import, sigexit, and deliver_note(sig*) hooks are implemented in the reusable evaluator. A mounted #env device surface remains an adapter/device integration boundary."
+      "evidence": ["environment_export_import_and_note_hooks_work", "runtime_installs_env_registry", "rc_shell_syncs_environment_with_env_device", "license_clean_rc_corpus_runs"],
+      "notes": "Variables, local command assignments, zero-byte-separated environment export/import, fn#name function export/import, sigexit, and deliver_note(sig*) hooks are implemented in the reusable evaluator. Star 9 mounts a runtime #env/env device and the rc adapter imports/exports rc variables and functions through that file surface."
     },
     {
       "feature": "builtins",
-      "status": "partial",
-      "evidence": ["star9-rc/src/lib.rs"],
-      "notes": "Implements core builtins including ., basename, cd, echo, eval, exec, exit with sigexit, shift, status, test, wait, whatis, ~, true, false, plus host-limited rfork/flag/builtin placeholders. Exact rfork namespace semantics remain host-limited."
+      "status": "implemented-with-host-limits",
+      "evidence": ["background_wait_builtin_and_rfork_have_precise_behavior", "environment_export_import_and_note_hooks_work", "star9-rc/src/lib.rs"],
+      "notes": "Implements core builtins including ., basename, cd, echo, eval, exec, exit with sigexit, shift, status, test, wait, whatis, ~, true, false, explicit builtin dispatch, stable flag behavior, and host-routed rfork. Exact rfork namespace/env/fd/process sharing beyond supported flags remains host-limited."
     },
     {
       "feature": "external-command-search",
       "status": "implemented-with-host-limits",
-      "evidence": ["path_search_runs_rc_scripts_with_argv0_and_args", "rc_script_mode_sets_argv0_and_script_args", "crates/star9-shell/src/rc.rs", "cargo test -p star9-shell"],
+      "evidence": ["path_search_runs_rc_scripts_with_argv0_and_args", "rc_script_mode_sets_argv0_and_script_args", "rc_runs_userland_namespace_fixture", "crates/star9-shell/src/rc.rs", "cargo test -p star9-shell"],
       "notes": "External command execution is a host-trait operation. The reusable evaluator searches $path for rc scripts, sets $0/$*, and dispatches wasm/js-looking namespace files back to the host. The Star 9 adapter maps .wasm/.wat through wasi and .js/.mjs through worker while preserving deterministic opt-in host execution behavior."
     },
     {
@@ -69,8 +69,8 @@
     {
       "feature": "plan9-command-service-surface",
       "status": "implemented-with-provider-limits",
-      "evidence": ["docs/audits/plan9-command-compatibility-matrix.json", "rc_shell_can_use_star9_service_mount_commands", "rc_shell_reports_unavailable_plan9_service_providers", "rc_command_mode_runs_service_mount_commands"],
-      "notes": "The Star 9 adapter can run shell-visible `bind`, `unmount`, `srv`, and `mount` commands through namespace/service files. Loopback services are implemented by default; tcp/network, disk, and vac providers return precise provider-missing errors until corresponding Star 9 providers are configured."
+      "evidence": ["docs/audits/plan9-command-compatibility-matrix.json", "rc_shell_can_use_star9_service_mount_commands", "rc_shell_reports_unavailable_plan9_service_providers", "rc_command_mode_runs_service_mount_commands", "rc_runs_userland_namespace_fixture", "shell_unmount_can_remove_one_source_layer", "shell_srv_mounts_native_tcp_9p_service"],
+      "notes": "The Star 9 adapter can run shell-visible `bind`, source-specific `unmount`, `srv`, and `mount` commands through namespace/service files. Loopback services are implemented by default; native hosts can register tcp!host!port 9P services when explicitly used. Browser shell services support import!/MessagePort sources. Disk and vac providers return precise provider-missing errors until corresponding Star 9 providers are configured."
     },
     {
       "feature": "oracle-differential-tests",
