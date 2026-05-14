@@ -45,14 +45,14 @@
     {
       "feature": "environment-and-notes",
       "status": "implemented-with-host-limits",
-      "evidence": ["environment_export_import_and_note_hooks_work", "runtime_installs_env_registry", "rc_shell_syncs_environment_with_env_device", "rc_shell_notes_mark_active_provider_jobs", "license_clean_rc_corpus_runs"],
-      "notes": "Variables, local command assignments, zero-byte-separated environment export/import, fn#name function export/import, sigexit, and deliver_note(sig*) hooks are implemented in the reusable evaluator. Star 9 mounts a runtime #env/env device and the rc adapter imports/exports rc variables and functions through that file surface. Active provider-backed jobs receive deterministic signal:<note> graph state/status when notes are delivered."
+      "evidence": ["environment_export_import_and_note_hooks_work", "runtime_installs_env_registry", "rc_shell_syncs_environment_with_env_device", "rc_shell_notes_mark_active_provider_jobs", "license_clean_rc_corpus_runs", "rc_shell_rfork_default_copies_env_namespace_and_note_scope"],
+      "notes": "Variables, local command assignments, zero-byte-separated environment export/import, fn#name function export/import, sigexit, and deliver_note(sig*) hooks are implemented in the reusable evaluator. Star 9 mounts a runtime #env/env device and the rc adapter imports/exports rc variables and functions through that file surface. rfork e/E copy or clear the Star 9 rc env group and rebind #env/env where visible. Active provider-backed jobs receive deterministic signal:<note> graph state/status when notes are delivered."
     },
     {
       "feature": "builtins",
       "status": "implemented-with-host-limits",
-      "evidence": ["background_wait_builtin_and_rfork_have_precise_behavior", "environment_export_import_and_note_hooks_work", "star9-rc/src/lib.rs"],
-      "notes": "Implements core builtins including ., basename, cd, echo, eval, exec, exit with sigexit, shift, status, test, wait, whatis, ~, true, false, explicit builtin dispatch, stable flag behavior, and host-routed rfork. Exact rfork namespace/env/fd/process sharing beyond supported flags remains host-limited."
+      "evidence": ["background_wait_builtin_and_rfork_have_precise_behavior", "environment_export_import_and_note_hooks_work", "rc_shell_rfork_default_copies_env_namespace_and_note_scope", "rc_shell_rfork_clean_environment_and_namespace_are_observable", "rc_shell_rfork_fd_and_nomount_scopes_are_observable"],
+      "notes": "Implements core builtins including ., basename, cd, echo, eval, exec, exit with sigexit, shift, status, test, wait, whatis, ~, true, false, explicit builtin dispatch, stable flag behavior, and host-routed rfork. Star 9 rfork implements Plan 9 rc nNeEsfFm scope changes where Star 9 can make them visible through task namespaces, env devices, fd tables, note groups, and no-mount/no-# path checks."
     },
     {
       "feature": "external-command-search",

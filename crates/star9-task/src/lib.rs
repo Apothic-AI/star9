@@ -101,6 +101,17 @@ impl Task {
         } else {
             Arc::new(Namespace::new())
         };
+        Self::new_with_namespace(fsys, id, kind, driver, parent, ns)
+    }
+
+    fn new_with_namespace(
+        fsys: TaskFs,
+        id: u32,
+        kind: String,
+        driver: DriverRef,
+        parent: Option<Task>,
+        ns: Arc<Namespace>,
+    ) -> Self {
         Self {
             inner: Arc::new(TaskInner {
                 fsys,
@@ -282,6 +293,23 @@ impl Task {
             .iter()
             .map(|(fd, file)| (*fd, file.path.clone()))
             .collect()
+    }
+
+    pub fn clear_fds(&self) -> Result<()> {
+        let files = std::mem::take(&mut self.inner.fds.lock().unwrap().files);
+        for (_, mut file) in files {
+            file.file.close()?;
+        }
+        Ok(())
+    }
+
+    pub fn reopen_fds_from(&self, source: &Task) -> Result<()> {
+        let entries = source.fd_entries();
+        for (fd, path) in entries {
+            let file = source.namespace().open(&FsContext::new(), &path)?;
+            self.set_fd(fd, file, path);
+        }
+        Ok(())
     }
 
     pub fn close_fd(&self, fd: u32) -> Result<()> {
@@ -641,6 +669,29 @@ impl TaskFs {
     }
 
     pub fn alloc(&self, kind: &str, parent: Option<Task>) -> Result<Task> {
+        let parent = parent.or_else(|| self.inner.resources.read().unwrap().get("1").cloned());
+        self.alloc_with_parent_and_namespace(kind, parent, None)
+    }
+
+    pub fn alloc_with_namespace(
+        &self,
+        kind: &str,
+        parent: Option<Task>,
+        namespace: Arc<Namespace>,
+    ) -> Result<Task> {
+        self.alloc_with_parent_and_namespace(kind, parent, Some(namespace))
+    }
+
+    pub fn alloc_clean_namespace(&self, kind: &str) -> Result<Task> {
+        self.alloc_with_parent_and_namespace(kind, None, Some(Arc::new(Namespace::new())))
+    }
+
+    fn alloc_with_parent_and_namespace(
+        &self,
+        kind: &str,
+        parent: Option<Task>,
+        namespace: Option<Arc<Namespace>>,
+    ) -> Result<Task> {
         let driver = self
             .inner
             .drivers
@@ -649,12 +700,22 @@ impl TaskFs {
             .get(kind)
             .cloned()
             .ok_or(ErrorKind::NotFound)?;
-        let parent = parent.or_else(|| self.inner.resources.read().unwrap().get("1").cloned());
         let mut next = self.inner.next_id.lock().unwrap();
         *next += 1;
         let id = *next;
         drop(next);
-        let task = Task::new(self.clone(), id, kind.to_string(), driver, parent);
+        let task = if let Some(namespace) = namespace {
+            Task::new_with_namespace(
+                self.clone(),
+                id,
+                kind.to_string(),
+                driver,
+                parent,
+                namespace,
+            )
+        } else {
+            Task::new(self.clone(), id, kind.to_string(), driver, parent)
+        };
         self.inner
             .resources
             .write()

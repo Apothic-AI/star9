@@ -2,6 +2,10 @@
 
 ## 2026-05-14
 
+- Continued from clean `staging` with a focused rc `rfork` precision tranche.
+- Added a host-neutral `RcRforkSpec`/`RcRforkOutcome` contract to `star9-rc`, including Plan 9 rc flag parsing for `nNeEsfFm` and default `ens`.
+- Added Star 9 task-scope controls for rc `rfork`: copied and clean namespaces, copied and clean env registries with `#env`/`env` rebinding where visible, copied and clean fd scopes, note-group isolation for active jobs, and no-mount/no-`#` path enforcement for `m`.
+- Added tests proving `rfork` default env/namespace isolation, `rfork E`, `rfork N`, `rfork f`, `rfork F`, and `rfork m` through observable Star 9 files/task state.
 - Started the rc process graph completion sprint on `rc-process-graph-completion`.
 - Added append-aware runtime fd descriptors and updated execution fd installation so file descriptors use create/truncate/append semantics while pipe descriptors keep live pipe endpoints.
 - Extended provider-backed rc executable stages to carry representable redirects into task fd descriptors: file read/write/append, fd close, selected pipe fds, and executable process substitution now stay on the graph path when possible.

@@ -303,6 +303,102 @@ pub struct RcStartedProcessJob {
     pub id: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RcRforkNamespace {
+    #[default]
+    Shared,
+    Copy,
+    Clean,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RcRforkEnvironment {
+    #[default]
+    Shared,
+    Copy,
+    Clean,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RcRforkFd {
+    #[default]
+    Shared,
+    Copy,
+    Clean,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RcRforkSpec {
+    pub raw: String,
+    pub namespace: RcRforkNamespace,
+    pub environment: RcRforkEnvironment,
+    pub fds: RcRforkFd,
+    pub new_note_group: bool,
+    pub no_mount: bool,
+}
+
+impl RcRforkSpec {
+    pub fn parse(args: &[String]) -> RcResult<Self> {
+        let raw = if args.is_empty() {
+            "ens".to_string()
+        } else {
+            args.join("")
+        };
+        let mut spec = Self {
+            raw: raw.clone(),
+            ..Self::default()
+        };
+        for flag in raw.chars() {
+            match flag {
+                'n' if spec.namespace != RcRforkNamespace::Clean => {
+                    spec.namespace = RcRforkNamespace::Copy;
+                }
+                'N' if spec.namespace != RcRforkNamespace::Copy => {
+                    spec.namespace = RcRforkNamespace::Clean;
+                }
+                'n' | 'N' => {
+                    return Err(RcError::new("rfork flags n and N are mutually exclusive"));
+                }
+                'e' if spec.environment != RcRforkEnvironment::Clean => {
+                    spec.environment = RcRforkEnvironment::Copy;
+                }
+                'E' if spec.environment != RcRforkEnvironment::Copy => {
+                    spec.environment = RcRforkEnvironment::Clean;
+                }
+                'e' | 'E' => {
+                    return Err(RcError::new("rfork flags e and E are mutually exclusive"));
+                }
+                'f' if spec.fds != RcRforkFd::Clean => {
+                    spec.fds = RcRforkFd::Copy;
+                }
+                'F' if spec.fds != RcRforkFd::Copy => {
+                    spec.fds = RcRforkFd::Clean;
+                }
+                'f' | 'F' => {
+                    return Err(RcError::new("rfork flags f and F are mutually exclusive"));
+                }
+                's' => spec.new_note_group = true,
+                'm' => spec.no_mount = true,
+                other => return Err(RcError::new(format!("unsupported rfork flag {other}"))),
+            }
+        }
+        Ok(spec)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RcRforkEnvironmentOutcome {
+    #[default]
+    Unchanged,
+    Reload,
+    Cleared,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RcRforkOutcome {
+    pub environment: RcRforkEnvironmentOutcome,
+}
+
 pub trait RcHost {
     fn current_dir(&self) -> String;
     fn set_current_dir(&mut self, path: &str) -> RcResult<()>;
@@ -352,11 +448,24 @@ pub trait RcHost {
     ) -> RcResult<Option<RcStartedProcessJob>> {
         Ok(None)
     }
-    fn rfork(&mut self, flags: &str) -> RcResult<()> {
-        if flags.chars().all(|flag| flag == 'e') {
-            Ok(())
+    fn rfork(&mut self, spec: &RcRforkSpec) -> RcResult<RcRforkOutcome> {
+        if spec.namespace == RcRforkNamespace::Shared
+            && spec.fds == RcRforkFd::Shared
+            && !spec.new_note_group
+            && !spec.no_mount
+        {
+            Ok(RcRforkOutcome {
+                environment: match spec.environment {
+                    RcRforkEnvironment::Shared => RcRforkEnvironmentOutcome::Unchanged,
+                    RcRforkEnvironment::Copy => RcRforkEnvironmentOutcome::Reload,
+                    RcRforkEnvironment::Clean => RcRforkEnvironmentOutcome::Cleared,
+                },
+            })
         } else {
-            Err(RcError::new(format!("unsupported rfork flags {flags}")))
+            Err(RcError::new(format!(
+                "unsupported rfork flags {}",
+                spec.raw
+            )))
         }
     }
 }
@@ -1505,6 +1614,12 @@ impl<H: RcHost> RcSession<H> {
         self.refresh_arg_vars();
     }
 
+    fn replace_environment_without_publish(&mut self, env: BTreeMap<String, Vec<u8>>) {
+        self.vars.clear();
+        self.functions.clear();
+        self.import_environment_without_publish(env);
+    }
+
     fn eval_nodes(&mut self, nodes: &[Node], input: String) -> RcOutput {
         let mut out = RcOutput::default();
         let mut current_input = input;
@@ -2357,9 +2472,29 @@ impl<H: RcHost> RcSession<H> {
     }
 
     fn run_rfork(&mut self, args: &[String]) -> RcOutput {
-        let flags = args.join("");
-        match self.host.rfork(&flags) {
-            Ok(()) => RcOutput::default(),
+        let spec = match RcRforkSpec::parse(args) {
+            Ok(spec) => spec,
+            Err(err) => return RcOutput::failure("rfork", format!("rfork: {err}\n")),
+        };
+        match self.host.rfork(&spec) {
+            Ok(outcome) => {
+                match outcome.environment {
+                    RcRforkEnvironmentOutcome::Unchanged => {}
+                    RcRforkEnvironmentOutcome::Reload => match self.host.load_environment() {
+                        Ok(Some(env)) => self.replace_environment_without_publish(env),
+                        Ok(None) => {}
+                        Err(err) => {
+                            return RcOutput::failure("rfork", format!("rfork: {err}\n"));
+                        }
+                    },
+                    RcRforkEnvironmentOutcome::Cleared => {
+                        self.vars.clear();
+                        self.functions.clear();
+                        self.refresh_arg_vars();
+                    }
+                }
+                RcOutput::default()
+            }
             Err(err) => RcOutput::failure("rfork", format!("rfork: {err}\n")),
         }
     }
@@ -3286,6 +3421,20 @@ pub mod fake {
                 _ => Err(RcError::new("command not found")),
             }
         }
+
+        fn rfork(&mut self, spec: &RcRforkSpec) -> RcResult<RcRforkOutcome> {
+            if spec.namespace == RcRforkNamespace::Clean {
+                self.files.clear();
+                self.cwd = ".".into();
+            }
+            Ok(RcRforkOutcome {
+                environment: match spec.environment {
+                    RcRforkEnvironment::Shared => RcRforkEnvironmentOutcome::Unchanged,
+                    RcRforkEnvironment::Copy => RcRforkEnvironmentOutcome::Reload,
+                    RcRforkEnvironment::Clean => RcRforkEnvironmentOutcome::Cleared,
+                },
+            })
+        }
     }
 
     fn clean(path: &str) -> String {
@@ -3466,7 +3615,14 @@ mod tests {
         let out = rc.eval_source("builtin echo ok; rfork e; rfork z");
         assert!(!out.status.is_success());
         assert_eq!(out.stdout, "ok\n");
-        assert!(out.stderr.contains("unsupported rfork flags z"));
+        assert!(out.stderr.contains("unsupported rfork flag z"));
+
+        let out = rc.eval_source("rfork; echo default-ok; rfork nN");
+        assert!(!out.status.is_success());
+        assert_eq!(out.stdout, "default-ok\n");
+        assert!(out
+            .stderr
+            .contains("rfork flags n and N are mutually exclusive"));
     }
 
     #[test]

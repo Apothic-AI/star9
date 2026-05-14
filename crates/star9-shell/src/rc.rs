@@ -21,8 +21,11 @@ use star9_rc::RcExecutableStageSpec;
 use star9_rc::{
     RcCommandInvocation, RcCommandResult, RcError, RcExecutableGraphSpec, RcFdBindingSpec, RcHost,
     RcOutput, RcProcessGraphKind, RcProcessGraphRecord, RcProcessGraphSpec, RcProcessJobResult,
-    RcProcessStageOutcome, RcProcessStageRecord, RcSession, RcStartedProcessJob, RcStat, RcStatus,
+    RcProcessStageOutcome, RcProcessStageRecord, RcRforkEnvironment, RcRforkEnvironmentOutcome,
+    RcRforkFd, RcRforkNamespace, RcRforkOutcome, RcRforkSpec, RcSession, RcStartedProcessJob,
+    RcStat, RcStatus,
 };
+use star9_runtime::EnvRegistry;
 #[cfg(not(target_arch = "wasm32"))]
 use star9_runtime::WasmiWasiHandler;
 use star9_task::Task;
@@ -38,8 +41,10 @@ pub type Star9RcSession = RcSession<Star9RcHost>;
 #[derive(Clone)]
 pub struct Star9RcHost {
     host: RuntimeShellHost,
+    env_registry: EnvRegistry,
     cwd: String,
     next_graph_id: u32,
+    note_group: u64,
     #[cfg(not(target_arch = "wasm32"))]
     running_jobs: Arc<Mutex<BTreeMap<u32, RunningJob>>>,
 }
@@ -48,6 +53,7 @@ pub struct Star9RcHost {
 struct RunningJob {
     receiver: mpsc::Receiver<RcProcessJobResult>,
     control: Arc<JobControl>,
+    note_group: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -106,10 +112,13 @@ impl JobControl {
 
 impl Star9RcHost {
     pub fn new(host: RuntimeShellHost) -> Self {
+        let env_registry = host.runtime().env_registry();
         Self {
             host,
+            env_registry,
             cwd: ".".into(),
             next_graph_id: 1,
+            note_group: 1,
             #[cfg(not(target_arch = "wasm32"))]
             running_jobs: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -141,15 +150,15 @@ impl Star9RcHost {
     }
 
     fn graph_root(&mut self) -> Result<String> {
+        if self.host.no_mount() {
+            return Err(Error::path("rfork", "m", ErrorKind::PermissionDenied));
+        }
         let graph_id = self.next_graph_id;
         self.next_graph_id += 1;
         let root = format!(".rc/graphs/rcgraph{graph_id}");
-        self.host.runtime().namespace().bind(
-            fs_ref(MemFs::new()),
-            ".",
-            &root,
-            BindMode::Replace,
-        )?;
+        self.host
+            .namespace()
+            .bind(fs_ref(MemFs::new()), ".", &root, BindMode::Replace)?;
         Ok(root)
     }
 
@@ -266,7 +275,7 @@ impl Star9RcHost {
                 .unwrap()
                 .retain(|_, job| job.control.graph_root != graph_root);
         }
-        let namespace = self.host.runtime().namespace();
+        let namespace = self.host.namespace();
         let mut paths = namespace
             .binding_paths()
             .into_iter()
@@ -277,6 +286,39 @@ impl Star9RcHost {
             let _ = namespace.unbind_path(&path);
         }
         Ok(())
+    }
+
+    fn replace_env_registry(&mut self, registry: EnvRegistry) -> Result<bool> {
+        let rebind_hash = self
+            .host
+            .namespace()
+            .stat(&FsContext::new(), "#env")
+            .is_ok();
+        let rebind_plain = self.host.namespace().stat(&FsContext::new(), "env").is_ok();
+        self.env_registry = registry;
+        if rebind_hash {
+            self.host.namespace().bind(
+                fs_ref(self.env_registry.clone()),
+                ".",
+                "#env",
+                BindMode::Replace,
+            )?;
+        }
+        if rebind_plain {
+            self.host.namespace().bind(
+                fs_ref(self.env_registry.clone()),
+                ".",
+                "env",
+                BindMode::Replace,
+            )?;
+        }
+        Ok(rebind_hash || rebind_plain)
+    }
+
+    fn copied_env_registry(&self) -> EnvRegistry {
+        let registry = EnvRegistry::new();
+        registry.replace_all(self.env_registry.snapshot());
+        registry
     }
 }
 
@@ -363,11 +405,11 @@ impl RcHost for Star9RcHost {
     }
 
     fn load_environment(&mut self) -> star9_rc::RcResult<Option<BTreeMap<String, Vec<u8>>>> {
-        Ok(Some(self.host.runtime().env_registry().snapshot()))
+        Ok(Some(self.env_registry.snapshot()))
     }
 
     fn store_environment(&mut self, env: &BTreeMap<String, Vec<u8>>) -> star9_rc::RcResult<()> {
-        self.host.runtime().env_registry().replace_all(env.clone());
+        self.env_registry.replace_all(env.clone());
         Ok(())
     }
 
@@ -427,7 +469,7 @@ impl RcHost for Star9RcHost {
                 .host
                 .runtime()
                 .task_fs()
-                .alloc("auto", Some(self.host.runtime().root()))
+                .alloc("auto", Some(self.host.task()))
                 .map_err(to_rc_error)?;
             task.set_cmd(stage.command.clone());
             task.set_dir(stage.cwd.clone());
@@ -532,7 +574,9 @@ impl RcHost for Star9RcHost {
         #[cfg(not(target_arch = "wasm32"))]
         {
             for job in self.running_jobs.lock().unwrap().values() {
-                job.control.send_note(&self.host, note);
+                if job.note_group == self.note_group {
+                    job.control.send_note(&self.host, note);
+                }
             }
         }
         Ok(())
@@ -614,6 +658,7 @@ impl RcHost for Star9RcHost {
             RunningJob {
                 receiver: rx,
                 control,
+                note_group: self.note_group,
             },
         );
         Ok(Some(RcStartedProcessJob { id: job_id }))
@@ -627,14 +672,54 @@ impl RcHost for Star9RcHost {
         Ok(None)
     }
 
-    fn rfork(&mut self, flags: &str) -> star9_rc::RcResult<()> {
-        if flags.chars().all(|flag| flag == 'e') {
-            Ok(())
-        } else {
-            Err(RcError::new(format!(
-                "unsupported Star 9 rfork flags {flags}"
-            )))
+    fn rfork(&mut self, spec: &RcRforkSpec) -> star9_rc::RcResult<RcRforkOutcome> {
+        let old_host = self.host.clone();
+        match spec.namespace {
+            RcRforkNamespace::Shared => {}
+            RcRforkNamespace::Copy => {
+                self.host = self.host.fork_namespace_scope().map_err(to_rc_error)?;
+            }
+            RcRforkNamespace::Clean => {
+                self.host = self.host.clean_namespace_scope().map_err(to_rc_error)?;
+                self.cwd = ".".into();
+            }
         }
+
+        let environment = match spec.environment {
+            RcRforkEnvironment::Shared => RcRforkEnvironmentOutcome::Unchanged,
+            RcRforkEnvironment::Copy => {
+                self.replace_env_registry(self.copied_env_registry())
+                    .map_err(to_rc_error)?;
+                RcRforkEnvironmentOutcome::Reload
+            }
+            RcRforkEnvironment::Clean => {
+                self.replace_env_registry(EnvRegistry::new())
+                    .map_err(to_rc_error)?;
+                RcRforkEnvironmentOutcome::Cleared
+            }
+        };
+
+        match spec.fds {
+            RcRforkFd::Shared => {}
+            RcRforkFd::Copy => {
+                let next = self.host.fork_fd_scope().map_err(to_rc_error)?;
+                next.task()
+                    .reopen_fds_from(&old_host.task())
+                    .map_err(to_rc_error)?;
+                self.host = next;
+            }
+            RcRforkFd::Clean => self.host.clear_fds().map_err(to_rc_error)?,
+        }
+
+        if spec.new_note_group {
+            self.note_group = self.note_group.saturating_add(1);
+        }
+
+        if spec.no_mount {
+            self.host = self.host.clone().with_no_mount();
+        }
+
+        Ok(RcRforkOutcome { environment })
     }
 }
 
@@ -716,7 +801,7 @@ fn write_graph_file(
     data: &str,
 ) -> Result<()> {
     fs_write_file(
-        host.runtime().namespace().as_ref(),
+        host.namespace().as_ref(),
         &format!("{graph_root}/{name}"),
         data.as_bytes(),
         FileMode::from_perm(0o644),
@@ -731,10 +816,10 @@ fn append_graph_file(
     data: &str,
 ) -> Result<()> {
     let path = format!("{graph_root}/{name}");
-    let mut bytes = fs_read_file(host.runtime().namespace().as_ref(), &path).unwrap_or_default();
+    let mut bytes = fs_read_file(host.namespace().as_ref(), &path).unwrap_or_default();
     bytes.extend_from_slice(data.as_bytes());
     fs_write_file(
-        host.runtime().namespace().as_ref(),
+        host.namespace().as_ref(),
         &path,
         &bytes,
         FileMode::from_perm(0o644),
@@ -837,7 +922,7 @@ fn execute_external_graph(
         let task = host
             .runtime()
             .task_fs()
-            .alloc("auto", Some(host.runtime().root()))
+            .alloc("auto", Some(host.task()))
             .map_err(to_rc_error)?;
         let exec = build_execution_spec(&host, &graph_root, index, stage).map_err(to_rc_error)?;
         stages.push((task, exec, stage.fd_bindings.clone()));
@@ -909,7 +994,7 @@ fn execute_external_graph(
     if spec.kind == RcProcessGraphKind::ProcessSubstitutionRead {
         stdout = String::from_utf8_lossy(
             &fs_read_file(
-                host.runtime().namespace().as_ref(),
+                host.namespace().as_ref(),
                 &format!("{graph_root}/pipe0/data1"),
             )
             .unwrap_or_default(),
@@ -989,7 +1074,7 @@ fn build_execution_spec(
     let stdin_path = if !stage.stdin.is_empty() {
         let path = format!("{graph_root}/stage{index}-stdin");
         fs_write_file(
-            host.runtime().namespace().as_ref(),
+            host.namespace().as_ref(),
             &path,
             stage.stdin.as_bytes(),
             FileMode::from_perm(0o644),
@@ -1277,6 +1362,90 @@ mod tests {
         let out = rc.eval_line("echo $shape");
         assert!(out.status.is_success(), "{}", out.stderr);
         assert_eq!(out.stdout, "circle\n");
+    }
+
+    #[test]
+    fn rc_shell_rfork_default_copies_env_namespace_and_note_scope() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        let mut rc = RcShell::new(host);
+        let out =
+            rc.eval_line("color=red; rfork; color=blue; bind . n/private; cat '#env/color'; ls n");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stderr, "");
+        assert!(out.stdout.contains("blue"), "{:?}", out.stdout);
+        assert!(out.stdout.contains("private/"), "{:?}", out.stdout);
+
+        let root_env = runtime.env_registry().snapshot();
+        assert_eq!(root_env.get("color").map(Vec::as_slice), Some(&b"red"[..]));
+        let root_n = RuntimeShellHost::new(runtime.clone())
+            .read_dir("n")
+            .unwrap();
+        assert!(
+            !root_n.iter().any(|entry| entry == "private/"),
+            "{root_n:?}"
+        );
+    }
+
+    #[test]
+    fn rc_shell_rfork_clean_environment_and_namespace_are_observable() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        let mut rc = RcShell::new(host);
+        let out = rc.eval_line("shape=circle; rfork E; echo $#shape");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stdout, "0\n");
+        assert!(RuntimeShellHost::new(runtime.clone())
+            .read_file("#env/shape")
+            .is_err());
+
+        let out = rc.eval_line("rfork N; echo ok; ls '#task'");
+        assert!(!out.status.is_success());
+        assert_eq!(out.stdout, "ok\n");
+    }
+
+    #[test]
+    fn rc_shell_rfork_fd_and_nomount_scopes_are_observable() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        host.write_file("fdsource", b"fd-data").unwrap();
+        let runtime = host.runtime();
+        let root_task = host.task();
+        let file = root_task
+            .namespace()
+            .open(&FsContext::new(), "fdsource")
+            .unwrap();
+        root_task.set_fd(9, file, "fdsource");
+
+        let mut rc = RcShell::new(host);
+        let out = rc.eval_line("rfork f");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        let scoped_task = runtime
+            .task_fs()
+            .tasks()
+            .into_iter()
+            .find(|task| {
+                task.cmd() == "rc-scope" && task.fd_entries().iter().any(|(fd, _)| *fd == 9)
+            })
+            .expect("rfork f scoped task with copied fd");
+        assert!(scoped_task
+            .fd_entries()
+            .iter()
+            .any(|(fd, path)| *fd == 9 && path == "fdsource"));
+
+        let out = rc.eval_line("rfork F");
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert!(runtime
+            .task_fs()
+            .tasks()
+            .into_iter()
+            .find(|task| task.id() == scoped_task.id())
+            .unwrap()
+            .fd_entries()
+            .is_empty());
+
+        let out = rc.eval_line("rfork m; bind . n/nope; ls '#task'");
+        assert!(!out.status.is_success());
+        assert!(out.stderr.contains("permission denied"), "{:?}", out.stderr);
     }
 
     #[test]

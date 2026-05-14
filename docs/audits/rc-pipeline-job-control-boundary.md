@@ -34,9 +34,10 @@ External commands that cannot be mapped to a provider still run through `RcHost:
 
 Full Plan 9 process-like pipeline parity should wait until Star 9 can expose the following through task/fd files:
 
-- `rfork` namespace/env/fd/process-group sharing semantics,
 - provider-specific hard cancellation for running stages,
 - arbitrary nested fd graphs and process substitutions that require true concurrent OS-style process graphs.
+
+`rfork` is no longer in the generic missing bucket. Star 9 rc parses the Plan 9 `nNeEsfFm` flags with default `ens` and maps them to the scope controls Star 9 has: task namespace copy/clean, env registry copy/clean, task fd scope copy/clean, rc note-group isolation, and no-mount/no-`#` path enforcement. Fd copying is path-backed and reports a precise error if an open descriptor cannot be represented by a reopenable Star 9 path.
 
 ## Rule For Future Work
 

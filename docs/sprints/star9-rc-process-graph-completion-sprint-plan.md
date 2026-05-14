@@ -31,7 +31,7 @@ Finish the remaining rc process-graph depth while preserving the Plan 9 shape of
 
 ## Remaining Boundaries
 
-- Exact `rfork` namespace/env/fd/process-group sharing remains limited to `rfork e` until Star 9 exposes matching task scope controls.
+- Exact `rfork` namespace/env/fd/process-group sharing is now implemented for the Star 9 scope controls that exist: `n`/`N` copy or clean the task namespace, `e`/`E` copy or clean the env registry and rebind `#env`/`env` where visible, `s` creates a new rc note group for active jobs, `f`/`F` copy or clean the current task fd scope, and `m` enforces no further mounts or `#` path dereferences. Fd copying remains path-backed and fails precisely if a descriptor cannot be reopened.
 - Provider hard cancellation remains provider-specific. Browser workers can be terminated, but WASI/native/registered in-process handlers need explicit interrupt primitives before Star 9 can forcibly stop them.
 - Browser rc graph execution uses bounded stdin/stdout handoff. True async fd/MessagePort streaming can be added once worker stages consume runtime fd streams directly.
 - Arbitrary nested fd graphs and every Plan 9 rc fd edge form are not claimed bit-perfect until broader conformance proves them.

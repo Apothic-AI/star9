@@ -8,10 +8,12 @@ pub mod rc;
 
 use std::collections::BTreeMap;
 use std::io::SeekFrom;
+use std::sync::Arc;
 
 use star9_core::{clean_path, Error, ErrorKind, Result};
 use star9_fs::{fs_ref, open, MemFs};
 use star9_protocol::{
+    p9::{LoopbackTransport, NinePClientFs},
     runtime::{
         EnvironmentEntry, ExecutionKind, ExecutionSpec, FdDescriptor, FdKind, StdioSet,
         StreamDescriptor, WorkerHandle, WorkerSpawnRequest, WorkerStartRequest,
@@ -19,7 +21,8 @@ use star9_protocol::{
     Star9Api, StatInfo,
 };
 use star9_runtime::{Runtime, WasmiWasiHandler};
-use star9_vfs::BindMode;
+use star9_task::Task;
+use star9_vfs::{BindMode, Namespace};
 
 #[cfg(not(target_arch = "wasm32"))]
 use star9_runtime::NativePtyExecutionHandler;
@@ -138,16 +141,21 @@ pub trait ShellHost: Clone {
 #[derive(Clone)]
 pub struct RuntimeShellHost {
     runtime: Runtime,
+    task: Task,
     api: Star9Api,
     native_enabled: bool,
+    no_mount: bool,
 }
 
 impl RuntimeShellHost {
     pub fn new(runtime: Runtime) -> Self {
+        let task = runtime.root();
         Self {
-            api: Star9Api::new(runtime.root()),
+            api: Star9Api::new(task.clone()),
+            task,
             runtime,
             native_enabled: false,
+            no_mount: false,
         }
     }
 
@@ -157,6 +165,62 @@ impl RuntimeShellHost {
 
     pub fn runtime(&self) -> Runtime {
         self.runtime.clone()
+    }
+
+    pub fn task(&self) -> Task {
+        self.task.clone()
+    }
+
+    pub fn namespace(&self) -> Arc<Namespace> {
+        self.task.namespace()
+    }
+
+    pub fn with_task_scope(&self, task: Task) -> Self {
+        Self {
+            runtime: self.runtime.clone(),
+            api: Star9Api::new(task.clone()),
+            task,
+            native_enabled: self.native_enabled,
+            no_mount: self.no_mount,
+        }
+    }
+
+    pub fn fork_namespace_scope(&self) -> Result<Self> {
+        let task = self
+            .runtime
+            .task_fs()
+            .alloc("auto", Some(self.task.clone()))?;
+        task.set_cmd("rc-scope");
+        Ok(self.with_task_scope(task))
+    }
+
+    pub fn clean_namespace_scope(&self) -> Result<Self> {
+        let task = self.runtime.task_fs().alloc_clean_namespace("auto")?;
+        task.set_cmd("rc-scope");
+        Ok(self.with_task_scope(task))
+    }
+
+    pub fn fork_fd_scope(&self) -> Result<Self> {
+        let task = self.runtime.task_fs().alloc_with_namespace(
+            "auto",
+            Some(self.task.clone()),
+            self.namespace(),
+        )?;
+        task.set_cmd("rc-scope");
+        Ok(self.with_task_scope(task))
+    }
+
+    pub fn clear_fds(&self) -> Result<()> {
+        self.task.clear_fds()
+    }
+
+    pub fn with_no_mount(mut self) -> Self {
+        self.no_mount = true;
+        self
+    }
+
+    pub fn no_mount(&self) -> bool {
+        self.no_mount
     }
 
     pub fn enable_native(mut self) -> Self {
@@ -170,10 +234,25 @@ impl RuntimeShellHost {
     }
 
     pub fn with_writable_workspace(self) -> Result<Self> {
-        self.runtime
-            .namespace()
+        self.namespace()
             .bind(fs_ref(MemFs::new()), ".", ".", BindMode::Replace)?;
         Ok(self)
+    }
+
+    fn check_path_allowed(&self, op: &'static str, path: &str) -> Result<()> {
+        if self.no_mount && clean_path(path).starts_with('#') {
+            Err(Error::path(op, path, ErrorKind::PermissionDenied))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_mount_allowed(&self, op: &'static str, path: &str) -> Result<()> {
+        if self.no_mount {
+            Err(Error::path(op, path, ErrorKind::PermissionDenied))
+        } else {
+            Ok(())
+        }
     }
 
     fn execute_task(
@@ -187,7 +266,7 @@ impl RuntimeShellHost {
         let task = self
             .runtime
             .task_fs()
-            .alloc("auto", Some(self.runtime.root()))?;
+            .alloc("auto", Some(self.task.clone()))?;
         let stdio = if let Some(path) = stdout_path {
             StdioSet {
                 stdin: StreamDescriptor::Null,
@@ -232,19 +311,23 @@ impl RuntimeShellHost {
 
 impl ShellHost for RuntimeShellHost {
     fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+        self.check_path_allowed("read", path)?;
         self.api.read_file(path)
     }
 
     fn write_file(&self, path: &str, data: &[u8]) -> Result<()> {
+        self.check_path_allowed("write", path)?;
         self.api.write_file(path, data)
     }
 
     fn append_file(&self, path: &str, data: &[u8]) -> Result<()> {
+        self.check_path_allowed("append", path)?;
         self.api.append_file(path, data)
     }
 
     fn write_existing(&self, path: &str, data: &[u8]) -> Result<()> {
-        let mut file = open(self.runtime.namespace().as_ref(), path)?;
+        self.check_path_allowed("write", path)?;
+        let mut file = open(self.namespace().as_ref(), path)?;
         let written = file.write(data)?;
         if written != data.len() {
             return Err(ErrorKind::UnexpectedEof.into());
@@ -253,30 +336,39 @@ impl ShellHost for RuntimeShellHost {
     }
 
     fn read_dir(&self, path: &str) -> Result<Vec<String>> {
+        self.check_path_allowed("ls", path)?;
         self.api.read_dir(path)
     }
 
     fn mkdir(&self, path: &str) -> Result<()> {
+        self.check_path_allowed("mkdir", path)?;
         self.api.mkdir_all(path)
     }
 
     fn remove(&self, path: &str) -> Result<()> {
+        self.check_path_allowed("rm", path)?;
         self.api.remove(path)
     }
 
     fn remove_all(&self, path: &str) -> Result<()> {
+        self.check_path_allowed("rm", path)?;
         self.api.remove_all(path)
     }
 
     fn rename(&self, old: &str, new: &str) -> Result<()> {
+        self.check_path_allowed("mv", old)?;
+        self.check_path_allowed("mv", new)?;
         self.api.rename(old, new)
     }
 
     fn copy(&self, old: &str, new: &str) -> Result<()> {
+        self.check_path_allowed("cp", old)?;
+        self.check_path_allowed("cp", new)?;
         self.api.copy(old, new)
     }
 
     fn stat(&self, path: &str) -> Result<ShellStat> {
+        self.check_path_allowed("stat", path)?;
         self.api.stat(path).map(Into::into)
     }
 
@@ -294,7 +386,7 @@ impl ShellHost for RuntimeShellHost {
                     worker_id: format!("shell-worker-{}", next_worker_suffix()),
                     task_id: String::new(),
                 },
-                parent_task_id: Some(self.runtime.root().id()),
+                parent_task_id: Some(self.task.id()),
             }),
         )? {
             star9_protocol::runtime::RuntimeResponse::Worker(worker) => worker,
@@ -333,25 +425,39 @@ impl ShellHost for RuntimeShellHost {
     }
 
     fn bind_path(&self, src: &str, dst: &str, mode: BindMode) -> Result<()> {
-        let namespace = self.runtime.namespace();
+        self.check_mount_allowed("bind", dst)?;
+        let namespace = self.namespace();
         namespace.bind(fs_ref((*namespace).clone()), src, dst, mode)
     }
 
     fn unmount_path(&self, dst: &str) -> Result<()> {
-        self.runtime.namespace().unbind_path(dst)
+        self.check_mount_allowed("unmount", dst)?;
+        self.namespace().unbind_path(dst)
     }
 
     fn unmount_binding(&self, src: &str, dst: &str) -> Result<()> {
-        self.runtime.namespace().unbind_source_path(src, dst)
+        self.check_mount_allowed("unmount", dst)?;
+        self.namespace().unbind_source_path(src, dst)
     }
 
     fn register_service(&self, name: &str) -> Result<()> {
-        self.runtime.register_loopback_service(name)
+        self.check_mount_allowed("srv", name)?;
+        let server = self.runtime.export_task_9p(&self.task.id())?;
+        let client = NinePClientFs::connect(Arc::new(LoopbackTransport::new(server)))?;
+        self.runtime.register_service(
+            name,
+            fs_ref(client),
+            format!(
+                "loopback task {} namespace export: {name}\n",
+                self.task.id()
+            ),
+        )
     }
 
     fn register_service_from_source(&self, source: &str, name: &str) -> Result<()> {
+        self.check_mount_allowed("srv", name)?;
         if is_loopback_service_source(source) {
-            self.runtime.register_loopback_service(name)
+            self.register_service(name)
         } else if source.starts_with("tcp!") {
             self.runtime.register_tcp_9p_service(source, name)
         } else {
@@ -360,7 +466,9 @@ impl ShellHost for RuntimeShellHost {
     }
 
     fn mount_service(&self, service: &str, dst: &str, mode: BindMode) -> Result<()> {
-        self.runtime.mount_service(service, dst, mode)
+        self.check_mount_allowed("mount", dst)?;
+        let fs = self.runtime.service_registry().get(service)?;
+        self.namespace().bind(fs, ".", dst, mode)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

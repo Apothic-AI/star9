@@ -10,7 +10,7 @@ Current rc execution-provider contract:
 - Preserve deterministic evaluator behavior for fake hosts, pure built-ins, and browser paths where a streaming provider is unavailable.
 - Use provider-backed graph execution for external stages where Star 9 can install streaming fds. The native-host provider-backed path covers WASI stages, opt-in native stages, and JS/WASM stages when an `ExecutionRegistry` handler is registered for the module or kind.
 - Represent provider-backed pipelines and jobs through Star 9 tasks, fd tables, generated pipe resources under `.rc/graphs/...`, and persistent graph files such as `kind`, `job`, `tasks`, `notes`, `state`, and `status`.
-- Keep `rfork` precise: `rfork e` remains supported, unsupported flags fail explicitly until Star 9 has matching namespace/env/fd/process-group sharing controls.
+- Keep `rfork` precise: Star 9 now parses Plan 9 rc `nNeEsfFm` flags with default `ens`, and maps supported scope changes onto task namespaces, env registries, fd tables, note groups, and no-mount/no-`#` path checks.
 - Route note delivery through rc note hooks and Star 9 `#signal/data` where present; active provider-backed task groups receive deterministic `signal:<note>` status through their graph/job control record.
 - Add browser worker graph execution where browser capabilities permit: graph-compatible `worker module` stages run through Star 9 browser Worker tasks with bounded stdin/stdout handoff, task exit observation, background jobs, and `wait`.
 - Expose provider graph lifecycle through `.rc/graphs/<id>/ctl` as a file protocol. Completed graphs can be cleaned up by writing `cleanup` or `close`; active jobs can be marked through `cancel <note>` where hard provider interruption is unavailable.

@@ -103,15 +103,18 @@
     },
     {
       "feature": "rfork semantics",
-      "status": "host-limited",
+      "status": "implemented-with-star9-scope-limits",
       "implementation": [
         "RcHost::rfork",
         "Star9RcHost::rfork"
       ],
       "evidence": [
-        "background_wait_builtin_and_rfork_have_precise_behavior"
+        "background_wait_builtin_and_rfork_have_precise_behavior",
+        "rc_shell_rfork_default_copies_env_namespace_and_note_scope",
+        "rc_shell_rfork_clean_environment_and_namespace_are_observable",
+        "rc_shell_rfork_fd_and_nomount_scopes_are_observable"
       ],
-      "notes": "rfork e is accepted through the host boundary. Namespace/env/fd/process-group sharing flags remain precisely rejected until Star 9 has matching task scope controls."
+      "notes": "Plan 9 rc flags nNeEsfFm are parsed with default ens. Star 9 implements n as a copied task namespace, N as a clean task namespace, e/E as copied/clean env registry with #env/env rebinding where visible, s as a new rc note group for active jobs, f as a new fd scope with path-reopened descriptors, F as a clean fd table, and m as a no-mount/no-#-dereference scope. Fd copy fails precisely if a descriptor cannot be represented by a reopenable Star 9 fd path."
     },
     {
       "feature": "notes and signals",
