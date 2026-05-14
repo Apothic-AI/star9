@@ -114,6 +114,8 @@
     const shell = createStar9Shell(systemElement);
     const shellResult = await shell.eval("mkdir shell-demo; write shell-demo/hello shell-ok; cat shell-demo/hello");
     const shellPwd = await shell.eval("cd shell-demo; pwd");
+    const rcShell = createStar9Shell(systemElement, { rc: true });
+    const rcResult = await rcShell.eval("x=(one two); fn twice { echo $1 $1 }; for(i in $x) twice $i");
 
     await system.writeText("cache-store/state.txt", "storage-ok");
     const storageText = await system.readText("cache-store/state.txt");
@@ -264,6 +266,8 @@
     assert(shellResult.status === 0, `bad shell status ${shellResult.status}: ${shellResult.stderr}`);
     assert(shellResult.stdout === "shell-ok", `bad shell stdout ${JSON.stringify(shellResult.stdout)}`);
     assert(shellPwd.stdout === "shell-demo\n", `bad shell pwd ${JSON.stringify(shellPwd.stdout)}`);
+    assert(rcResult.status === 0, `bad rc status ${rcResult.status}: ${rcResult.stderr}`);
+    assert(rcResult.stdout === "one one\ntwo two\n", `bad rc stdout ${JSON.stringify(rcResult.stdout)}`);
     assert(storageText === "storage-ok", `bad storage text ${storageText}`);
     assert(
       sharedMirrorText === "descriptor-ok",
@@ -371,6 +375,7 @@
         inlineText,
         fetchedText,
         shellPwd: shellPwd.stdout.trim(),
+        rcStdout: rcResult.stdout.trim(),
         storageEntries,
         sharedEntries,
         remotePortEntries,

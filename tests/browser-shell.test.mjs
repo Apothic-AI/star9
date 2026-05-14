@@ -52,6 +52,40 @@ test("Star9ShellController delegates normal commands to the wasm shell facade", 
     assert.deepEqual(calls, ["version"]);
 });
 
+test("Star9ShellController can request an rc shell facade", async () => {
+    let created = false;
+    const controller = createStar9Shell({
+        system: {
+            createRcShell() {
+                created = true;
+                return {
+                    eval(line) {
+                        assert.equal(line, "x=(a b); echo $x");
+                        return { status: "0", success: true, stdout: "a b\n", stderr: "" };
+                    },
+                    prompt() {
+                        return "rc:.$ ";
+                    },
+                    cwd() {
+                        return ".";
+                    },
+                    lastStatus() {
+                        return "0";
+                    },
+                };
+            },
+        },
+    }, { rc: true });
+
+    assert.equal(controller.prompt(), "rc:.$ ");
+    assert.deepEqual(await controller.eval("x=(a b); echo $x"), {
+        status: 0,
+        stdout: "a b\n",
+        stderr: "",
+    });
+    assert.equal(created, true);
+});
+
 test("Star9ShellController handles StarFS browser mount commands without bypassing core shell state", async () => {
     const calls = [];
     const mounts = [];

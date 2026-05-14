@@ -16,10 +16,11 @@ use star9_protocol::{
     },
     Star9Api,
 };
+use star9_rc::RcOutput;
 #[cfg(not(target_arch = "wasm32"))]
 use star9_runtime::NativePtyExecutionHandler;
 use star9_runtime::{Runtime, WasmiWasiHandler};
-use star9_shell::{RuntimeShellHost, ShellResult, ShellSession};
+use star9_shell::{rc::RcShell, RuntimeShellHost, ShellResult, ShellSession};
 
 #[derive(Parser)]
 #[command(name = "star9")]
@@ -49,6 +50,15 @@ enum Command {
         root: PathBuf,
     },
     Shell {
+        #[arg(short = 'c', long = "command")]
+        command: Option<String>,
+        #[arg(long)]
+        native: bool,
+        #[arg(long)]
+        rc: bool,
+        script: Option<PathBuf>,
+    },
+    Rc {
         #[arg(short = 'c', long = "command")]
         command: Option<String>,
         #[arg(long)]
@@ -122,11 +132,25 @@ fn run() -> Result<i32> {
         Command::Shell {
             command,
             native,
+            rc,
             script,
         } => {
             let host = RuntimeShellHost::new(runtime).with_writable_workspace()?;
             let host = if native { host.enable_native() } else { host };
-            run_shell(host, command, script)
+            if rc {
+                run_rc_shell(host, command, script)
+            } else {
+                run_shell(host, command, script)
+            }
+        }
+        Command::Rc {
+            command,
+            native,
+            script,
+        } => {
+            let host = RuntimeShellHost::new(runtime).with_writable_workspace()?;
+            let host = if native { host.enable_native() } else { host };
+            run_rc_shell(host, command, script)
         }
         Command::Accept { suite } => {
             print!("{}", render_acceptance_output(suite)?);
@@ -211,10 +235,68 @@ fn run_interactive_shell(shell: &mut ShellSession<RuntimeShellHost>) -> Result<i
     }
 }
 
+fn run_rc_shell(
+    host: RuntimeShellHost,
+    command: Option<String>,
+    script: Option<PathBuf>,
+) -> Result<i32> {
+    let mut shell = RcShell::new(host);
+    if let Some(command) = command {
+        return Ok(print_rc_result(shell.eval_line(&command)));
+    }
+    if let Some(script) = script {
+        let source = std::fs::read_to_string(&script).map_err(|err| {
+            star9_core::Error::Message(format!("rc: failed to read {}: {err}", script.display()))
+        })?;
+        return Ok(print_rc_result(shell.eval_line(&source)));
+    }
+    if !io::stdin().is_terminal() {
+        let mut source = String::new();
+        io::stdin().read_to_string(&mut source).map_err(|err| {
+            star9_core::Error::Message(format!("rc: failed to read stdin: {err}"))
+        })?;
+        return Ok(print_rc_result(shell.eval_line(&source)));
+    }
+    run_interactive_rc_shell(&mut shell)
+}
+
+fn run_interactive_rc_shell(shell: &mut RcShell) -> Result<i32> {
+    let mut editor = Reedline::create();
+    loop {
+        let prompt = Star9Prompt(shell.prompt());
+        match editor
+            .read_line(&prompt)
+            .map_err(|err| star9_core::Error::Message(format!("rc: {err}")))?
+        {
+            Signal::Success(line) => {
+                let _ = print_rc_result(shell.eval_line(&line));
+            }
+            Signal::CtrlD => return Ok(0),
+            Signal::CtrlC => {
+                eprintln!("^C");
+            }
+            Signal::ExternalBreak(line) => {
+                let _ = print_rc_result(shell.eval_line(&line));
+            }
+            _ => {}
+        }
+    }
+}
+
 fn print_shell_result(result: ShellResult) -> i32 {
     print!("{}", result.stdout);
     eprint!("{}", result.stderr);
     result.status
+}
+
+fn print_rc_result(result: RcOutput) -> i32 {
+    print!("{}", result.stdout);
+    eprint!("{}", result.stderr);
+    if result.status.is_success() {
+        0
+    } else {
+        1
+    }
 }
 
 struct Star9Prompt(String);

@@ -4,6 +4,8 @@
 //! POSIX or Plan 9 rc compatibility layer. Commands route through Star 9
 //! namespaces, task files, fd files, and device files.
 
+pub mod rc;
+
 use std::collections::BTreeMap;
 use std::io::SeekFrom;
 
@@ -347,6 +349,10 @@ impl<H: ShellHost> ShellSession<H> {
         &self.cwd
     }
 
+    pub fn set_cwd(&mut self, cwd: impl Into<String>) {
+        self.cwd = cwd.into();
+    }
+
     pub fn last_status(&self) -> i32 {
         self.last_status
     }
@@ -380,6 +386,16 @@ impl<H: ShellHost> ShellSession<H> {
                 }
             }
         }
+    }
+
+    pub fn eval_argv(&mut self, name: impl Into<String>, args: &[String]) -> ShellResult {
+        let command = ShellCommand {
+            name: name.into(),
+            args: args.to_vec(),
+        };
+        let result = self.eval_command(&command);
+        self.last_status = result.status;
+        result
     }
 
     fn eval_command(&mut self, command: &ShellCommand) -> ShellResult {

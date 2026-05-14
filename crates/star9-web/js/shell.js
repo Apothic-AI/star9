@@ -12,10 +12,18 @@ export class Star9ShellController {
             throw new Error("createStar9Shell requires a star9-system instance");
         }
         this.system = system;
-        this.shell = options.shell || system.system?.createShell?.() || system.createShell?.();
+        this.rc = Boolean(options.rc);
+        this.shell = options.shell || this.#createFacadeShell(system);
         if (!this.shell || typeof this.shell.eval !== "function") {
             throw new Error("star9 shell facade is not available");
         }
+    }
+
+    #createFacadeShell(system) {
+        if (this.rc) {
+            return system.system?.createRcShell?.() || system.createRcShell?.();
+        }
+        return system.system?.createShell?.() || system.createShell?.();
     }
 
     prompt() {
@@ -147,7 +155,7 @@ export class ShellElement extends Star9Element {
 
     async _awake() {
         try {
-            this.controller = createStar9Shell(this._system);
+        this.controller = createStar9Shell(this._system, { rc: this.hasAttribute("rc") });
             this.#render();
             this.#append("Star 9 shell ready\n", "system");
             this._resolveReady(this);
@@ -288,7 +296,7 @@ export class ShellElement extends Star9Element {
 
 function normalizeShellResult(result) {
     return {
-        status: Number(result?.status ?? 0),
+        status: result?.success === true ? 0 : Number(result?.status ?? 0),
         stdout: stringifyOutput(result?.stdout ?? ""),
         stderr: stringifyOutput(result?.stderr ?? ""),
     };
@@ -349,4 +357,3 @@ export function splitShellWords(line) {
     if (current) words.push(current);
     return words;
 }
-

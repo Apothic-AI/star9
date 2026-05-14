@@ -1,0 +1,76 @@
+{
+  "purpose": "Plan 9 rc compatibility matrix for Star 9",
+  "crate_boundary": {
+    "language_core": "crates/star9-rc",
+    "star9_adapter": "crates/star9-shell/src/rc.rs",
+    "rule": "The reusable rc crate has no dependency on Star 9 runtime, web, CLI, or browser glue."
+  },
+  "features": [
+    {
+      "feature": "lexer-parser-ast",
+      "status": "implemented",
+      "evidence": ["cargo test -p star9-rc", "parser_handles_control_flow_and_functions"],
+      "notes": "Typed AST covers simple commands, assignments, blocks, functions, if/for/while/switch, pipelines, boolean operators, redirection, and command substitution words."
+    },
+    {
+      "feature": "list-values-and-expansion",
+      "status": "implemented",
+      "evidence": ["variables_lists_quotes_and_concatenation_expand_like_rc"],
+      "notes": "Supports list assignments, empty lists, positional args, $name, $#name, $\"name, subscripts, rc apostrophe quoting, doubled apostrophes, and caret concatenation."
+    },
+    {
+      "feature": "globbing-patterns-tilde",
+      "status": "implemented",
+      "evidence": ["globbing_uses_host_filesystem_and_preserves_misses", "functions_for_if_switch_and_status_work"],
+      "notes": "Implements *, ?, character classes, complemented classes, ranges, unmatched literal preservation, and the ~ builtin over host filesystem listings."
+    },
+    {
+      "feature": "evaluation-status-control-flow",
+      "status": "implemented",
+      "evidence": ["functions_for_if_switch_and_status_work"],
+      "notes": "Supports sequencing, &&, ||, !, background status, if, for, while, switch, functions, and rc-style status strings including all-zero pipeline success."
+    },
+    {
+      "feature": "redirection-pipelines-here-docs",
+      "status": "partial",
+      "evidence": ["redirection_pipeline_and_source_work"],
+      "notes": "Basic <, >, >>, << text, and stdout pipelines are implemented. Full Plan 9 fd graph behavior such as process substitution <{}/>{}, all fd dup cases, and exact concurrent pipeline execution remain future-depth work."
+    },
+    {
+      "feature": "command-substitution",
+      "status": "implemented",
+      "evidence": ["command_substitution_and_ifs_split_output"],
+      "notes": "Backquote braced command substitution runs through the evaluator and splits output with ifs."
+    },
+    {
+      "feature": "environment-and-notes",
+      "status": "partial",
+      "evidence": ["docs/ARCHITECTURE.md"],
+      "notes": "Variables and local command assignments are implemented in the reusable evaluator. Plan 9 environment files and note hooks are adapter-level future-depth work."
+    },
+    {
+      "feature": "builtins",
+      "status": "partial",
+      "evidence": ["star9-rc/src/lib.rs"],
+      "notes": "Implements core builtins including ., cd, echo, eval, exit, shift, status, wait, whatis, ~, true, false, plus host-limited rfork/flag/builtin placeholders. Exact 9front rendering and rfork semantics remain future-depth work."
+    },
+    {
+      "feature": "external-command-search",
+      "status": "partial",
+      "evidence": ["crates/star9-shell/src/rc.rs", "cargo test -p star9-shell"],
+      "notes": "External command execution is a host-trait operation. Star 9 adapter delegates to the existing Star 9 shell command surface. Full executable $path search over mounted command namespaces remains future-depth work."
+    },
+    {
+      "feature": "cli-browser-entry-points",
+      "status": "implemented",
+      "evidence": ["cargo test -p star9-cli", "tests/browser-shell.test.mjs", "tests/browser-smoke.html"],
+      "notes": "Native `star9 rc`, `star9 shell --rc`, wasm `createRcShell`, and `<star9-shell rc>` are wired."
+    },
+    {
+      "feature": "oracle-differential-tests",
+      "status": "implemented",
+      "evidence": ["optional_oracle_smoke_compares_portable_rc_cases"],
+      "notes": "Optional STAR9_RC_ORACLE comparison runs only when configured and compares portable stdout, stderr, and status cases against plan9port or 9front rc."
+    }
+  ]
+}

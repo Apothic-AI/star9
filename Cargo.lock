@@ -1306,6 +1306,7 @@ dependencies = [
  "star9-core",
  "star9-fs",
  "star9-protocol",
+ "star9-rc",
  "star9-runtime",
  "star9-shell",
  "star9-task",
@@ -1351,6 +1352,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "star9-rc"
+version = "0.1.0"
+
+[[package]]
 name = "star9-runtime"
 version = "0.1.0"
 dependencies = [
@@ -1371,6 +1376,7 @@ dependencies = [
  "star9-core",
  "star9-fs",
  "star9-protocol",
+ "star9-rc",
  "star9-runtime",
  "star9-vfs",
 ]
@@ -1403,6 +1409,7 @@ dependencies = [
  "star9-core",
  "star9-fs",
  "star9-protocol",
+ "star9-rc",
  "star9-runtime",
  "star9-shell",
  "star9-vfs",

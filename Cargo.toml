@@ -4,6 +4,7 @@ members = [
     "crates/star9-core",
     "crates/star9-fs",
     "crates/star9-protocol",
+    "crates/star9-rc",
     "crates/star9-runtime",
     "crates/star9-shell",
     "crates/star9-task",

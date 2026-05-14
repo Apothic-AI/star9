@@ -34,7 +34,12 @@ The native shell does not require live services:
 cargo run -p star9-cli -- shell -c 'version'
 cargo run -p star9-cli -- shell -c 'mkdir demo; write demo/hello hello; cat demo/hello'
 cargo run -p star9-cli -- shell -c 'ls #task'
+cargo run -p star9-cli -- rc -c 'x=(one two); fn twice { echo $1 $1 }; for(i in $x) twice $i'
+cargo run -p star9-cli -- shell --rc -c 'echo hello | cat'
 ```
+
+The browser rc demo is available at `http://127.0.0.1:4177/examples/rc.html` after `wasm-pack build`.
+Optional differential rc checks run during `cargo test -p star9-rc` when `STAR9_RC_ORACLE=/path/to/rc` points at a plan9port or 9front `rc` binary.
 
 ## HTTP
 

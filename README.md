@@ -23,6 +23,7 @@ This workspace implements the main Star 9 runtime surfaces in Rust:
 - Rust-native 9P import/export with hard-link and xattr read/list/write support, native stream/TCP transport helpers, async native `Tflush` cancellation, browser MessagePort frame-serving/client helpers, an async browser namespace mount client, and a browser storage-to-9P export bridge for async storage adapters.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
 - Host-neutral Star 9 shell core plus native/browser shell surfaces that route through namespaces, files, task fds, and device protocols rather than host side channels.
+- Reusable Plan 9 rc language core with a Star 9 host adapter for native/browser rc sessions.
 - Browser Worker/MessagePort JS glue for runtime message envelopes, transferred ports, typed namespace/fd request helpers, and CBOR request/task-message bridging into the Rust runtime host.
 - Browser Worker host facade and execution-worker helper for real module-worker startup, runtime port transfer, message routing, JS/WASM execution bootstrap, dynamic JS runner import, direct WASI-style `.wasm` instantiation, Go-compatible runner fixture execution, runner context, port handoff, exit/error reporting, and cleanup.
 - Browser worker export handoff for `{ export: MessagePort }` 9P exports, mounted into the task export namespace and optional VM guest namespace.
@@ -43,6 +44,7 @@ This workspace implements the main Star 9 runtime surfaces in Rust:
 - `star9-vfs`: namespace binding, union behavior, synthesized directories, write routing.
 - `star9-task`: task/resource filesystem, task fields, aliases, fd table, drivers.
 - `star9-protocol`: typed request/response API for file operations.
+- `star9-rc`: reusable Plan 9 rc lexer/parser/AST/evaluator core with host traits.
 - `star9-runtime`: root composition and built-in device/resource surfaces.
 - `star9-shell`: host-neutral shell parser, session, command registry, and runtime host adapter.
 - `star9-web`: `wasm-bindgen` browser facade plus plain JS custom elements.
@@ -64,6 +66,15 @@ cargo run -p star9-cli -- shell
 
 The shell is Star 9-native. It exposes commands such as `ls`, `cat`, `write`, `tasks`, `fds`, `term`, `vm`, `net`, `wasi`, and `worker` through Star 9 namespaces and device files. Host process execution is opt-in with `star9 shell --native` and the `native <cmd...>` shell command.
 
+Run rc mode:
+
+```sh
+cargo run -p star9-cli -- rc -c 'x=(one two); fn twice { echo $1 $1 }; for(i in $x) twice $i'
+cargo run -p star9-cli -- shell --rc -c 'echo hello | cat'
+```
+
+The reusable `star9-rc` crate owns the rc language core and can be embedded without depending on Star 9 runtime or browser crates. Star 9 integrates it through a host adapter that routes files, commands, and devices through namespaces, task fds, and runtime surfaces.
+
 ## Verification
 
 ```sh
@@ -79,6 +90,6 @@ python3 -m http.server 4177 --bind 127.0.0.1
 
 Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build` command. The page sets `document.body.dataset.status` to `ok` after it initializes `star9-system`, applies `star9-bind` children, binds a ramfs, performs file API, mounts a 9P export over a real `MessagePort`, exercises Rust 9P loopback operations, exercises real browser storage adapters through the async JS mount table where available, mounts OPFS and StarFS through task-facing browser paths where supported, drives normalized and raw browser terminal paths, starts representative WASI and Go-compatible JS adapter tasks, runs a real module-worker JS workload, runs a direct WASI-style `.wasm` workload through the Star 9 worker/runtime path, runs a Go-compatible JS/WASM runner fixture, and mounts a worker-exported 9P filesystem as both `#task/<id>/export` and `#vm/<id>/guest`.
 
-Rust-backed browser examples live under `examples/` for the shell, basic VM, VM workbench, import/iframe workbench, and worker-export behavior. After the wasm package is built, open `http://127.0.0.1:4177/examples/shell.html` for the browser shell.
+Rust-backed browser examples live under `examples/` for the shell, rc shell, basic VM, VM workbench, import/iframe workbench, and worker-export behavior. After the wasm package is built, open `http://127.0.0.1:4177/examples/shell.html` for the browser shell or `http://127.0.0.1:4177/examples/rc.html` for rc mode.
 
 Live and host-capability checks, including `accept native`, `accept native-tcp`, browser OPFS/StarFS storage, and live HTTP/S3/R2 runs, are documented in `docs/LIVE_TESTS.md`; default tests remain offline.

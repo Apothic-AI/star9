@@ -3,6 +3,12 @@
 ## 2026-05-14
 
 - Rebranded the project from its legacy name to Star 9 / `star9`, including Rust crate packages, crate directories, Rust module imports, CLI command metadata, browser custom elements, JS facade/helper names, namespace root naming, live-test environment variables, examples, fixtures, docs, and audit matrices.
+- Started the rc feature completion sprint on `rc-features`.
+- Added `crates/star9-rc`, a reusable rc language crate with no Star 9 runtime/web/CLI dependency. It owns lexer/parser/AST, rc list/status models, variable and positional expansion, rc quote handling, caret concatenation, command substitution, glob and pattern matching, evaluator control flow, functions, built-ins, redirection, pipelines, a fake host, and focused tests.
+- Added `star9-shell::rc`, a Star 9 host adapter that implements the reusable rc host trait over Star 9 namespace/file/device operations and delegates Star 9-specific commands through the existing shell command surface.
+- Added native rc entry points: `star9 rc` and `star9 shell --rc`, with command/script/stdin/interactive support and CLI tests for rc functions, lists, loops, and pipelines.
+- Added wasm/browser rc shell support through `Star9System.createRcShell()`, `<star9-shell rc>`, `examples/rc.html`, Node controller tests, and browser smoke coverage.
+- Added `docs/audits/rc-compatibility-matrix.json` to classify rc features as implemented, partial, host-limited, or future-depth work, including optional `STAR9_RC_ORACLE` differential smoke coverage.
 - Started the Star 9 shell sprint on `sprint-star9-shell`.
 - Added `crates/star9-shell`, a host-neutral shell core with small command parsing, `ShellSession`, `ShellHost`, explicit stdout/stderr/status results, cwd/prompt state, command sequencing, runtime-backed file operations, task/device inspection commands, deterministic VM/network/terminal helpers, WASI/worker execution commands, and opt-in native command execution.
 - Added native CLI shell entry points: `star9 shell`, `star9 shell -c '<command>'`, script-file execution, stdin script mode, and a `reedline` interactive prompt. CLI shell sessions get a writable ramfs workspace while still accessing device files such as `#task`, `#vm`, and `#net`.

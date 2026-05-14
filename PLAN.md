@@ -2,9 +2,42 @@
 
 ## Current Focus
 
-Finish the Star 9 shell sprint while keeping the Rust tree primary, Plan 9-aligned, deterministic by default, and free of GPL or Go runtime/build dependencies.
+Finish the Star 9 rc feature completion sprint while keeping the Rust tree primary, Plan 9-aligned, deterministic by default, reusable as crates, and free of GPL or Go runtime/build dependencies.
 
-Current shell sprint contract:
+Current rc sprint contract:
+
+- Rc is implemented as a reusable `star9-rc` language crate with no dependency on `star9-runtime`, `star9-web`, `star9-cli`, or browser glue.
+- Star 9 integration lives in `star9-shell::rc` as a host adapter over namespaces, fds, tasks, device files, runtime execution, and 9P/import mounts.
+- `star9 shell --rc` and `star9 rc` run rc language features through the reusable core and Star 9 host adapter.
+- Browser rc sessions use the same wasm facade and `<star9-shell rc>` path as the native adapter.
+- Compatibility is tracked in `docs/audits/rc-compatibility-matrix.json`; unsupported or partial behaviors are explicit rather than hidden behind brittle parsing.
+
+### Star 9 Rc Feature Completion Sprint Plan
+
+1. Compatibility matrix and oracle harness
+   - Add `docs/audits/rc-compatibility-matrix.json`.
+   - Keep optional oracle comparison gated by `STAR9_RC_ORACLE`.
+
+2. Reusable rc crate boundary
+   - Add `crates/star9-rc`.
+   - Keep lexer, parser, AST, value/list model, expansion, globbing, status, evaluator, diagnostics, fake host, and conformance tests independent of Star 9 concrete types.
+
+3. Rc syntax and evaluator
+   - Support simple commands, assignments, list variables, rc quotes, `$` expansion, `$#`, `$"`, positional args, command substitution, caret concatenation, globbing, `~`, functions, blocks, `if`, `for`, `while`, `switch`, `&&`, `||`, `!`, background commands, pipelines, redirects, source/eval/shift/whatis/status built-ins, and script mode.
+
+4. Star 9 host adapter
+   - Implement rc host traits over Star 9 runtime shell operations.
+   - Preserve namespace/fd/device composition for files, devices, task commands, WASI/worker/native execution, redirection, and globbing.
+
+5. CLI and browser modes
+   - Add `star9 rc`.
+   - Add `star9 shell --rc`.
+   - Add wasm/browser rc shell facade and `<star9-shell rc>`.
+
+6. Docs and verification
+   - Update planning, progress, README, architecture, conformance, live-test docs, examples, browser smoke, Rust tests, Node tests, wasm build, and CLI acceptance.
+
+Previous shell sprint contract:
 
 - Shell behavior routes through Star 9 namespaces, files, task fds, device files, runtime requests, and 9P-shaped mounts.
 - `star9-shell` is a host-neutral shell core, not a POSIX/Bash/Plan 9 `rc` compatibility claim.

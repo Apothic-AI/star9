@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Star 9 Rc</title>
+
+<star9-system id="star9" pkg="../target/star9-web-pkg/star9_web.js">
+  <star9-bind kind="ns" dst="." src="#ramfs"></star9-bind>
+  <star9-bind kind="file" dst="welcome.txt">Star 9 rc workspace</star9-bind>
+  <star9-shell rc></star9-shell>
+</star9-system>
+
+<script type="module">
+  import "../crates/star9-web/js/star9-elements.js";
+</script>

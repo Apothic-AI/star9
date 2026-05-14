@@ -59,6 +59,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Browser StarFS SDK optional backend coverage through `backend: "starfs-sdk"` with a fake SDK adapter proving the external SDK path is additional and does not replace raw OPFS or the lightweight StarFS-compatible adapter.
 - Browser network adapter coverage for WebSocket-style transports surfaced through `new`, `<id>/ctl`, `<id>/data`, `<id>/status`, `<id>/local`, and `<id>/remote` file-like operations with explicit browser raw-listen rejection.
 - Star 9 shell parser/session/command coverage for quotes, escapes, comment handling, `;` sequencing, cwd tracking, status behavior, file commands, device path access, and deterministic VM control through `#vm` files.
+- Reusable rc crate coverage for parser/AST control flow, list variables, quotes, positional expansion, `$#`, command substitution, caret concatenation, globbing, pattern matching, functions, `for`, `if`, `switch`, redirection, pipeline behavior, source scripts, fake-host execution without depending on Star 9 runtime crates, and optional `STAR9_RC_ORACLE` comparison against a configured plan9port or 9front `rc` binary.
+- Star 9 rc adapter coverage through `star9-shell::rc`, CLI `star9 rc`, CLI `star9 shell --rc`, wasm `createRcShell`, browser controller tests, and browser smoke.
 - Native CLI shell command coverage through `star9 shell -c ...`, script/stdin handling, and opt-in native process execution routing through the existing native PTY handler when enabled.
 - Browser shell controller coverage for facade command delegation and browser storage/import helper commands, plus browser smoke coverage for `Star9System.createShell()` running file commands through the wasm runtime namespace.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
@@ -112,6 +114,8 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 `docs/audits/upstream-catch-up-matrix.json` records the accepted and deliberately unported upstream changes from `b753801..2feaf3f`, including task exports, worker export handoff, VM guest mounts, native PTY execution, raw terminal mode, the logger hook, and Rust-backed example replacements.
 
 `docs/audits/shell-dependency-matrix.json` records the shell sprint dependency/license decisions, including the rejection of GPL shell dependencies and the decision to keep Star 9's own browser-aware 9P stack primary.
+
+`docs/audits/rc-compatibility-matrix.json` records the current rc feature compatibility state across parser, expansion, evaluation, host integration, browser support, and optional oracle work.
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 

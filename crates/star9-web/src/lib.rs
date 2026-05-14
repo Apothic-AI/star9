@@ -23,7 +23,7 @@ use star9_protocol::{
     Star9Api,
 };
 use star9_runtime::{ExecutionAdapter, Runtime};
-use star9_shell::{RuntimeShellHost, ShellResult, ShellSession};
+use star9_shell::{rc::RcShell, RuntimeShellHost, ShellResult, ShellSession};
 use star9_vfs::BindMode;
 
 pub use bindings::*;
@@ -42,6 +42,11 @@ pub struct Star9System {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
 pub struct Star9Shell {
     session: RefCell<ShellSession<RuntimeShellHost>>,
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub struct Star9RcShell {
+    session: RefCell<RcShell>,
 }
 
 impl Star9Shell {
@@ -64,6 +69,30 @@ impl Star9Shell {
     }
 
     pub fn last_status_native(&self) -> i32 {
+        self.session.borrow().last_status()
+    }
+}
+
+impl Star9RcShell {
+    fn new(runtime: Runtime) -> Self {
+        Self {
+            session: RefCell::new(RcShell::new(RuntimeShellHost::new(runtime))),
+        }
+    }
+
+    pub fn eval_native(&self, line: &str) -> star9_rc::RcOutput {
+        self.session.borrow_mut().eval_line(line)
+    }
+
+    pub fn prompt_native(&self) -> String {
+        self.session.borrow().prompt()
+    }
+
+    pub fn cwd_native(&self) -> String {
+        self.session.borrow().cwd()
+    }
+
+    pub fn last_status_native(&self) -> String {
         self.session.borrow().last_status()
     }
 }
@@ -102,6 +131,10 @@ impl Star9System {
 
     pub fn create_shell_native(&self) -> Star9Shell {
         Star9Shell::new(self.runtime.clone())
+    }
+
+    pub fn create_rc_shell_native(&self) -> Star9RcShell {
+        Star9RcShell::new(self.runtime.clone())
     }
 
     pub fn register_file_bytes_native(&self, src: &str, bytes: &[u8]) -> Result<()> {
@@ -430,10 +463,30 @@ mod wasm {
         stderr: String,
     }
 
+    #[derive(Serialize)]
+    struct WebRcShellResult {
+        status: String,
+        success: bool,
+        stdout: String,
+        stderr: String,
+    }
+
     impl From<ShellResult> for WebShellResult {
         fn from(value: ShellResult) -> Self {
             Self {
                 status: value.status,
+                stdout: value.stdout,
+                stderr: value.stderr,
+            }
+        }
+    }
+
+    impl From<star9_rc::RcOutput> for WebRcShellResult {
+        fn from(value: star9_rc::RcOutput) -> Self {
+            let success = value.status.is_success();
+            Self {
+                status: value.status.to_string(),
+                success,
                 stdout: value.stdout,
                 stderr: value.stderr,
             }
@@ -463,6 +516,11 @@ mod wasm {
         #[wasm_bindgen(js_name = createShell)]
         pub fn create_shell(&self) -> Star9Shell {
             self.create_shell_native()
+        }
+
+        #[wasm_bindgen(js_name = createRcShell)]
+        pub fn create_rc_shell(&self) -> Star9RcShell {
+            self.create_rc_shell_native()
         }
 
         #[wasm_bindgen(js_name = registerFileBytes)]
@@ -737,6 +795,30 @@ mod wasm {
 
         #[wasm_bindgen(js_name = lastStatus)]
         pub fn last_status(&self) -> i32 {
+            self.last_status_native()
+        }
+    }
+
+    #[wasm_bindgen]
+    impl Star9RcShell {
+        #[wasm_bindgen(js_name = eval)]
+        pub fn eval(&self, line: &str) -> std::result::Result<JsValue, JsValue> {
+            serde_wasm_bindgen::to_value(&WebRcShellResult::from(self.eval_native(line)))
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = prompt)]
+        pub fn prompt(&self) -> String {
+            self.prompt_native()
+        }
+
+        #[wasm_bindgen(js_name = cwd)]
+        pub fn cwd(&self) -> String {
+            self.cwd_native()
+        }
+
+        #[wasm_bindgen(js_name = lastStatus)]
+        pub fn last_status(&self) -> String {
             self.last_status_native()
         }
     }

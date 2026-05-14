@@ -16,6 +16,7 @@ reedline.workspace = true
 star9-core = { path = "../star9-core" }
 star9-fs = { path = "../star9-fs" }
 star9-protocol = { path = "../star9-protocol" }
+star9-rc = { path = "../star9-rc" }
 star9-runtime = { path = "../star9-runtime" }
 star9-shell = { path = "../star9-shell" }
 star9-task = { path = "../star9-task" }
