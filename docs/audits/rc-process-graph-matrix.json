@@ -4,7 +4,7 @@
   "layers": {
     "portable_evaluator": "crates/star9-rc keeps deterministic captured execution for fake hosts, pure built-ins, browser-limited hosts, and hosts without a streaming execution provider.",
     "star9_adapter": "crates/star9-shell/src/rc.rs implements process-graph hooks over Star 9 task, fd, pipe, namespace, and execution-registry surfaces.",
-    "provider_execution": "Native-host Star 9 rc can execute external WASI stages and opt-in native stages through provider-backed task/fd graphs. JS/WASM worker graph execution remains a browser/runtime-port provider boundary."
+    "provider_execution": "Native-host Star 9 rc can execute external WASI stages, opt-in native stages, and registered JS/WASM stages through provider-backed task/fd graphs. Browser worker graph execution remains a runtime-port provider boundary."
   },
   "features": [
     {
@@ -42,14 +42,16 @@
         "Star9RcHost::execute_process_graph",
         "execute_external_graph",
         "ExecutionRegistry",
+        "ExecutionRegistry::has_handler",
         "WasmiWasiHandler",
         "NativePtyExecutionHandler"
       ],
       "evidence": [
         "rc_shell_runs_external_wasi_pipeline_through_provider_fds",
-        "rc_shell_runs_three_stage_wasi_pipeline_through_provider_fds"
+        "rc_shell_runs_three_stage_wasi_pipeline_through_provider_fds",
+        "rc_shell_runs_js_wasm_worker_stage_when_provider_registered"
       ],
-      "notes": "Native-host rc starts two-stage and linear multi-stage WASI pipelines plus opt-in native stages concurrently, installs pipe/file/stdio descriptors into task fd tables, closes writer endpoints for EOF, reads final stdout/stderr from task fds, and aggregates pipeline status. JS/WASM worker stages still fall back unless a browser/runtime provider handles them."
+      "notes": "Native-host rc starts two-stage and linear multi-stage WASI pipelines, registered JS/WASM worker stages, and opt-in native stages concurrently where handlers support streaming. It installs pipe/file/stdio descriptors into task fd tables, closes writer endpoints for EOF, reads final stdout/stderr from task fds, and aggregates pipeline status. Unregistered JS/WASM modules still fall back to the portable command path instead of pretending a provider exists."
     },
     {
       "feature": "process substitution graph records",
@@ -59,9 +61,10 @@
         "FdSink::Process"
       ],
       "evidence": [
-        "rc_shell_process_substitution_creates_task_fd_graph"
+        "rc_shell_process_substitution_creates_task_fd_graph",
+        "rc_shell_provider_process_substitution_streams_through_pipe"
       ],
-      "notes": "<{} and >{} remain evaluator data paths for portability, while the Star 9 adapter creates task/fd graph records that expose the intended pipe endpoint."
+      "notes": "Executable <{} and >{} forms use provider-backed process-substitution graphs when a host graph provider can run the stage. Pure built-ins and unsupported/browser-limited stages keep evaluator data paths for portability, while the Star 9 adapter still creates task/fd graph records that expose the intended pipe endpoint."
     },
     {
       "feature": "background jobs and wait",
@@ -75,9 +78,10 @@
       "evidence": [
         "background_wait_builtin_and_rfork_have_precise_behavior",
         "rc_shell_background_wait_records_task_job",
-        "rc_shell_runs_external_background_job_and_waits_through_provider"
+        "rc_shell_runs_external_background_job_and_waits_through_provider",
+        "rc_shell_provider_jobs_expose_lifecycle_files"
       ],
-      "notes": "Pure built-ins keep deterministic job records. External WASI/native graph jobs can run in provider threads and wait through rc job ids. Persistent task-group files and cleanup controls remain future depth."
+      "notes": "Pure built-ins keep deterministic job records. External WASI/native/registered-JS graph jobs can run in provider threads and wait through rc job ids. Provider-backed graphs expose persistent kind/job/tasks/notes/state/status files under .rc/graphs. Explicit cleanup controls remain future depth."
     },
     {
       "feature": "redirection fd graph",
@@ -89,9 +93,10 @@
       ],
       "evidence": [
         "fd_dup_process_substitution_here_docs_and_exit_work",
-        "rc_shell_runs_external_wasi_pipeline_through_provider_fds"
+        "rc_shell_runs_external_wasi_pipeline_through_provider_fds",
+        "rc_shell_provider_process_substitution_streams_through_pipe"
       ],
-      "notes": "Captured stdout/stderr redirection, fd dup/close, process-substitution sink handling, and provider stdio descriptor installation are implemented. Full arbitrary fd graph streaming for every rc edge form remains future precision work."
+      "notes": "Captured stdout/stderr redirection, fd dup/close, process-substitution sink handling, and provider stdio descriptor installation are implemented. Provider-backed process substitution can stream executable stages through graph pipe endpoints. Full arbitrary fd graph streaming for every rc edge form remains future precision work."
     },
     {
       "feature": "rfork semantics",
@@ -114,9 +119,10 @@
         "Star9RcHost::send_note_to_processes"
       ],
       "evidence": [
-        "environment_export_import_and_note_hooks_work"
+        "environment_export_import_and_note_hooks_work",
+        "rc_shell_notes_mark_active_provider_jobs"
       ],
-      "notes": "sigexit and rc note functions work. The Star 9 adapter broadcasts notes through #signal/data when present. Delivery into active provider-backed task groups remains future work."
+      "notes": "sigexit and rc note functions work. The Star 9 adapter broadcasts notes through #signal/data when present. Active provider-backed jobs are marked with deterministic signal:<note> status, graph state/status files, and task exits. Provider-specific hard cancellation is still limited to providers that expose a cancellation primitive."
     },
     {
       "feature": "browser process graphs",

@@ -27,14 +27,14 @@
     {
       "feature": "evaluation-status-control-flow",
       "status": "implemented",
-      "evidence": ["functions_for_if_switch_and_status_work", "background_wait_builtin_and_rfork_have_precise_behavior", "rc_shell_background_wait_records_task_job", "license_clean_rc_corpus_runs"],
-      "notes": "Supports sequencing, &&, ||, !, deterministic background jobs, wait reporting, wait <job>, if, for, while, switch, functions, and rc-style status strings including all-zero pipeline success. The Star 9 adapter now materializes background graph records as task entries; true task-group scheduling remains host-limited."
+      "evidence": ["functions_for_if_switch_and_status_work", "background_wait_builtin_and_rfork_have_precise_behavior", "rc_shell_background_wait_records_task_job", "rc_shell_provider_jobs_expose_lifecycle_files", "license_clean_rc_corpus_runs"],
+      "notes": "Supports sequencing, &&, ||, !, deterministic background jobs, wait reporting, wait <job>, if, for, while, switch, functions, and rc-style status strings including all-zero pipeline success. The Star 9 adapter materializes background graph records as task entries and provider-backed jobs expose persistent graph lifecycle files."
     },
     {
       "feature": "redirection-pipelines-here-docs",
       "status": "implemented-with-host-limits",
-      "evidence": ["redirection_pipeline_and_source_work", "fd_dup_process_substitution_here_docs_and_exit_work", "rc_shell_pipeline_creates_task_fd_graph", "rc_shell_process_substitution_creates_task_fd_graph"],
-      "notes": "Implements <, >, >>, fd-specific output redirects, fd dup/close for captured stdout/stderr, /dev/null handling, stdout/stderr pipe selection, <{} and >{} process substitution through evaluator pipes, and parsed here documents with quoted-delimiter expansion suppression. The reusable evaluator remains deterministic; the Star 9 adapter now creates observable task/fd graph records for pipelines and process substitution. Concurrent streaming external stage execution remains host-limited."
+      "evidence": ["redirection_pipeline_and_source_work", "fd_dup_process_substitution_here_docs_and_exit_work", "rc_shell_pipeline_creates_task_fd_graph", "rc_shell_process_substitution_creates_task_fd_graph", "rc_shell_provider_process_substitution_streams_through_pipe", "rc_shell_runs_js_wasm_worker_stage_when_provider_registered"],
+      "notes": "Implements <, >, >>, fd-specific output redirects, fd dup/close for captured stdout/stderr, /dev/null handling, stdout/stderr pipe selection, <{} and >{} process substitution, and parsed here documents with quoted-delimiter expansion suppression. The reusable evaluator remains deterministic; the Star 9 adapter creates observable task/fd graph records and can run provider-backed WASI/native/registered-JS-WASM stages through streaming graph fds where handlers exist."
     },
     {
       "feature": "command-substitution",
@@ -45,8 +45,8 @@
     {
       "feature": "environment-and-notes",
       "status": "implemented-with-host-limits",
-      "evidence": ["environment_export_import_and_note_hooks_work", "runtime_installs_env_registry", "rc_shell_syncs_environment_with_env_device", "license_clean_rc_corpus_runs"],
-      "notes": "Variables, local command assignments, zero-byte-separated environment export/import, fn#name function export/import, sigexit, and deliver_note(sig*) hooks are implemented in the reusable evaluator. Star 9 mounts a runtime #env/env device and the rc adapter imports/exports rc variables and functions through that file surface."
+      "evidence": ["environment_export_import_and_note_hooks_work", "runtime_installs_env_registry", "rc_shell_syncs_environment_with_env_device", "rc_shell_notes_mark_active_provider_jobs", "license_clean_rc_corpus_runs"],
+      "notes": "Variables, local command assignments, zero-byte-separated environment export/import, fn#name function export/import, sigexit, and deliver_note(sig*) hooks are implemented in the reusable evaluator. Star 9 mounts a runtime #env/env device and the rc adapter imports/exports rc variables and functions through that file surface. Active provider-backed jobs receive deterministic signal:<note> graph state/status when notes are delivered."
     },
     {
       "feature": "builtins",

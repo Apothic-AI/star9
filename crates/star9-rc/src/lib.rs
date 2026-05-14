@@ -1661,14 +1661,50 @@ impl<H: RcHost> RcSession<H> {
             .is_some()
     }
 
+    fn try_execute_process_substitution_graph(
+        &mut self,
+        kind: RcProcessGraphKind,
+        node: &Node,
+        input: String,
+        fd: u32,
+    ) -> Option<RcOutput> {
+        let bindings = match kind {
+            RcProcessGraphKind::ProcessSubstitutionRead => vec![RcFdBindingSpec {
+                fd,
+                path: "pipe:0/data".into(),
+                readable: false,
+                writable: true,
+            }],
+            RcProcessGraphKind::ProcessSubstitutionWrite => Vec::new(),
+            _ => return None,
+        };
+        let stage = self.executable_stage(node, input, bindings)?;
+        match self.host.execute_process_graph(RcExecutableGraphSpec {
+            kind,
+            job_id: None,
+            stages: vec![stage],
+        }) {
+            Ok(out) => out,
+            Err(err) => Some(RcOutput::failure(
+                "process-substitution",
+                format!("process substitution: {err}\n"),
+            )),
+        }
+    }
+
     fn executable_stage(
         &mut self,
         node: &Node,
         stdin: String,
         fd_bindings: Vec<RcFdBindingSpec>,
     ) -> Option<RcExecutableStageSpec> {
-        let Node::Simple(simple) = node else {
-            return None;
+        let simple = match node {
+            Node::Simple(simple) => simple,
+            Node::Block(nodes) | Node::Sequence(nodes) if nodes.len() == 1 => match &nodes[0] {
+                Node::Simple(simple) => simple,
+                _ => return None,
+            },
+            _ => return None,
         };
         if !simple.redirects.is_empty() {
             return None;
@@ -2307,6 +2343,15 @@ impl<H: RcHost> RcSession<H> {
             RedirectMode::Read => {
                 match redirect.target.as_ref() {
                     Some(RedirectTarget::Process(node)) => {
+                        if let Some(out) = self.try_execute_process_substitution_graph(
+                            RcProcessGraphKind::ProcessSubstitutionRead,
+                            node,
+                            String::new(),
+                            1,
+                        ) {
+                            *input = out.stdout;
+                            return Ok(());
+                        }
                         let graph = self.prepare_process_substitution_graph(
                             RcProcessGraphKind::ProcessSubstitutionRead,
                             node,
@@ -2447,7 +2492,14 @@ impl<H: RcHost> RcSession<H> {
                 }
             }
             FdSink::Process { node, graph } => {
-                let next = self.eval_node(&node, data);
+                let next = self
+                    .try_execute_process_substitution_graph(
+                        RcProcessGraphKind::ProcessSubstitutionWrite,
+                        &node,
+                        data.clone(),
+                        fd,
+                    )
+                    .unwrap_or_else(|| self.eval_node(&node, data));
                 self.finish_process_graph(graph.as_ref(), std::slice::from_ref(&next.status));
                 output.stdout.push_str(&next.stdout);
                 output.stderr.push_str(&next.stderr);
