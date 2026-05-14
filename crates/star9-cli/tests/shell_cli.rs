@@ -22,6 +22,43 @@ fn shell_command_mode_runs_file_commands() {
 }
 
 #[test]
+fn shell_defaults_to_rc_language_features() {
+    let output = Command::new(env!("CARGO_BIN_EXE_star9"))
+        .args(["shell", "-c", "echo a | cat"])
+        .output()
+        .expect("star9 shell command runs");
+
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "a\n");
+}
+
+#[test]
+fn shell_simple_flag_runs_admin_shell_parser() {
+    let output = Command::new(env!("CARGO_BIN_EXE_star9"))
+        .args([
+            "shell",
+            "--simple",
+            "-c",
+            "mkdir demo; write demo/hello hello; cat demo/hello",
+        ])
+        .output()
+        .expect("star9 shell --simple command runs");
+
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello");
+}
+
+#[test]
 fn shell_command_mode_lists_task_device() {
     let output = Command::new(env!("CARGO_BIN_EXE_star9"))
         .args(["shell", "-c", "ls #task"])
@@ -100,22 +137,6 @@ fn rc_command_mode_runs_service_mount_commands() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
-}
-
-#[test]
-fn shell_rc_flag_runs_rc_language_features() {
-    let output = Command::new(env!("CARGO_BIN_EXE_star9"))
-        .args(["shell", "--rc", "-c", "echo a | cat"])
-        .output()
-        .expect("star9 shell --rc command runs");
-
-    assert!(
-        output.status.success(),
-        "status={} stderr={}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "a\n");
 }
 
 #[test]

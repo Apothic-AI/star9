@@ -8,8 +8,9 @@ Current rc sprint contract:
 
 - Rc is implemented as a reusable `star9-rc` language crate with no dependency on `star9-runtime`, `star9-web`, `star9-cli`, or browser glue.
 - Star 9 integration lives in `star9-shell::rc` as a host adapter over namespaces, fds, tasks, device files, runtime execution, and 9P/import mounts.
-- `star9 shell --rc` and `star9 rc` run rc language features through the reusable core and Star 9 host adapter.
-- Browser rc sessions use the same wasm facade and `<star9-shell rc>` path as the native adapter.
+- `star9 shell` and `star9 rc` run rc language features through the reusable core and Star 9 host adapter.
+- The smaller Star 9 admin parser remains available as `star9 shell --simple`.
+- Browser rc sessions use the same wasm facade and rc-first `<star9-shell>` path as the native adapter.
 - Compatibility is tracked in `docs/audits/rc-compatibility-matrix.json`; unsupported or partial behaviors are explicit rather than hidden behind brittle parsing.
 - The remaining parity pass added 9front-style `if not` parsing across command separators, parenthesized groups, fd dup/close redirection, `/dev/null`, fd-selected pipelines, process substitution, parsed here documents, `exit` propagation, `sigexit`/note hooks, environment export/import, `$path` rc script dispatch, CLI script args, and Star 9 adapter dispatch for WASI/JS-looking namespace commands.
 - Plan 9 command/service compatibility is tracked in `docs/audits/plan9-command-compatibility-matrix.json`. `bind`, `unmount`, `srv`, and `mount` are now implemented as shell/rc-visible frontends over namespace binds, `#srv`, loopback 9P exports, and ordinary mount points. Provider-heavy commands such as `dossrv` and `vacfs` are precise provider-missing boundaries until matching Star 9 devices exist.
@@ -35,8 +36,8 @@ Current rc sprint contract:
 
 5. CLI and browser modes
    - Add `star9 rc`.
-   - Add `star9 shell --rc`.
-   - Add wasm/browser rc shell facade and `<star9-shell rc>`.
+   - Make `star9 shell` rc-first and keep the small admin parser behind `star9 shell --simple`.
+   - Add wasm/browser rc shell facade and make `<star9-shell>` rc-first, with `<star9-shell simple>` for the small admin parser.
 
 6. Docs and verification
    - Update planning, progress, README, architecture, conformance, live-test docs, examples, browser smoke, Rust tests, Node tests, wasm build, and CLI acceptance.
@@ -71,7 +72,8 @@ Previous shell sprint contract:
    - Provide `pwd`, `cd`, `ls`, `cat`, `write`, `append`, `mkdir`, `rm`, `mv`, `cp`, `stat`, `version`, `binds`, `tasks`, `fds`, `term`, `vm`, `net`, `wasi`, `worker`, `native`, and `help`.
 
 5. Native CLI shell
-   - Add `star9 shell`, `star9 shell -c '<command>'`, `star9 shell <script-file>`, and stdin script mode.
+   - Add `star9 shell`, `star9 shell -c '<command>'`, `star9 shell <script-file>`, and stdin script mode, defaulting to rc.
+   - Keep the small admin parser available through `star9 shell --simple`.
    - Use `reedline` for interactive mode.
 
 6. Browser shell

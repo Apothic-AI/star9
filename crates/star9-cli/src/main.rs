@@ -54,7 +54,9 @@ enum Command {
         command: Option<String>,
         #[arg(long)]
         native: bool,
-        #[arg(long)]
+        #[arg(long, help = "Use the small Star 9 admin shell instead of rc")]
+        simple: bool,
+        #[arg(long, hide = true, conflicts_with = "simple")]
         rc: bool,
         script: Option<PathBuf>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -136,16 +138,22 @@ fn run() -> Result<i32> {
         Command::Shell {
             command,
             native,
-            rc,
+            simple,
+            rc: _,
             script,
             args,
         } => {
             let host = RuntimeShellHost::new(runtime).with_writable_workspace()?;
             let host = if native { host.enable_native() } else { host };
-            if rc {
-                run_rc_shell(host, command, script, args)
-            } else {
+            if simple {
+                if !args.is_empty() {
+                    return Err(star9_core::Error::Message(
+                        "shell --simple does not accept script arguments".into(),
+                    ));
+                }
                 run_shell(host, command, script)
+            } else {
+                run_rc_shell(host, command, script, args)
             }
         }
         Command::Rc {

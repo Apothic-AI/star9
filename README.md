@@ -65,13 +65,13 @@ Run interactively:
 cargo run -p star9-cli -- shell
 ```
 
-The shell is Star 9-native. It exposes commands such as `ls`, `cat`, `write`, `bind`, `unmount`, `srv`, `mount`, `tasks`, `fds`, `term`, `vm`, `net`, `wasi`, and `worker` through Star 9 namespaces and device files. Host process execution is opt-in with `star9 shell --native` and the `native <cmd...>` shell command.
+`star9 shell` is rc-first. It uses the reusable rc language core by default while exposing Star 9-native commands such as `ls`, `cat`, `write`, `bind`, `unmount`, `srv`, `mount`, `tasks`, `fds`, `term`, `vm`, `net`, `wasi`, and `worker` through Star 9 namespaces and device files. The smaller admin parser is still available as `star9 shell --simple`. Host process execution is opt-in with `star9 shell --native` and the `native <cmd...>` shell command.
 
 Run rc mode:
 
 ```sh
 cargo run -p star9-cli -- rc -c 'x=(one two); fn twice { echo $1 $1 }; for(i in $x) twice $i'
-cargo run -p star9-cli -- shell --rc -c 'echo hello | cat'
+cargo run -p star9-cli -- shell -c 'echo hello | cat'
 cargo run -p star9-cli -- rc ./script.rc arg1 arg2
 ```
 
@@ -100,6 +100,6 @@ python3 -m http.server 4177 --bind 127.0.0.1
 
 Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build` command. The page sets `document.body.dataset.status` to `ok` after it initializes `star9-system`, applies `star9-bind` children, binds a ramfs, performs file API, mounts a 9P export over a real `MessagePort`, exercises Rust 9P loopback operations, exercises real browser storage adapters through the async JS mount table where available, mounts OPFS and StarFS through task-facing browser paths where supported, drives normalized and raw browser terminal paths, starts representative WASI and Go-compatible JS adapter tasks, runs a real module-worker JS workload, runs a direct WASI-style `.wasm` workload through the Star 9 worker/runtime path, runs a Go-compatible JS/WASM runner fixture, and mounts a worker-exported 9P filesystem as both `#task/<id>/export` and `#vm/<id>/guest`.
 
-Rust-backed browser examples live under `examples/` for the shell, rc shell, basic VM, VM workbench, import/iframe workbench, and worker-export behavior. After the wasm package is built, open `http://127.0.0.1:4177/examples/shell.html` for the browser shell or `http://127.0.0.1:4177/examples/rc.html` for rc mode.
+Rust-backed browser examples live under `examples/` for the shell, rc shell, basic VM, VM workbench, import/iframe workbench, and worker-export behavior. After the wasm package is built, open `http://127.0.0.1:4177/examples/shell.html` for the default rc-backed browser shell or `http://127.0.0.1:4177/examples/rc.html` for the explicit rc example.
 
 Live and host-capability checks, including `accept native`, `accept native-tcp`, browser OPFS/StarFS storage, and live HTTP/S3/R2 runs, are documented in `docs/LIVE_TESTS.md`; default tests remain offline.

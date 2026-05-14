@@ -12,7 +12,7 @@ export class Star9ShellController {
             throw new Error("createStar9Shell requires a star9-system instance");
         }
         this.system = system;
-        this.rc = Boolean(options.rc);
+        this.rc = options.rc === undefined ? !Boolean(options.simple) : Boolean(options.rc);
         this.shell = options.shell || this.#createFacadeShell(system);
         if (!this.shell || typeof this.shell.eval !== "function") {
             throw new Error("star9 shell facade is not available");
@@ -155,7 +155,10 @@ export class ShellElement extends Star9Element {
 
     async _awake() {
         try {
-        this.controller = createStar9Shell(this._system, { rc: this.hasAttribute("rc") });
+            const options = this.hasAttribute("simple")
+                ? { simple: true }
+                : { rc: true };
+            this.controller = createStar9Shell(this._system, options);
             this.#render();
             this.#append("Star 9 shell ready\n", "system");
             this._resolveReady(this);

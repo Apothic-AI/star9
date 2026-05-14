@@ -17,11 +17,11 @@ test("splitShellWords handles quotes and escapes for browser shell commands", ()
     assert.deepEqual(splitShellWords("write a hello\\ world"), ["write", "a", "hello world"]);
 });
 
-test("Star9ShellController delegates normal commands to the wasm shell facade", async () => {
+test("Star9ShellController defaults to the rc shell facade", async () => {
     const calls = [];
     const controller = createStar9Shell({
         system: {
-            createShell() {
+            createRcShell() {
                 return {
                     eval(line) {
                         calls.push(line);
@@ -52,19 +52,19 @@ test("Star9ShellController delegates normal commands to the wasm shell facade", 
     assert.deepEqual(calls, ["version"]);
 });
 
-test("Star9ShellController can request an rc shell facade", async () => {
+test("Star9ShellController can request the simple shell facade", async () => {
     let created = false;
     const controller = createStar9Shell({
         system: {
-            createRcShell() {
+            createShell() {
                 created = true;
                 return {
                     eval(line) {
-                        assert.equal(line, "x=(a b); echo $x");
-                        return { status: "0", success: true, stdout: "a b\n", stderr: "" };
+                        assert.equal(line, "version");
+                        return { status: 0, stdout: "0.1.0\n", stderr: "" };
                     },
                     prompt() {
-                        return "rc:.$ ";
+                        return "star9:.$ ";
                     },
                     cwd() {
                         return ".";
@@ -75,12 +75,12 @@ test("Star9ShellController can request an rc shell facade", async () => {
                 };
             },
         },
-    }, { rc: true });
+    }, { simple: true });
 
-    assert.equal(controller.prompt(), "rc:.$ ");
-    assert.deepEqual(await controller.eval("x=(a b); echo $x"), {
+    assert.equal(controller.prompt(), "star9:.$ ");
+    assert.deepEqual(await controller.eval("version"), {
         status: 0,
-        stdout: "a b\n",
+        stdout: "0.1.0\n",
         stderr: "",
     });
     assert.equal(created, true);

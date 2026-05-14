@@ -64,7 +64,7 @@
       "feature": "cli-browser-entry-points",
       "status": "implemented",
       "evidence": ["cargo test -p star9-cli", "tests/browser-shell.test.mjs", "tests/browser-smoke.html"],
-      "notes": "Native `star9 rc`, `star9 shell --rc`, wasm `createRcShell`, and `<star9-shell rc>` are wired."
+      "notes": "Native `star9 rc`, rc-first `star9 shell`, wasm `createRcShell`, and rc-first `<star9-shell>` are wired. The smaller admin parser remains available as `star9 shell --simple` and `<star9-shell simple>`."
     },
     {
       "feature": "plan9-command-service-surface",
