@@ -41,7 +41,16 @@ cargo run -p star9-cli -- rc /tmp/example.rc arg1 arg2
 
 The browser rc demo is available at `http://127.0.0.1:4177/examples/rc.html` after `wasm-pack build`.
 Optional differential rc checks run during `cargo test -p star9-rc` when `STAR9_RC_ORACLE=/path/to/rc` points at a plan9port or 9front `rc` binary.
-Current 9front-style scripts can use rc language features such as `if not`, fd dup redirection, process substitution, and here documents. Scripts that call Plan 9 host commands such as `srv`, `mount`, `bind`, `dossrv`, or `vacfs` still require corresponding Star 9 device/provider surfaces.
+Current 9front-style scripts can use rc language features such as `if not`, fd dup redirection, process substitution, here documents, and unquoted service addresses such as `tcp!9p.io`.
+
+Star 9 now provides the default offline command/service subset for namespace composition:
+
+```sh
+cargo run -p star9-cli -- rc -c 'mkdir exported; write exported/hello ok; srv root rootsrv; mount rootsrv n/root; cat n/root/exported/hello'
+cargo run -p star9-cli -- shell -c 'mkdir exported; write exported/hello ok; bind exported mirror; cat mirror/hello; unmount mirror'
+```
+
+The `srv` command can register loopback Star 9 namespace exports by default. Network service providers such as `srv tcp!host name`, disk providers such as `dossrv`, and vac/Venti providers such as `vacfs` remain provider-gated and currently return precise provider-missing errors unless a matching Star 9 device/provider is configured.
 
 ## HTTP
 

@@ -580,12 +580,7 @@ fn read_word(chars: &[char], mut i: usize) -> RcResult<(String, usize)> {
             }
             continue;
         }
-        if ch.is_whitespace()
-            || matches!(
-                ch,
-                ';' | '{' | '}' | '(' | ')' | '&' | '|' | '<' | '>' | '!'
-            )
-        {
+        if ch.is_whitespace() || matches!(ch, ';' | '{' | '}' | '(' | ')' | '&' | '|' | '<' | '>') {
             break;
         }
         if ch == '\'' {
@@ -2536,6 +2531,15 @@ mod tests {
         assert_eq!(script.commands.len(), 2);
         assert!(matches!(script.commands[0], Node::Function { .. }));
         assert!(matches!(script.commands[1], Node::For { .. }));
+    }
+
+    #[test]
+    fn lexer_keeps_bang_inside_service_address_words() {
+        let script = parse("srv -nqC tcp!9p.io sources /n/sources").unwrap();
+        let Node::Simple(command) = &script.commands[0] else {
+            panic!("expected simple command");
+        };
+        assert_eq!(command.words[2].raw(), "tcp!9p.io");
     }
 
     #[test]

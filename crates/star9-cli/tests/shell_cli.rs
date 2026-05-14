@@ -40,6 +40,26 @@ fn shell_command_mode_lists_task_device() {
 }
 
 #[test]
+fn shell_command_mode_runs_service_mount_commands() {
+    let output = Command::new(env!("CARGO_BIN_EXE_star9"))
+        .args([
+            "shell",
+            "-c",
+            "mkdir exported; write exported/hello ok; srv root rootsrv; mount rootsrv n/root; cat n/root/exported/hello",
+        ])
+        .output()
+        .expect("star9 shell command runs");
+
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
+}
+
+#[test]
 fn rc_command_mode_runs_rc_language_features() {
     let output = Command::new(env!("CARGO_BIN_EXE_star9"))
         .args([
@@ -60,6 +80,26 @@ fn rc_command_mode_runs_rc_language_features() {
         String::from_utf8_lossy(&output.stdout),
         "one one\ntwo two\n"
     );
+}
+
+#[test]
+fn rc_command_mode_runs_service_mount_commands() {
+    let output = Command::new(env!("CARGO_BIN_EXE_star9"))
+        .args([
+            "rc",
+            "-c",
+            "mkdir exported; write exported/hello ok; srv root rootsrv; mount rootsrv n/root; cat n/root/exported/hello",
+        ])
+        .output()
+        .expect("star9 rc command runs");
+
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
 }
 
 #[test]

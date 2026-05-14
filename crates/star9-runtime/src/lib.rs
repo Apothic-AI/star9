@@ -1,14 +1,20 @@
 //! Star 9 runtime composition.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 
 mod devices;
 mod execution;
 mod wasi;
 mod worker;
 
-use star9_core::{FileMode, FsContext, Result};
-use star9_fs::{fs_ref, read_file, write_file, FileSystem, FsRef, MapFs, Node};
+use star9_core::{
+    base_name, clean_path, valid_path, DirEntry, Error, ErrorKind, FileMode, FsContext, Metadata,
+    Result,
+};
+use star9_fs::{
+    directory_file, fs_ref, read_file, write_file, BoxFile, FileSystem, FsRef, MapFs, MemFs, Node,
+};
 use star9_protocol::p9::{LoopbackTransport, NinePClientFs, NinePServer, NinePTransport};
 use star9_task::{Task, TaskFs};
 use star9_vfs::{BindMode, Namespace};
@@ -23,9 +29,121 @@ pub use worker::{RuntimeProtocolHost, WorkerHost};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone)]
+struct ServiceEntry {
+    fs: FsRef,
+    description: String,
+}
+
+#[derive(Clone, Default)]
+pub struct ServiceRegistry {
+    entries: Arc<RwLock<BTreeMap<String, ServiceEntry>>>,
+}
+
+impl ServiceRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&self, name: &str, fs: FsRef, description: impl Into<String>) -> Result<()> {
+        let name = service_key(name)?;
+        self.entries.write().unwrap().insert(
+            name,
+            ServiceEntry {
+                fs,
+                description: description.into(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn unregister(&self, name: &str) -> Result<()> {
+        let name = service_key(name)?;
+        if self.entries.write().unwrap().remove(&name).is_some() {
+            Ok(())
+        } else {
+            Err(Error::path("srv", name, ErrorKind::NotFound))
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Result<FsRef> {
+        let name = service_key(name)?;
+        self.entries
+            .read()
+            .unwrap()
+            .get(&name)
+            .map(|entry| entry.fs.clone())
+            .ok_or_else(|| Error::path("srv", name, ErrorKind::NotFound))
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.entries.read().unwrap().keys().cloned().collect()
+    }
+}
+
+impl FileSystem for ServiceRegistry {
+    fn open(&self, ctx: &FsContext, name: &str) -> Result<BoxFile> {
+        let name = clean_path(name);
+        if name == "." {
+            let entries = self
+                .entries
+                .read()
+                .unwrap()
+                .iter()
+                .map(|(service, entry)| {
+                    DirEntry::new(
+                        service.clone(),
+                        Metadata::file(service, 0o444, entry.description.len() as u64),
+                    )
+                })
+                .collect();
+            return Ok(directory_file(Metadata::dir("srv", 0o555), entries));
+        }
+        let key = service_key(&name)?;
+        let description = self
+            .entries
+            .read()
+            .unwrap()
+            .get(&key)
+            .map(|entry| entry.description.clone())
+            .ok_or_else(|| Error::path("open", &key, ErrorKind::NotFound))?;
+        Node::file(
+            base_name(&key),
+            description.into_bytes(),
+            FileMode::from_perm(0o444),
+        )
+        .open(ctx, ".")
+    }
+
+    fn stat(&self, _ctx: &FsContext, name: &str) -> Result<Metadata> {
+        let name = clean_path(name);
+        if name == "." {
+            return Ok(Metadata::dir("srv", 0o555));
+        }
+        let key = service_key(&name)?;
+        let description_len = self
+            .entries
+            .read()
+            .unwrap()
+            .get(&key)
+            .map(|entry| entry.description.len())
+            .ok_or_else(|| Error::path("stat", &key, ErrorKind::NotFound))?;
+        Ok(Metadata::file(
+            base_name(&key),
+            0o444,
+            description_len as u64,
+        ))
+    }
+
+    fn remove(&self, name: &str) -> Result<()> {
+        self.unregister(name)
+    }
+}
+
+#[derive(Clone)]
 pub struct Runtime {
     root: Task,
     task_fs: TaskFs,
+    service_registry: ServiceRegistry,
     devices: devices::RuntimeDevices,
     execution_registry: ExecutionRegistry,
     protocol_host: RuntimeProtocolHost,
@@ -36,12 +154,15 @@ impl Runtime {
         let task_fs = TaskFs::new();
         let root = task_fs.alloc("auto", None)?;
         bind_core(&root, task_fs.clone())?;
+        let service_registry = ServiceRegistry::new();
+        bind_services_and_compatibility_dirs(&root, service_registry.clone())?;
         let devices = bind_devices(&root)?;
         let execution_registry = ExecutionRegistry::new();
         let protocol_host = RuntimeProtocolHost::new(root.clone(), task_fs.clone());
         Ok(Self {
             root,
             task_fs,
+            service_registry,
             devices,
             execution_registry,
             protocol_host,
@@ -66,6 +187,10 @@ impl Runtime {
 
     pub fn execution_registry(&self) -> ExecutionRegistry {
         self.execution_registry.clone()
+    }
+
+    pub fn service_registry(&self) -> ServiceRegistry {
+        self.service_registry.clone()
     }
 
     pub fn handle_runtime_request(
@@ -113,6 +238,33 @@ impl Runtime {
         NinePClientFs::connect(Arc::new(LoopbackTransport::new(self.export_9p())))
     }
 
+    pub fn register_service(
+        &self,
+        name: &str,
+        fs: FsRef,
+        description: impl Into<String>,
+    ) -> Result<()> {
+        self.service_registry.register(name, fs, description)
+    }
+
+    pub fn unregister_service(&self, name: &str) -> Result<()> {
+        self.service_registry.unregister(name)
+    }
+
+    pub fn register_loopback_service(&self, name: &str) -> Result<()> {
+        let client = self.loopback_9p_client()?;
+        self.register_service(
+            name,
+            fs_ref(client),
+            format!("loopback root namespace export: {}\n", service_key(name)?),
+        )
+    }
+
+    pub fn mount_service(&self, service: &str, dst: &str, mode: BindMode) -> Result<()> {
+        let fs = self.service_registry.get(service)?;
+        self.root.namespace().bind(fs, ".", dst, mode)
+    }
+
     pub fn set_task_export(&self, task_id: &str, fs: FsRef) -> Result<()> {
         self.task_fs.lookup(task_id)?.set_export(fs);
         Ok(())
@@ -148,8 +300,40 @@ fn bind_core(root: &Task, task_fs: TaskFs) -> Result<()> {
     Ok(())
 }
 
+fn bind_services_and_compatibility_dirs(
+    root: &Task,
+    service_registry: ServiceRegistry,
+) -> Result<()> {
+    root.namespace().bind(
+        fs_ref(service_registry.clone()),
+        ".",
+        "#srv",
+        BindMode::Replace,
+    )?;
+    root.namespace()
+        .bind(fs_ref(service_registry), ".", "srv", BindMode::Replace)?;
+    root.namespace()
+        .bind(fs_ref(MemFs::new()), ".", "n", BindMode::Replace)?;
+    root.namespace()
+        .bind(fs_ref(MemFs::new()), ".", "mnt", BindMode::Replace)?;
+    Ok(())
+}
+
 fn bind_devices(root: &Task) -> Result<devices::RuntimeDevices> {
     devices::bind_devices(root)
+}
+
+fn service_key(input: &str) -> Result<String> {
+    let trimmed = input.trim();
+    let path = trimmed.trim_start_matches('/');
+    let key = path
+        .strip_prefix("#srv/")
+        .or_else(|| path.strip_prefix("srv/"))
+        .unwrap_or(path);
+    if key.is_empty() || key == "." || key.contains('/') || !valid_path(key) {
+        return Err(Error::path("srv", input, ErrorKind::Invalid));
+    }
+    Ok(key.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -255,10 +439,7 @@ mod tests {
             .into_iter()
             .map(|entry| entry.name)
             .collect();
-        assert!(
-            root_entries.is_empty(),
-            "hidden device binds should not list at root"
-        );
+        assert_eq!(root_entries, vec!["mnt", "n", "srv"]);
         assert!(read_dir(runtime.namespace().as_ref(), "#task").is_ok());
         assert!(read_dir(runtime.namespace().as_ref(), "#pipe").is_ok());
         assert!(read_dir(runtime.namespace().as_ref(), "#term").is_ok());
@@ -587,6 +768,69 @@ mod tests {
         assert_eq!(
             read_file(runtime.namespace().as_ref(), "remote/tmp/file").unwrap(),
             b"over-9p"
+        );
+    }
+
+    #[test]
+    fn runtime_installs_service_registry_and_compatibility_dirs() {
+        let runtime = Runtime::new().unwrap();
+        let ns = runtime.namespace();
+        let root_entries = read_dir(ns.as_ref(), ".")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert!(
+            root_entries.contains(&"srv".to_string()),
+            "{root_entries:?}"
+        );
+        assert!(root_entries.contains(&"n".to_string()), "{root_entries:?}");
+        assert!(
+            root_entries.contains(&"mnt".to_string()),
+            "{root_entries:?}"
+        );
+
+        runtime.register_loopback_service("rootfs").unwrap();
+        let services = read_dir(ns.as_ref(), "#srv")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert_eq!(services, vec!["rootfs"]);
+        assert!(
+            String::from_utf8_lossy(&read_file(ns.as_ref(), "srv/rootfs").unwrap())
+                .contains("loopback root namespace export")
+        );
+    }
+
+    #[test]
+    fn runtime_mounts_registered_services() {
+        let runtime = Runtime::new().unwrap();
+        runtime
+            .namespace()
+            .bind(
+                fs_ref(MemFs::from_entries([(
+                    "tmp-service-file",
+                    b"served".to_vec(),
+                )])),
+                ".",
+                "workspace",
+                BindMode::Replace,
+            )
+            .unwrap();
+
+        runtime.register_loopback_service("rootfs").unwrap();
+        runtime
+            .mount_service("rootfs", "n/rootfs", BindMode::Replace)
+            .unwrap();
+
+        assert_eq!(
+            read_file(
+                runtime.namespace().as_ref(),
+                "n/rootfs/workspace/tmp-service-file"
+            )
+            .unwrap(),
+            b"served"
         );
     }
 

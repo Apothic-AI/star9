@@ -12,6 +12,7 @@ Current rc sprint contract:
 - Browser rc sessions use the same wasm facade and `<star9-shell rc>` path as the native adapter.
 - Compatibility is tracked in `docs/audits/rc-compatibility-matrix.json`; unsupported or partial behaviors are explicit rather than hidden behind brittle parsing.
 - The remaining parity pass added 9front-style `if not` parsing across command separators, parenthesized groups, fd dup/close redirection, `/dev/null`, fd-selected pipelines, process substitution, parsed here documents, `exit` propagation, `sigexit`/note hooks, environment export/import, `$path` rc script dispatch, CLI script args, and Star 9 adapter dispatch for WASI/JS-looking namespace commands.
+- Plan 9 command/service compatibility is tracked in `docs/audits/plan9-command-compatibility-matrix.json`. `bind`, `unmount`, `srv`, and `mount` are now implemented as shell/rc-visible frontends over namespace binds, `#srv`, loopback 9P exports, and ordinary mount points. Provider-heavy commands such as `dossrv` and `vacfs` are precise provider-missing boundaries until matching Star 9 devices exist.
 
 ### Star 9 Rc Feature Completion Sprint Plan
 
@@ -30,6 +31,7 @@ Current rc sprint contract:
 4. Star 9 host adapter
    - Implement rc host traits over Star 9 runtime shell operations.
    - Preserve namespace/fd/device composition for files, devices, task commands, WASI/worker/native execution, redirection, and globbing.
+   - Provide Plan 9 command/service frontends for `bind`, `unmount`, `srv`, and `mount` through the Star 9 namespace and service registry.
 
 5. CLI and browser modes
    - Add `star9 rc`.

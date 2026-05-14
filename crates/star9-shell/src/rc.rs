@@ -208,4 +208,28 @@ mod tests {
         assert!(out.status.is_success(), "{}", out.stderr);
         assert!(out.stdout.contains("1/"), "{}", out.stdout);
     }
+
+    #[test]
+    fn rc_shell_can_use_star9_service_mount_commands() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let mut rc = RcShell::new(host);
+        let out = rc.eval_line(
+            "mkdir exported; write exported/hello ok; srv root rootsrv; mount rootsrv n/root; cat n/root/exported/hello",
+        );
+        assert!(out.status.is_success(), "{}", out.stderr);
+        assert_eq!(out.stdout, "ok");
+    }
+
+    #[test]
+    fn rc_shell_reports_unavailable_plan9_service_providers() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let mut rc = RcShell::new(host);
+        let out = rc.eval_line("srv -nqC tcp!9p.io sources /n/sources");
+        assert!(!out.status.is_success());
+        assert!(
+            out.stderr.contains("provider not configured"),
+            "{}",
+            out.stderr
+        );
+    }
 }

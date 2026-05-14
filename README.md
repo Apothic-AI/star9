@@ -16,6 +16,7 @@ This workspace implements the main Star 9 runtime surfaces in Rust:
 - Explicit metadata caching through `MetaCacheFs` and local-first sync orchestration through `SyncFs`, including reusable tar patch application and a native background debounce scheduler.
 - Task/resource filesystem with per-task namespaces, aliases, drivers, and file descriptors.
 - Task export filesystems exposed at `#task/<id>/export`, plus bind introspection through `#task/<id>/binds`.
+- Runtime service registry exposed at hidden `#srv` and visible `srv`, with `n`/`mnt` compatibility mount points and shell/rc-visible `bind`, `unmount`, `srv`, and `mount` commands.
 - Typed public file API for the Star 9 JS handle operation set.
 - CBOR encode/decode helpers for the typed public API boundary.
 - Runtime root construction with built-in `#star9`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net` surfaces.
@@ -64,7 +65,7 @@ Run interactively:
 cargo run -p star9-cli -- shell
 ```
 
-The shell is Star 9-native. It exposes commands such as `ls`, `cat`, `write`, `tasks`, `fds`, `term`, `vm`, `net`, `wasi`, and `worker` through Star 9 namespaces and device files. Host process execution is opt-in with `star9 shell --native` and the `native <cmd...>` shell command.
+The shell is Star 9-native. It exposes commands such as `ls`, `cat`, `write`, `bind`, `unmount`, `srv`, `mount`, `tasks`, `fds`, `term`, `vm`, `net`, `wasi`, and `worker` through Star 9 namespaces and device files. Host process execution is opt-in with `star9 shell --native` and the `native <cmd...>` shell command.
 
 Run rc mode:
 
@@ -75,6 +76,14 @@ cargo run -p star9-cli -- rc ./script.rc arg1 arg2
 ```
 
 The reusable `star9-rc` crate owns the rc language core and can be embedded without depending on Star 9 runtime or browser crates. It covers rc lists, expansion, functions/control flow, globbing, fd redirection/duplication, process substitution, here documents, environment import/export, notes, `$path` rc script dispatch, and optional oracle checks. Star 9 integrates it through a host adapter that routes files, commands, and devices through namespaces, task fds, and runtime surfaces.
+
+Plan 9-style service composition works through the same shell/rc path:
+
+```sh
+cargo run -p star9-cli -- rc -c 'mkdir exported; write exported/hello ok; srv root rootsrv; mount rootsrv n/root; cat n/root/exported/hello'
+```
+
+Provider-heavy commands such as `dossrv` and `vacfs`, plus network service sources such as `tcp!host`, are explicit provider-missing boundaries until matching Star 9 disk/vac/network providers are configured.
 
 ## Verification
 

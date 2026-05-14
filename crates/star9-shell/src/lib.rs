@@ -19,6 +19,7 @@ use star9_protocol::{
     Star9Api, StatInfo,
 };
 use star9_runtime::{Runtime, WasmiWasiHandler};
+use star9_vfs::BindMode;
 
 #[cfg(not(target_arch = "wasm32"))]
 use star9_runtime::NativePtyExecutionHandler;
@@ -111,6 +112,18 @@ pub trait ShellHost: Clone {
     fn stat(&self, path: &str) -> Result<ShellStat>;
     fn start_wasi(&self, module: &str, args: &[String], cwd: &str) -> Result<ShellTaskResult>;
     fn start_worker(&self, module: &str, args: &[String], cwd: &str) -> Result<ShellTaskResult>;
+    fn bind_path(&self, _src: &str, _dst: &str, _mode: BindMode) -> Result<()> {
+        Err(ErrorKind::NotSupported.into())
+    }
+    fn unmount_path(&self, _dst: &str) -> Result<()> {
+        Err(ErrorKind::NotSupported.into())
+    }
+    fn register_service(&self, _name: &str) -> Result<()> {
+        Err(ErrorKind::NotSupported.into())
+    }
+    fn mount_service(&self, _service: &str, _dst: &str, _mode: BindMode) -> Result<()> {
+        Err(ErrorKind::NotSupported.into())
+    }
     fn run_native(&self, _module: &str, _args: &[String], _cwd: &str) -> Result<ShellTaskResult> {
         Err(ErrorKind::NotSupported.into())
     }
@@ -146,12 +159,9 @@ impl RuntimeShellHost {
     }
 
     pub fn with_writable_workspace(self) -> Result<Self> {
-        self.runtime.namespace().bind(
-            fs_ref(MemFs::new()),
-            ".",
-            ".",
-            star9_vfs::BindMode::Replace,
-        )?;
+        self.runtime
+            .namespace()
+            .bind(fs_ref(MemFs::new()), ".", ".", BindMode::Replace)?;
         Ok(self)
     }
 
@@ -310,6 +320,23 @@ impl ShellHost for RuntimeShellHost {
         })
     }
 
+    fn bind_path(&self, src: &str, dst: &str, mode: BindMode) -> Result<()> {
+        let namespace = self.runtime.namespace();
+        namespace.bind(fs_ref((*namespace).clone()), src, dst, mode)
+    }
+
+    fn unmount_path(&self, dst: &str) -> Result<()> {
+        self.runtime.namespace().unbind_path(dst)
+    }
+
+    fn register_service(&self, name: &str) -> Result<()> {
+        self.runtime.register_loopback_service(name)
+    }
+
+    fn mount_service(&self, service: &str, dst: &str, mode: BindMode) -> Result<()> {
+        self.runtime.mount_service(service, dst, mode)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn run_native(&self, module: &str, args: &[String], cwd: &str) -> Result<ShellTaskResult> {
         if !self.native_enabled {
@@ -410,6 +437,11 @@ impl<H: ShellHost> ShellSession<H> {
             "rm" => self.cmd_rm(command),
             "mv" => self.cmd_binary_path(command, "mv", |host, old, new| host.rename(old, new)),
             "cp" => self.cmd_binary_path(command, "cp", |host, old, new| host.copy(old, new)),
+            "bind" => self.cmd_bind(command),
+            "unmount" => self.cmd_unmount(command),
+            "srv" => self.cmd_srv(command),
+            "mount" => self.cmd_mount(command),
+            "dossrv" | "vacfs" => self.cmd_provider_missing(command),
             "stat" => self.cmd_stat(command),
             "version" => self.cmd_version(command),
             "binds" => self.cmd_binds(command),
@@ -607,6 +639,92 @@ impl<H: ShellHost> ShellSession<H> {
             Ok(()) => ShellResult::default(),
             Err(err) => ShellResult::failure(format!("{name}: {src} {dst}: {err}\n")),
         }
+    }
+
+    fn cmd_bind(&self, command: &ShellCommand) -> ShellResult {
+        let (mode, positional) = match parse_bind_mount_flags("bind", &command.args, true) {
+            Ok(parsed) => parsed,
+            Err(result) => return result,
+        };
+        if positional.len() != 2 {
+            return usage("bind [-a|-b|-c] <src> <dst>");
+        }
+        let src = self.resolve_path(&positional[0]);
+        let dst = self.resolve_path(&positional[1]);
+        match self.host.bind_path(&src, &dst, mode) {
+            Ok(()) => ShellResult::default(),
+            Err(err) => ShellResult::failure(format!("bind: {src} {dst}: {err}\n")),
+        }
+    }
+
+    fn cmd_unmount(&self, command: &ShellCommand) -> ShellResult {
+        if command.args.is_empty() || command.args.len() > 2 {
+            return usage("unmount [src] <dst>");
+        }
+        let dst = self.resolve_path(command.args.last().map(String::as_str).unwrap_or("."));
+        match self.host.unmount_path(&dst) {
+            Ok(()) => ShellResult::default(),
+            Err(err) => ShellResult::failure(format!("unmount: {dst}: {err}\n")),
+        }
+    }
+
+    fn cmd_srv(&self, command: &ShellCommand) -> ShellResult {
+        if command.args.is_empty() {
+            return self.list_device("#srv", "srv");
+        }
+        let (mode, mount_after, positional) = match parse_srv_flags(&command.args) {
+            Ok(parsed) => parsed,
+            Err(result) => return result,
+        };
+        if positional.is_empty() || positional.len() > 3 {
+            return usage("srv [-m] [root|self|loopback] <name> [mountpoint]");
+        }
+
+        let (source, name, mountpoint) = match positional.as_slice() {
+            [name] => ("root", name.as_str(), None),
+            [source, name] => (source.as_str(), name.as_str(), None),
+            [source, name, mountpoint] => {
+                (source.as_str(), name.as_str(), Some(mountpoint.as_str()))
+            }
+            _ => unreachable!(),
+        };
+        if !is_loopback_service_source(source) {
+            return provider_missing("srv", source);
+        }
+        if let Err(err) = self.host.register_service(name) {
+            return ShellResult::failure(format!("srv: {name}: {err}\n"));
+        }
+        if mount_after {
+            let default_mountpoint = format!("n/{name}");
+            let dst = self.resolve_path(mountpoint.unwrap_or(default_mountpoint.as_str()));
+            if let Err(err) = self.host.mount_service(name, &dst, mode) {
+                return ShellResult::failure(format!("srv: mount {name} {dst}: {err}\n"));
+            }
+        }
+        ShellResult::default()
+    }
+
+    fn cmd_mount(&self, command: &ShellCommand) -> ShellResult {
+        let (mode, positional) = match parse_bind_mount_flags("mount", &command.args, false) {
+            Ok(parsed) => parsed,
+            Err(result) => return result,
+        };
+        if positional.len() < 2 || positional.len() > 3 {
+            return usage("mount [-a|-b|-c|-n|-C] <service> <mountpoint> [aname]");
+        }
+        let service = &positional[0];
+        let dst = self.resolve_path(&positional[1]);
+        match self.host.mount_service(service, &dst, mode) {
+            Ok(()) => ShellResult::default(),
+            Err(err) => ShellResult::failure(format!("mount: {service} {dst}: {err}\n")),
+        }
+    }
+
+    fn cmd_provider_missing(&self, command: &ShellCommand) -> ShellResult {
+        provider_missing(
+            &command.name,
+            command.args.first().map_or("default", String::as_str),
+        )
     }
 
     fn cmd_stat(&self, command: &ShellCommand) -> ShellResult {
@@ -815,6 +933,10 @@ impl<H: ShellHost> ShellSession<H> {
             Some("vm") => "vm [list|new [kind]|start <id>|stop <id>|reset <id>|state <id>|console <id>|config <id>]\n",
             Some("net") => "net [list|new|dial <id> <addr>|announce <id> <addr>|ctl <id> <cmd...>|status <id>|local <id>|remote <id>]\n",
             Some("term") => "term [list|new|write <id> <text...>]\n",
+            Some("bind") => "bind [-a|-b|-c] <src> <dst>\n",
+            Some("unmount") => "unmount [src] <dst>\n",
+            Some("srv") => "srv [-m] [root|self|loopback] <name> [mountpoint]\n",
+            Some("mount") => "mount [-a|-b|-c|-n|-C] <service> <mountpoint> [aname]\n",
             Some("write") => "write <path> <text...>\n",
             Some("append") => "append <path> <text...>\n",
             Some("wasi") => "wasi <module> [args...]\n",
@@ -982,11 +1104,84 @@ fn usage(text: &str) -> ShellResult {
 const HELP: &str = "\
 Star 9 shell commands:
   pwd, cd, ls, cat, write, append, mkdir, rm, mv, cp, stat
+  bind, unmount, srv, mount
   version, binds, tasks, fds
   term, vm, net
   wasi, worker, native
   help [command]
 ";
+
+fn parse_bind_mount_flags(
+    name: &str,
+    args: &[String],
+    bind_command: bool,
+) -> std::result::Result<(BindMode, Vec<String>), ShellResult> {
+    let mut mode = BindMode::Replace;
+    let mut positional = Vec::new();
+    for arg in args {
+        if arg.starts_with('-') && arg.len() > 1 {
+            for flag in arg[1..].chars() {
+                match flag {
+                    'a' => mode = BindMode::After,
+                    'b' => mode = BindMode::Before,
+                    'c' => {}
+                    'n' | 'C' if !bind_command => {}
+                    _ => {
+                        let usage_text = if bind_command {
+                            "bind [-a|-b|-c] <src> <dst>"
+                        } else {
+                            "mount [-a|-b|-c|-n|-C] <service> <mountpoint> [aname]"
+                        };
+                        return Err(ShellResult::failure(format!(
+                            "{name}: unknown flag -{flag}\nusage: {usage_text}\n"
+                        )));
+                    }
+                }
+            }
+        } else {
+            positional.push(arg.clone());
+        }
+    }
+    Ok((mode, positional))
+}
+
+fn parse_srv_flags(
+    args: &[String],
+) -> std::result::Result<(BindMode, bool, Vec<String>), ShellResult> {
+    let mut mode = BindMode::Replace;
+    let mut mount_after = false;
+    let mut positional = Vec::new();
+    for arg in args {
+        if arg.starts_with('-') && arg.len() > 1 {
+            for flag in arg[1..].chars() {
+                match flag {
+                    'm' => mount_after = true,
+                    'a' => mode = BindMode::After,
+                    'b' => mode = BindMode::Before,
+                    'c' | 'C' | 'n' | 'q' => {}
+                    _ => {
+                        return Err(ShellResult::failure(format!(
+                            "srv: unknown flag -{flag}\nusage: srv [-m] [root|self|loopback] <name> [mountpoint]\n"
+                        )));
+                    }
+                }
+            }
+        } else {
+            positional.push(arg.clone());
+        }
+    }
+    Ok((mode, mount_after, positional))
+}
+
+fn is_loopback_service_source(source: &str) -> bool {
+    matches!(source, "." | "root" | "self" | "loopback" | "star9")
+}
+
+fn provider_missing(command: &str, provider: &str) -> ShellResult {
+    ShellResult::failure(format!(
+        "{command}: {provider}: provider not configured for this Star 9 runtime\n"
+    ))
+}
 
 #[cfg(test)]
 mod tests {
@@ -1024,6 +1219,61 @@ mod tests {
         let result = shell.eval_line("mkdir demo; write demo/hello 'hello world'; cat demo/hello");
         assert_eq!(result.status, 0, "{}", result.stderr);
         assert_eq!(result.stdout, "hello world");
+    }
+
+    #[test]
+    fn shell_binds_and_unmounts_namespace_paths() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let mut shell = ShellSession::new(host);
+        let result = shell.eval_line(
+            "mkdir exported; write exported/hello ok; bind exported mirror; cat mirror/hello",
+        );
+        assert_eq!(result.status, 0, "{}", result.stderr);
+        assert_eq!(result.stdout, "ok");
+
+        let unmounted = shell.eval_line("unmount mirror; cat mirror/hello");
+        assert_ne!(unmounted.status, 0);
+        assert!(
+            unmounted.stderr.contains("not found"),
+            "{}",
+            unmounted.stderr
+        );
+    }
+
+    #[test]
+    fn shell_registers_and_mounts_loopback_services() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let mut shell = ShellSession::new(host);
+        let result = shell.eval_line(
+            "mkdir exported; write exported/hello ok; srv root rootsrv; mount rootsrv n/root; cat n/root/exported/hello",
+        );
+        assert_eq!(result.status, 0, "{}", result.stderr);
+        assert_eq!(result.stdout, "ok");
+
+        let services = shell.eval_line("ls #srv");
+        assert_eq!(services.status, 0, "{}", services.stderr);
+        assert!(services.stdout.contains("rootsrv"), "{}", services.stdout);
+    }
+
+    #[test]
+    fn shell_reports_missing_host_providers_precisely() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let mut shell = ShellSession::new(host);
+        let srv = shell.eval_line("srv -nqC tcp!9p.io sources /n/sources");
+        assert_eq!(srv.status, 1);
+        assert!(
+            srv.stderr.contains("provider not configured"),
+            "{}",
+            srv.stderr
+        );
+
+        let vacfs = shell.eval_line("vacfs image.vac");
+        assert_eq!(vacfs.status, 1);
+        assert!(
+            vacfs.stderr.contains("provider not configured"),
+            "{}",
+            vacfs.stderr
+        );
     }
 
     #[test]

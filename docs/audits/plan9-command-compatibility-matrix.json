@@ -1,0 +1,87 @@
+{
+  "purpose": "Plan 9 userland command and service compatibility matrix for Star 9 rc/shell workflows",
+  "rule": "Commands are thin frontends over Star 9 namespaces, service files, task fds, device files, and 9P-style composition. They must not bypass the namespace/fd/device model.",
+  "commands": [
+    {
+      "command": "bind",
+      "status": "implemented",
+      "surface": "star9-shell command, reachable from star9 rc external command dispatch",
+      "implementation": "ShellHost::bind_path over star9-vfs::Namespace::bind",
+      "supported_forms": ["bind src dst", "bind -a src dst", "bind -b src dst", "bind -c src dst"],
+      "evidence": ["shell_binds_and_unmounts_namespace_paths", "shell_command_mode_runs_service_mount_commands"],
+      "notes": "-c is accepted as a compatibility flag; namespace creation remains governed by Star 9 filesystem behavior."
+    },
+    {
+      "command": "unmount",
+      "status": "implemented",
+      "surface": "star9-shell command, reachable from star9 rc external command dispatch",
+      "implementation": "ShellHost::unmount_path over star9-vfs::Namespace::unbind_path",
+      "supported_forms": ["unmount dst", "unmount src dst"],
+      "evidence": ["unbind_path_removes_exact_mountpoint", "shell_binds_and_unmounts_namespace_paths"],
+      "notes": "The two-argument form removes the destination mountpoint. Source-specific unmount by filesystem identity remains a future precision improvement if scripts require it."
+    },
+    {
+      "command": "srv",
+      "status": "implemented-with-provider-limits",
+      "surface": "star9-shell command, #srv and /srv service registry files",
+      "implementation": "Runtime::register_loopback_service plus ServiceRegistry",
+      "supported_forms": ["srv", "srv name", "srv root name", "srv self name", "srv loopback name", "srv -m root name mountpoint"],
+      "evidence": ["runtime_installs_service_registry_and_compatibility_dirs", "shell_registers_and_mounts_loopback_services", "rc_shell_can_use_star9_service_mount_commands", "rc_shell_reports_unavailable_plan9_service_providers"],
+      "notes": "Loopback Star 9 namespace exports are implemented by default. Network service providers such as tcp!host are precise provider-missing errors until a configured native/browser transport is installed."
+    },
+    {
+      "command": "mount",
+      "status": "implemented-with-provider-limits",
+      "surface": "star9-shell command over service registry and namespace binds",
+      "implementation": "Runtime::mount_service over ServiceRegistry::get and Namespace::bind",
+      "supported_forms": ["mount service mountpoint", "mount -a service mountpoint", "mount -b service mountpoint", "mount -c service mountpoint [aname]", "mount -n service mountpoint [aname]", "mount -C service mountpoint [aname]"],
+      "evidence": ["runtime_mounts_registered_services", "shell_registers_and_mounts_loopback_services", "rc_shell_can_use_star9_service_mount_commands", "rc_command_mode_runs_service_mount_commands"],
+      "notes": "Service lookup accepts names plus srv/name or #srv/name forms. Auth/create flags are accepted where they do not change Star 9's local mount semantics."
+    },
+    {
+      "command": "dossrv",
+      "status": "provider-missing",
+      "surface": "star9-shell command placeholder with precise error",
+      "implementation": "provider-missing command result",
+      "supported_forms": [],
+      "evidence": ["shell_reports_missing_host_providers_precisely"],
+      "notes": "Do not implement until Star 9 has a disk/partition provider that can be exposed as files and services."
+    },
+    {
+      "command": "vacfs",
+      "status": "provider-missing",
+      "surface": "star9-shell command placeholder with precise error",
+      "implementation": "provider-missing command result",
+      "supported_forms": [],
+      "evidence": ["shell_reports_missing_host_providers_precisely"],
+      "notes": "Do not implement until Star 9 has a vac/Venti/archive provider that can be exposed as files and services."
+    }
+  ],
+  "namespace_surfaces": [
+    {
+      "path": "#srv",
+      "status": "implemented",
+      "notes": "Hidden service registry device. Entries are service descriptor files; remove unregisters a service."
+    },
+    {
+      "path": "srv",
+      "status": "implemented",
+      "notes": "Visible compatibility bind to #srv for scripts expecting /srv."
+    },
+    {
+      "path": "n",
+      "status": "implemented",
+      "notes": "Visible compatibility mount directory for /n-style service mounts."
+    },
+    {
+      "path": "mnt",
+      "status": "implemented",
+      "notes": "Visible compatibility mount directory for /mnt-style service mounts."
+    },
+    {
+      "path": "tmp",
+      "status": "implicit-workspace",
+      "notes": "CLI shell sessions use a writable workspace at .; /tmp is not forced as a direct bind to avoid blocking scripts that create it."
+    }
+  ]
+}

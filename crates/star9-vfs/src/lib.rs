@@ -84,6 +84,19 @@ impl Namespace {
         Ok(())
     }
 
+    pub fn unbind_path(&self, dst_path: &str) -> Result<()> {
+        if !valid_path(dst_path) {
+            return Err(Error::path("unmount", dst_path, ErrorKind::NotFound));
+        }
+        let dst_path = clean_path(dst_path);
+        let removed = self.bindings.write().unwrap().remove(&dst_path);
+        if removed.is_some() {
+            Ok(())
+        } else {
+            Err(Error::path("unmount", dst_path, ErrorKind::NotFound))
+        }
+    }
+
     pub fn unbind_all(&self) {
         self.bindings
             .write()
@@ -524,6 +537,24 @@ mod tests {
         ns.bind(fs.clone(), ".", "tmp", BindMode::Replace).unwrap();
         write_file(&ns, "tmp/file", b"value", FileMode::from_perm(0o644)).unwrap();
         assert_eq!(read_file(fs.as_ref(), "file").unwrap(), b"value");
+    }
+
+    #[test]
+    fn unbind_path_removes_exact_mountpoint() {
+        let fs = fs_ref(MemFs::from_entries([("file", b"value".to_vec())]));
+        let ns = Namespace::new();
+        ns.bind(fs, ".", "mnt/export", BindMode::Replace).unwrap();
+
+        assert_eq!(read_file(&ns, "mnt/export/file").unwrap(), b"value");
+        ns.unbind_path("mnt/export").unwrap();
+        assert_eq!(
+            read_file(&ns, "mnt/export/file").unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
+        assert_eq!(
+            ns.unbind_path("mnt/export").unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
     }
 
     #[test]
