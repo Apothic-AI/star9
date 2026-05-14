@@ -843,6 +843,7 @@ mod tests {
                             path: Some("workspace/stdin.txt".into()),
                             read: true,
                             write: false,
+                            append: false,
                         }),
                         stdout: StreamDescriptor::Fd(FdDescriptor {
                             fd: 1,
@@ -850,6 +851,7 @@ mod tests {
                             path: Some("workspace/stdout.txt".into()),
                             read: false,
                             write: true,
+                            append: false,
                         }),
                         stderr: StreamDescriptor::Fd(FdDescriptor {
                             fd: 2,
@@ -857,6 +859,7 @@ mod tests {
                             path: Some("workspace/stderr.txt".into()),
                             read: false,
                             write: true,
+                            append: false,
                         }),
                     },
                     fds: vec![FdDescriptor {
@@ -865,6 +868,7 @@ mod tests {
                         path: Some("workspace/extra.txt".into()),
                         read: true,
                         write: false,
+                        append: false,
                     }],
                 },
             )
@@ -946,6 +950,7 @@ mod tests {
                             path: Some("sandbox/stdout.txt".into()),
                             read: false,
                             write: true,
+                            append: false,
                         }),
                         stderr: StreamDescriptor::Null,
                     },

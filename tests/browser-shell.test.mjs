@@ -297,3 +297,93 @@ test("Star9ShellController reports unavailable OPFS as a command error", async (
         }
     }
 });
+
+test("Star9ShellController runs browser rc worker pipelines through graph provider", async () => {
+    const files = new Map();
+    const started = [];
+    const controller = createStar9Shell({
+        mkdir(path) {
+            files.set(path, "<dir>");
+        },
+        writeText(path, value) {
+            files.set(path, String(value));
+        },
+        startBrowserWorker(source, options) {
+            started.push({ source, options });
+            const stdin = options.bootstrapMessage?.stdin_text || "";
+            const stdout = options.module.endsWith("producer.mjs")
+                ? "browser-pipe-ok\n"
+                : stdin;
+            return {
+                taskId: `task-${started.length}`,
+                workerId: options.workerId,
+                messages: [stdout],
+                done: Promise.resolve({ exitCode: 0, stdout, stderr: "" }),
+                close() {},
+                cancel() {},
+            };
+        },
+    }, {
+        shell: {
+            eval() {
+                throw new Error("core rc shell should not run browser worker graph");
+            },
+            cwd() {
+                return ".";
+            },
+            prompt() {
+                return "star9:.$ ";
+            },
+        },
+    });
+
+    assert.deepEqual(await controller.eval("worker producer.mjs | worker cat.mjs"), {
+        status: 0,
+        stdout: "browser-pipe-ok\n",
+        stderr: "",
+    });
+    assert.equal(started.length, 2);
+    assert.equal(started[1].options.bootstrapMessage.stdin_text, "browser-pipe-ok\n");
+    assert.equal(files.get(".rc/graphs/browser-rcgraph1/status"), "0|0\n");
+    assert.equal(files.get(".rc/graphs/browser-rcgraph1/state"), "exited\n");
+});
+
+test("Star9ShellController runs browser rc background worker jobs and wait", async () => {
+    const controller = createStar9Shell({
+        mkdir() {},
+        writeText() {},
+        startBrowserWorker(_source, options) {
+            return {
+                taskId: options.workerId,
+                workerId: options.workerId,
+                messages: ["bg-ok\n"],
+                done: Promise.resolve({ exitCode: 0, stdout: "bg-ok\n", stderr: "" }),
+                close() {},
+                cancel() {},
+            };
+        },
+    }, {
+        shell: {
+            eval() {
+                throw new Error("core rc shell should not run browser background graph");
+            },
+            cwd() {
+                return ".";
+            },
+            prompt() {
+                return "star9:.$ ";
+            },
+        },
+    });
+
+    assert.deepEqual(await controller.eval("worker producer.mjs &"), {
+        status: 0,
+        stdout: "[1]\n",
+        stderr: "",
+    });
+    assert.deepEqual(await controller.eval("wait 1"), {
+        status: 0,
+        stdout: "bg-ok\n[1] 0\n",
+        stderr: "",
+    });
+});

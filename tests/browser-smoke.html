@@ -118,6 +118,7 @@
     const rcResult = await rcShell.eval("x=(one two); fn twice { echo $1 $1 }; for(i in $x) twice $i");
     const rcParityResult = await rcShell.eval("cat <{echo hi}; echo err >[1=2]");
     const rcHereDocResult = await rcShell.eval("x=browser\ncat <<EOF\nhello $x\nEOF\n");
+    const rcBrowserGraphResult = await rcShell.eval("worker ../../../tests/fixtures/browser/rc-producer.mjs | worker ../../../tests/fixtures/browser/rc-cat.mjs");
 
     await system.writeText("cache-store/state.txt", "storage-ok");
     const storageText = await system.readText("cache-store/state.txt");
@@ -274,6 +275,7 @@
     assert(rcParityResult.stdout === "hi\n", `bad rc process stdout ${JSON.stringify(rcParityResult.stdout)}`);
     assert(rcParityResult.stderr === "err\n", `bad rc fd dup stderr ${JSON.stringify(rcParityResult.stderr)}`);
     assert(rcHereDocResult.stdout === "hello browser\n", `bad rc here-doc stdout ${JSON.stringify(rcHereDocResult.stdout)}`);
+    assert(rcBrowserGraphResult.stdout === "browser-pipe-ok\n", `bad rc browser graph stdout ${JSON.stringify(rcBrowserGraphResult.stdout)}`);
     assert(storageText === "storage-ok", `bad storage text ${storageText}`);
     assert(
       sharedMirrorText === "descriptor-ok",
@@ -384,6 +386,7 @@
         rcStdout: rcResult.stdout.trim(),
         rcParityStdout: rcParityResult.stdout.trim(),
         rcHereDocStdout: rcHereDocResult.stdout.trim(),
+        rcBrowserGraphStdout: rcBrowserGraphResult.stdout.trim(),
         storageEntries,
         sharedEntries,
         remotePortEntries,

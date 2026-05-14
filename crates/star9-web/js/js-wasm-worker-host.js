@@ -190,6 +190,12 @@ export function createJsWasmExecutionBootstrap(options = {}) {
     if (runtime && Object.keys(runtime).length > 0) {
         bootstrap.runtime = runtime;
     }
+    if (options.stdin_text != null) {
+        bootstrap.stdin_text = String(options.stdin_text);
+    }
+    if (options.stdinText != null) {
+        bootstrap.stdin_text = String(options.stdinText);
+    }
 
     return bootstrap;
 }

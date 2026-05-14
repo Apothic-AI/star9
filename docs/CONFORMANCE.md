@@ -124,7 +124,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `docs/audits/plan9-command-compatibility-matrix.json` records shell/rc-visible Plan 9 command compatibility for `bind`, `unmount`, `srv`, and `mount`, plus provider-missing boundaries for `dossrv`, `vacfs`, and network service sources.
 
-`docs/audits/rc-process-graph-matrix.json` and `docs/audits/rc-pipeline-job-control-boundary.md` record the rc process-graph boundary. The portable rc evaluator remains deterministic, while the Star 9 adapter creates task/fd/pipe graph records for pipelines, background jobs, and process substitution. Native-host WASI, registered JS/WASM, and opt-in native rc pipelines/background jobs now use provider-backed task/fd execution with persistent `.rc/graphs/<id>` lifecycle files and deterministic active-job note status. Browser worker graph execution, exact `rfork` sharing, hard provider cancellation, and explicit graph cleanup controls remain documented provider boundaries.
+`docs/audits/rc-process-graph-matrix.json` and `docs/audits/rc-pipeline-job-control-boundary.md` record the rc process-graph boundary. The portable rc evaluator remains deterministic, while the Star 9 adapter creates task/fd/pipe graph records for pipelines, background jobs, and process substitution. Native-host WASI, registered JS/WASM, and opt-in native rc pipelines/background jobs now use provider-backed task/fd execution with persistent `.rc/graphs/<id>` lifecycle and `ctl` files, deterministic active-job note status, and file redirect descriptors. Browser worker graph-compatible pipelines/jobs use a browser provider with bounded stdin/stdout handoff. Exact `rfork` sharing, provider-specific hard cancellation for handlers without interrupts, and arbitrary nested fd graph concurrency remain documented provider boundaries.
 
 `tests/fixtures/browser-bindings.json` captures representative validated browser binding/storage plans for namespace, file, archive, import, and browser storage backends.
 
@@ -136,7 +136,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 
 `tests/browser-js-wasm-worker-host.test.mjs` exercises JS/WASM execution bootstrap messages over the browser Worker host facade with fake Worker and MessagePort targets, covering runtime port transfer and task-message observation without running a real JS/WASM payload.
 
-`tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, direct WASI-style `.wasm` execution, and Go-compatible runner fixture execution without a Go shim.
+`tests/browser-js-wasm-execution-worker.test.mjs` exercises the worker-side JS/WASM bootstrap acceptor with fake worker scopes and message ports, covering deterministic injected-runner execution, default dynamic JS runner import, direct WASI-style `.wasm` execution with bounded stdin bytes, and Go-compatible runner fixture execution without a Go shim.
 
 `tests/browser-p9-port.test.mjs` exercises browser-side 9P frame serving over fake MessagePorts, including complete binary request/response frames, tag-matched async client requests, AbortSignal-to-`Tflush` cancellation, facade-error-to-`Rlerror` replies, import responder port handoff, storage-backed 9P exports, complete large directory chunks, malformed frames, and error reporting for unknown tags and non-binary requests.
 

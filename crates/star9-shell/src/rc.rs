@@ -170,20 +170,113 @@ impl Star9RcHost {
         binding: &RcFdBindingSpec,
         graph_root: &str,
     ) -> Result<RcFdBindingSpec> {
+        if binding.close || binding.dup_from.is_some() {
+            return Ok(binding.clone());
+        }
         let path = resolve_graph_binding_path(graph_root, &binding.path);
         let file = Self::open_task_file(task, &path)?;
         task.set_fd(binding.fd, file, path.clone());
         Ok(RcFdBindingSpec {
-            fd: binding.fd,
             path,
-            readable: binding.readable,
-            writable: binding.writable,
+            ..binding.clone()
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn next_graph_root(&mut self) -> star9_rc::RcResult<String> {
         self.graph_root().map_err(to_rc_error)
+    }
+
+    fn handle_graph_ctl(&mut self, graph_root: &str, data: &[u8]) -> Result<()> {
+        let text = String::from_utf8_lossy(data);
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let mut words = line.split_whitespace();
+            match words.next().unwrap_or_default() {
+                "status" => {}
+                "hold" => {
+                    self.host
+                        .write_file(&format!("{graph_root}/hold"), b"1\n")?;
+                }
+                "release" => {
+                    self.host
+                        .write_file(&format!("{graph_root}/hold"), b"0\n")?;
+                }
+                "cancel" => {
+                    let note = words.next().unwrap_or("term");
+                    self.cancel_graph(graph_root, note)?;
+                }
+                "cleanup" | "close" => {
+                    self.cleanup_graph(graph_root)?;
+                }
+                command => {
+                    return Err(Error::path("graphctl", command, ErrorKind::Invalid));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cancel_graph(&mut self, graph_root: &str, note: &str) -> Result<()> {
+        let delivered = self.cancel_running_graph_jobs(graph_root, note);
+        if !delivered {
+            self.host
+                .write_file(&format!("{graph_root}/state"), b"signaled\n")?;
+            self.host.write_file(
+                &format!("{graph_root}/status"),
+                format!("signal:{note}\n").as_bytes(),
+            )?;
+            self.host.append_file(
+                &format!("{graph_root}/notes"),
+                format!("{note}\n").as_bytes(),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn cancel_running_graph_jobs(&self, graph_root: &str, note: &str) -> bool {
+        let mut delivered = false;
+        for job in self.running_jobs.lock().unwrap().values() {
+            if job.control.graph_root == graph_root {
+                job.control.send_note(&self.host, note);
+                delivered = true;
+            }
+        }
+        delivered
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn cancel_running_graph_jobs(&self, _graph_root: &str, _note: &str) -> bool {
+        false
+    }
+
+    fn cleanup_graph(&mut self, graph_root: &str) -> Result<()> {
+        let state = self
+            .host
+            .read_file(&format!("{graph_root}/state"))
+            .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+            .unwrap_or_default();
+        if state == "running" || state == "starting" {
+            return Err(Error::path("graphctl", graph_root, ErrorKind::Other));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.running_jobs
+                .lock()
+                .unwrap()
+                .retain(|_, job| job.control.graph_root != graph_root);
+        }
+        let namespace = self.host.runtime().namespace();
+        let mut paths = namespace
+            .binding_paths()
+            .into_iter()
+            .filter(|path| path == graph_root || path.starts_with(&format!("{graph_root}/")))
+            .collect::<Vec<_>>();
+        paths.sort_by_key(|path| std::cmp::Reverse(path.len()));
+        for path in paths {
+            let _ = namespace.unbind_path(&path);
+        }
+        Ok(())
     }
 }
 
@@ -211,15 +304,23 @@ impl RcHost for Star9RcHost {
     }
 
     fn write_file(&mut self, path: &str, data: &[u8]) -> star9_rc::RcResult<()> {
-        self.host
-            .write_file(&self.resolve_path(path), data)
-            .map_err(to_rc_error)
+        let path = self.resolve_path(path);
+        if let Some(graph_root) = graph_ctl_root(&path) {
+            return self
+                .handle_graph_ctl(&graph_root, data)
+                .map_err(to_rc_error);
+        }
+        self.host.write_file(&path, data).map_err(to_rc_error)
     }
 
     fn append_file(&mut self, path: &str, data: &[u8]) -> star9_rc::RcResult<()> {
-        self.host
-            .append_file(&self.resolve_path(path), data)
-            .map_err(to_rc_error)
+        let path = self.resolve_path(path);
+        if let Some(graph_root) = graph_ctl_root(&path) {
+            return self
+                .handle_graph_ctl(&graph_root, data)
+                .map_err(to_rc_error);
+        }
+        self.host.append_file(&path, data).map_err(to_rc_error)
     }
 
     fn read_dir(&mut self, path: &str) -> star9_rc::RcResult<Vec<String>> {
@@ -297,6 +398,28 @@ impl RcHost for Star9RcHost {
                 )
                 .map_err(to_rc_error)?;
         }
+        let _ = self.host.write_file(
+            &format!("{graph_root}/kind"),
+            format!("{:?}\n", spec.kind).as_bytes(),
+        );
+        let _ = self.host.write_file(
+            &format!("{graph_root}/job"),
+            format!(
+                "{}\n",
+                spec.job_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            )
+            .as_bytes(),
+        );
+        let _ = self
+            .host
+            .write_file(&format!("{graph_root}/state"), b"planned\n");
+        let _ = self
+            .host
+            .write_file(&format!("{graph_root}/status"), b"planned\n");
+        let _ = self.host.write_file(&format!("{graph_root}/notes"), b"");
+        let _ = self.host.write_file(&format!("{graph_root}/ctl"), b"");
 
         let mut stages = Vec::new();
         for stage in &spec.stages {
@@ -576,6 +699,15 @@ fn resolve_graph_binding_path(graph_root: &str, binding_path: &str) -> String {
     }
 }
 
+fn graph_ctl_root(path: &str) -> Option<String> {
+    let normalized = clean_path(path);
+    normalized
+        .strip_prefix(".rc/graphs/")
+        .and_then(|rest| rest.strip_suffix("/ctl"))
+        .filter(|graph_id| !graph_id.contains('/'))
+        .map(|graph_id| format!(".rc/graphs/{graph_id}"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn write_graph_file(
     host: &RuntimeShellHost,
@@ -667,6 +799,7 @@ fn execute_external_graph(
     .map_err(to_rc_error)?;
     write_graph_state(&host, &graph_root, "planned\n", &control).map_err(to_rc_error)?;
     write_graph_file(&host, &graph_root, "notes", "").map_err(to_rc_error)?;
+    write_graph_file(&host, &graph_root, "ctl", "").map_err(to_rc_error)?;
     if let Some(out) = maybe_finish_signaled_graph(&host, &graph_root, spec.kind.clone(), &control)?
     {
         return Ok(Some(out));
@@ -875,7 +1008,7 @@ fn build_execution_spec(
         .fd_bindings
         .iter()
         .filter(|binding| !matches!(binding.fd, 0..=2))
-        .map(|binding| fd_descriptor_from_binding(binding, graph_root))
+        .filter_map(|binding| fd_descriptor_for_binding(stage, binding, graph_root))
         .collect();
 
     Ok(ExecutionSpec {
@@ -902,11 +1035,45 @@ fn stream_for_fd(
     stage
         .fd_bindings
         .iter()
+        .rev()
         .find(|binding| binding.fd == fd)
-        .map(|binding| {
-            let descriptor = fd_descriptor_from_binding(binding, graph_root);
-            StreamDescriptor::Fd(descriptor)
+        .and_then(|binding| {
+            if binding.close {
+                return Some(StreamDescriptor::Null);
+            }
+            if let Some(from) = binding.dup_from {
+                return stream_for_fd(stage, graph_root, from).or(match from {
+                    0 => Some(StreamDescriptor::Null),
+                    1 | 2 => Some(StreamDescriptor::Inherit),
+                    _ => None,
+                });
+            }
+            if binding.path.is_empty() {
+                return None;
+            }
+            Some(StreamDescriptor::Fd(fd_descriptor_from_binding(
+                binding, graph_root,
+            )))
         })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fd_descriptor_for_binding(
+    stage: &RcExecutableStageSpec,
+    binding: &RcFdBindingSpec,
+    graph_root: &str,
+) -> Option<FdDescriptor> {
+    if binding.close {
+        return None;
+    }
+    if let Some(from) = binding.dup_from {
+        if let Some(StreamDescriptor::Fd(mut descriptor)) = stream_for_fd(stage, graph_root, from) {
+            descriptor.fd = binding.fd;
+            return Some(descriptor);
+        }
+        return None;
+    }
+    (!binding.path.is_empty()).then(|| fd_descriptor_from_binding(binding, graph_root))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -921,6 +1088,7 @@ fn fd_descriptor_from_binding(binding: &RcFdBindingSpec, graph_root: &str) -> Fd
         path: Some(resolve_executable_binding_path(graph_root, &binding.path)),
         read: binding.readable,
         write: binding.writable,
+        append: binding.append,
     }
 }
 
@@ -942,6 +1110,7 @@ fn fd_stream(fd: u32, kind: FdKind, path: String, read: bool, write: bool) -> St
         path: Some(path),
         read,
         write,
+        append: false,
     })
 }
 
@@ -1349,6 +1518,80 @@ mod tests {
         )
         .into_owned();
         assert!(!tasks.trim().is_empty(), "{tasks:?}");
+        assert!(
+            fs_read_file(runtime.namespace().as_ref(), ".rc/graphs/rcgraph1/ctl").is_ok(),
+            "graph ctl file should exist"
+        );
+    }
+
+    #[test]
+    fn rc_shell_graph_ctl_cleanup_removes_completed_graph() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        host.write_file("cat.wasm", &wasi_cat()).unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm | wasi cat.wasm");
+        assert!(out.status.is_success(), "{out:?}");
+        assert!(fs_read_file(runtime.namespace().as_ref(), ".rc/graphs/rcgraph1/status").is_ok());
+
+        let out = rc.eval_line("echo cleanup > .rc/graphs/rcgraph1/ctl");
+        assert!(out.status.is_success(), "{out:?}");
+        assert!(
+            fs_read_file(runtime.namespace().as_ref(), ".rc/graphs/rcgraph1/status").is_err(),
+            "cleanup should remove the graph mount"
+        );
+    }
+
+    #[test]
+    fn rc_shell_provider_graph_redirects_stdout_to_file() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        host.write_file("cat.wasm", &wasi_cat()).unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm | wasi cat.wasm > graph-out.txt");
+        assert!(out.status.is_success(), "{out:?}");
+        assert_eq!(out.stdout, "");
+        assert_eq!(
+            String::from_utf8_lossy(
+                &fs_read_file(runtime.namespace().as_ref(), "graph-out.txt").unwrap()
+            ),
+            "pipe-ok\n"
+        );
+    }
+
+    #[test]
+    fn rc_shell_provider_graph_append_redirect_uses_append_mode() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        host.write_file("cat.wasm", &wasi_cat()).unwrap();
+        host.write_file("graph-out.txt", b"existing\n").unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm | wasi cat.wasm >> graph-out.txt");
+        assert!(out.status.is_success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(
+                &fs_read_file(runtime.namespace().as_ref(), "graph-out.txt").unwrap()
+            ),
+            "existing\npipe-ok\n"
+        );
+    }
+
+    #[test]
+    fn rc_shell_provider_graph_honors_fd_close_redirect() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        host.write_file("producer.wasm", &wasi_producer()).unwrap();
+        host.write_file("cat.wasm", &wasi_cat()).unwrap();
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("wasi producer.wasm >[1=] | wasi cat.wasm");
+        assert!(out.status.is_success(), "{out:?}");
+        assert_eq!(out.stdout, "");
     }
 
     #[test]
@@ -1377,6 +1620,29 @@ mod tests {
             wait_for_graph_file(&runtime, ".rc/graphs/rcgraph1/status", "signal:term\n"),
             "signal:term\n"
         );
+    }
+
+    #[test]
+    fn rc_shell_graph_ctl_cancel_marks_active_provider_job() {
+        let host = RuntimeShellHost::fresh().unwrap();
+        let runtime = host.runtime();
+        runtime
+            .execution_registry()
+            .register_kind_fn(ExecutionKind::JsWasm, |_task, _spec| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                Ok(star9_protocol::runtime::ExitStatus::ExitCode(0))
+            });
+        let mut rc = RcShell::new(host);
+
+        let out = rc.eval_line("worker slow.mjs &");
+        assert!(out.status.is_success(), "{out:?}");
+        assert_eq!(
+            wait_for_graph_file(&runtime, ".rc/graphs/rcgraph1/state", "running\n"),
+            "running\n"
+        );
+        let out = rc.eval_line("echo 'cancel int' > .rc/graphs/rcgraph1/ctl; wait 1");
+        assert!(!out.status.is_success(), "{out:?}");
+        assert_eq!(out.stdout, "[1] signal:int\n");
     }
 
     #[test]

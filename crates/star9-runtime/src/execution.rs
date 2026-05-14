@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
 use star9_core::ErrorKind;
-use star9_core::{Error, FileMode, FsContext, Result};
+use star9_core::{Error, FileMode, FsContext, OpenFlags, Result};
 use star9_fs::{BoxFile, FileSystem, Node};
 use star9_protocol::runtime::{
     EnvironmentEntry, ExecutionKind, ExecutionSpec, ExitStatus, FdDescriptor, FdKind, StdioSet,
@@ -346,7 +346,22 @@ fn open_fd_descriptor(
     default_fd: Option<u32>,
 ) -> Result<(BoxFile, String)> {
     if let Some(path) = descriptor.path.as_deref() {
-        let file = task.namespace().open(&FsContext::new(), path)?;
+        let file = if descriptor.write && descriptor.kind == FdKind::File {
+            let mut flags = if descriptor.read {
+                OpenFlags::RDWR
+            } else {
+                OpenFlags::WRONLY
+            } | OpenFlags::CREATE;
+            if descriptor.append {
+                flags |= OpenFlags::APPEND;
+            } else {
+                flags |= OpenFlags::TRUNC;
+            }
+            task.namespace()
+                .open_file(path, flags, FileMode::from_perm(0o666))?
+        } else {
+            task.namespace().open(&FsContext::new(), path)?
+        };
         return Ok((file, path.to_string()));
     }
     let name = fallback_fd_path(descriptor, default_fd);

@@ -535,6 +535,11 @@ class BrowserWorkerTaskController {
         this.exportMounts = [];
         this.sequence = 0;
         this.exitCode = null;
+        this.stdout = "";
+        this.stderr = "";
+        this.done = new Promise((resolve) => {
+            this._resolveDone = resolve;
+        });
         this._cleanup = [];
     }
 
@@ -567,6 +572,24 @@ class BrowserWorkerTaskController {
             cleanup();
         }
         this.host.close();
+        if (this.exitCode == null) {
+            this.exitCode = 1;
+            this._resolveDone?.({
+                exitCode: this.exitCode,
+                stdout: this.stdout,
+                stderr: this.stderr,
+                cancelled: true,
+            });
+        }
+    }
+
+    cancel(note = "term") {
+        this.messages.push({
+            type: "star9-worker-cancel",
+            note: String(note),
+        });
+        this.close();
+        return this;
     }
 
     _handleTaskMessage(message) {
@@ -576,10 +599,33 @@ class BrowserWorkerTaskController {
         if (isExecutionExitPayload(payload)) {
             this.exitCode = Number(payload.exit_code || 0);
             this.system.recordWorkerExit(this.taskId, this.workerId, sequence, this.exitCode);
+            this._resolveDone?.({
+                exitCode: this.exitCode,
+                stdout: this.stdout,
+                stderr: this.stderr,
+                cancelled: false,
+            });
+            return;
+        }
+        if (isExecutionErrorPayload(payload)) {
+            this.exitCode = 1;
+            this.stderr += `${payload.name || "Error"}: ${payload.message || "worker execution failed"}\n`;
+            this.system.recordWorkerExit(this.taskId, this.workerId, sequence, this.exitCode);
+            this._resolveDone?.({
+                exitCode: this.exitCode,
+                stdout: this.stdout,
+                stderr: this.stderr,
+                cancelled: false,
+            });
             return;
         }
         if (typeof payload === "string") {
+            this.stdout += payload;
             this.system.recordWorkerStdout(this.taskId, this.workerId, sequence, message.payload, false);
+        } else if (payload instanceof Uint8Array) {
+            const text = new TextDecoder().decode(payload);
+            this.stdout += text;
+            this.system.recordWorkerStdout(this.taskId, this.workerId, sequence, payload, false);
         }
     }
 
@@ -691,6 +737,10 @@ function decodeTaskPayload(payload) {
 
 function isExecutionExitPayload(payload) {
     return payload && typeof payload === "object" && payload.type === "star9-js-wasm-execution-exit";
+}
+
+function isExecutionErrorPayload(payload) {
+    return payload && typeof payload === "object" && payload.type === "star9-js-wasm-execution-error";
 }
 
 function waitForExportReady(port, options = {}) {

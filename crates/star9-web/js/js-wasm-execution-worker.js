@@ -1,7 +1,7 @@
 import {
     createJsWasmExecutionBootstrap,
     DEFAULT_JS_WASM_BOOTSTRAP_MESSAGE_TYPE,
-} from "./js-wasm-worker-host.js";
+} from "./js-wasm-worker-host.js?worker-entry=1";
 import {
     acceptRuntimePort,
     DEFAULT_RUNTIME_PORT_MESSAGE_TYPE,
@@ -344,8 +344,29 @@ function createBrowserWasiImports(state) {
                 writeU32(state, nwrittenPtr, written);
                 return WASI_ERRNO_SUCCESS;
             },
-            fd_read(_fd, _iovsPtr, _iovsLen, nreadPtr) {
-                writeU32(state, nreadPtr, 0);
+            fd_read(fd, iovsPtr, iovsLen, nreadPtr) {
+                if (fd !== 0 || iovsLen < 0) {
+                    writeU32(state, nreadPtr, 0);
+                    return fd === 0 ? WASI_ERRNO_SUCCESS : WASI_ERRNO_BADF;
+                }
+                let read = 0;
+                for (let index = 0; index < iovsLen; index += 1) {
+                    const ptr = readU32(state, iovsPtr + index * 8);
+                    const len = readU32(state, iovsPtr + index * 8 + 4);
+                    const remaining = state.stdinBytes.byteLength - state.stdinOffset;
+                    if (remaining <= 0) {
+                        break;
+                    }
+                    const n = Math.min(len, remaining);
+                    writeBytes(
+                        state,
+                        ptr,
+                        state.stdinBytes.slice(state.stdinOffset, state.stdinOffset + n),
+                    );
+                    state.stdinOffset += n;
+                    read += n;
+                }
+                writeU32(state, nreadPtr, read);
                 return WASI_ERRNO_SUCCESS;
             },
             fd_close() {
@@ -470,6 +491,8 @@ function createExecutionContext(bootstrap, runtimeEndpoint, options) {
     const state = {
         exitSent: false,
         errorSent: false,
+        stdinBytes: stdioInputBytes(bootstrap.stdio?.stdin, bootstrap),
+        stdinOffset: 0,
     };
 
     return {
@@ -490,6 +513,7 @@ function createExecutionContext(bootstrap, runtimeEndpoint, options) {
         envMap: Object.fromEntries(bootstrap.env.map((entry) => [entry.name, entry.value])),
         cwd: normalizeOptionalString(bootstrap.cwd),
         stdio: cloneRecord(bootstrap.stdio) || {},
+        stdinText: String(bootstrap.stdin_text ?? bootstrap.stdinText ?? ""),
         fds: bootstrap.fds.map((entry) => ({ ...entry })),
         ports: bootstrap.ports.map((entry) => ({ ...entry })),
         sendTaskBinary(data) {
@@ -530,6 +554,24 @@ function createExecutionContext(bootstrap, runtimeEndpoint, options) {
             );
         },
     };
+}
+
+function stdioInputBytes(descriptor, bootstrap = {}) {
+    if (bootstrap.stdin_text != null || bootstrap.stdinText != null) {
+        return getTextEncoder().encode(String(bootstrap.stdin_text ?? bootstrap.stdinText ?? ""));
+    }
+    const value = descriptor?.value ?? descriptor;
+    if (!value || typeof value !== "object") {
+        return new Uint8Array();
+    }
+    const data = value.data ?? value.bytes;
+    if (data != null) {
+        return toUint8Array(data, "stdin data");
+    }
+    if (value.text != null) {
+        return getTextEncoder().encode(String(value.text));
+    }
+    return new Uint8Array();
 }
 
 function extractExitCode(result) {

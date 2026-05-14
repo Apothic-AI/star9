@@ -186,6 +186,54 @@ pub struct RcFdBindingSpec {
     pub path: String,
     pub readable: bool,
     pub writable: bool,
+    pub append: bool,
+    pub dup_from: Option<u32>,
+    pub close: bool,
+}
+
+impl RcFdBindingSpec {
+    pub fn file(fd: u32, path: impl Into<String>, readable: bool, writable: bool) -> Self {
+        Self {
+            fd,
+            path: path.into(),
+            readable,
+            writable,
+            append: false,
+            dup_from: None,
+            close: false,
+        }
+    }
+
+    pub fn append_file(fd: u32, path: impl Into<String>) -> Self {
+        Self {
+            append: true,
+            ..Self::file(fd, path, false, true)
+        }
+    }
+
+    pub fn dup(fd: u32, from: u32) -> Self {
+        Self {
+            fd,
+            path: String::new(),
+            readable: false,
+            writable: false,
+            append: false,
+            dup_from: Some(from),
+            close: false,
+        }
+    }
+
+    pub fn close(fd: u32) -> Self {
+        Self {
+            fd,
+            path: String::new(),
+            readable: false,
+            writable: false,
+            append: false,
+            dup_from: None,
+            close: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1479,19 +1527,13 @@ impl<H: RcHost> RcSession<H> {
         to_fd: u32,
     ) -> Option<RcProcessGraphRecord> {
         let mut left_stage = self.stage_spec(left);
-        left_stage.fd_bindings.push(RcFdBindingSpec {
-            fd: from_fd,
-            path: "pipe:0/data".into(),
-            readable: false,
-            writable: true,
-        });
+        left_stage
+            .fd_bindings
+            .push(RcFdBindingSpec::file(from_fd, "pipe:0/data", false, true));
         let mut right_stage = self.stage_spec(right);
-        right_stage.fd_bindings.push(RcFdBindingSpec {
-            fd: to_fd,
-            path: "pipe:0/data1".into(),
-            readable: true,
-            writable: false,
-        });
+        right_stage
+            .fd_bindings
+            .push(RcFdBindingSpec::file(to_fd, "pipe:0/data1", true, false));
         self.host
             .prepare_process_graph(&RcProcessGraphSpec {
                 kind: RcProcessGraphKind::Pipeline,
@@ -1524,16 +1566,16 @@ impl<H: RcHost> RcSession<H> {
     ) -> Option<RcProcessGraphRecord> {
         let mut stage = self.stage_spec(node);
         let readable = matches!(&kind, RcProcessGraphKind::ProcessSubstitutionRead);
-        stage.fd_bindings.push(RcFdBindingSpec {
+        stage.fd_bindings.push(RcFdBindingSpec::file(
             fd,
-            path: if readable {
-                "pipe:0/data".into()
+            if readable {
+                "pipe:0/data"
             } else {
-                "pipe:0/data1".into()
+                "pipe:0/data1"
             },
             readable,
-            writable: !readable,
-        });
+            !readable,
+        ));
         self.host
             .prepare_process_graph(&RcProcessGraphSpec {
                 kind,
@@ -1589,20 +1631,21 @@ impl<H: RcHost> RcSession<H> {
             return None;
         }
 
+        let edge_list = edges;
         let mut bindings = vec![Vec::new(); nodes.len()];
-        for (index, (from_fd, to_fd)) in edges.into_iter().enumerate() {
-            bindings[index].push(RcFdBindingSpec {
-                fd: from_fd,
-                path: format!("pipe:{index}/data"),
-                readable: false,
-                writable: true,
-            });
-            bindings[index + 1].push(RcFdBindingSpec {
-                fd: to_fd,
-                path: format!("pipe:{index}/data1"),
-                readable: true,
-                writable: false,
-            });
+        for (index, (from_fd, to_fd)) in edge_list.iter().copied().enumerate() {
+            bindings[index].push(RcFdBindingSpec::file(
+                from_fd,
+                format!("pipe:{index}/data"),
+                false,
+                true,
+            ));
+            bindings[index + 1].push(RcFdBindingSpec::file(
+                to_fd,
+                format!("pipe:{index}/data1"),
+                true,
+                false,
+            ));
         }
 
         let mut stages = Vec::new();
@@ -1613,6 +1656,17 @@ impl<H: RcHost> RcSession<H> {
                 String::new()
             };
             stages.push(self.executable_stage(node, stdin, bindings[index].clone())?);
+        }
+        for (index, (from_fd, to_fd)) in edge_list.iter().copied().enumerate() {
+            if !stage_writes_pipe(&stages[index], from_fd, index) {
+                let read_path = format!("pipe:{index}/data1");
+                stages[index + 1]
+                    .fd_bindings
+                    .retain(|binding| !(binding.fd == to_fd && binding.path == read_path));
+                stages[index + 1]
+                    .fd_bindings
+                    .push(RcFdBindingSpec::close(to_fd));
+            }
         }
         self.host
             .execute_process_graph(RcExecutableGraphSpec {
@@ -1669,12 +1723,9 @@ impl<H: RcHost> RcSession<H> {
         fd: u32,
     ) -> Option<RcOutput> {
         let bindings = match kind {
-            RcProcessGraphKind::ProcessSubstitutionRead => vec![RcFdBindingSpec {
-                fd,
-                path: "pipe:0/data".into(),
-                readable: false,
-                writable: true,
-            }],
+            RcProcessGraphKind::ProcessSubstitutionRead => {
+                vec![RcFdBindingSpec::file(fd, "pipe:0/data", false, true)]
+            }
             RcProcessGraphKind::ProcessSubstitutionWrite => Vec::new(),
             _ => return None,
         };
@@ -1695,8 +1746,8 @@ impl<H: RcHost> RcSession<H> {
     fn executable_stage(
         &mut self,
         node: &Node,
-        stdin: String,
-        fd_bindings: Vec<RcFdBindingSpec>,
+        mut stdin: String,
+        mut fd_bindings: Vec<RcFdBindingSpec>,
     ) -> Option<RcExecutableStageSpec> {
         let simple = match node {
             Node::Simple(simple) => simple,
@@ -1706,9 +1757,6 @@ impl<H: RcHost> RcSession<H> {
             },
             _ => return None,
         };
-        if !simple.redirects.is_empty() {
-            return None;
-        }
 
         let mut env = self.vars.clone();
         for assignment in &simple.assignments {
@@ -1728,6 +1776,60 @@ impl<H: RcHost> RcSession<H> {
             || BUILTINS.contains(&words[0].as_str())
         {
             return None;
+        }
+        for redirect in &simple.redirects {
+            match &redirect.mode {
+                RedirectMode::Read => match redirect.target.as_ref()? {
+                    RedirectTarget::Word(_) => {
+                        fd_bindings.push(RcFdBindingSpec::file(
+                            redirect.fd,
+                            self.redirect_path(redirect).ok()?,
+                            true,
+                            false,
+                        ));
+                    }
+                    RedirectTarget::HereDoc(_) => {
+                        if redirect.fd != 0 {
+                            return None;
+                        }
+                        stdin = self.redirect_here_text(redirect).ok()?;
+                    }
+                    RedirectTarget::Process(_) => return None,
+                },
+                RedirectMode::Here => {
+                    if redirect.fd != 0 {
+                        return None;
+                    }
+                    stdin = self.redirect_here_text(redirect).ok()?;
+                }
+                RedirectMode::Write => match redirect.target.as_ref()? {
+                    RedirectTarget::Word(_) => {
+                        fd_bindings.push(RcFdBindingSpec::file(
+                            redirect.fd,
+                            self.redirect_path(redirect).ok()?,
+                            false,
+                            true,
+                        ));
+                    }
+                    RedirectTarget::Process(_) | RedirectTarget::HereDoc(_) => return None,
+                },
+                RedirectMode::Append => match redirect.target.as_ref()? {
+                    RedirectTarget::Word(_) => {
+                        fd_bindings.push(RcFdBindingSpec::append_file(
+                            redirect.fd,
+                            self.redirect_path(redirect).ok()?,
+                        ));
+                    }
+                    RedirectTarget::Process(_) | RedirectTarget::HereDoc(_) => return None,
+                },
+                RedirectMode::Dup { from } => {
+                    if let Some(from) = from {
+                        fd_bindings.push(RcFdBindingSpec::dup(redirect.fd, *from));
+                    } else {
+                        fd_bindings.push(RcFdBindingSpec::close(redirect.fd));
+                    }
+                }
+            }
         }
         let argv = self.resolve_external_argv(&words)?;
         Some(RcExecutableStageSpec {
@@ -3042,6 +3144,21 @@ fn is_host_executable_path(path: &str) -> bool {
         || path.ends_with(".wat")
         || path.ends_with(".js")
         || path.ends_with(".mjs")
+}
+
+fn stage_writes_pipe(stage: &RcExecutableStageSpec, fd: u32, pipe_index: usize) -> bool {
+    let Some(binding) = stage
+        .fd_bindings
+        .iter()
+        .rev()
+        .find(|binding| binding.fd == fd)
+    else {
+        return false;
+    };
+    binding.writable
+        && !binding.close
+        && binding.dup_from.is_none()
+        && binding.path == format!("pipe:{pipe_index}/data")
 }
 
 #[cfg(test)]

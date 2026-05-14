@@ -12,6 +12,9 @@ Current rc execution-provider contract:
 - Represent provider-backed pipelines and jobs through Star 9 tasks, fd tables, generated pipe resources under `.rc/graphs/...`, and persistent graph files such as `kind`, `job`, `tasks`, `notes`, `state`, and `status`.
 - Keep `rfork` precise: `rfork e` remains supported, unsupported flags fail explicitly until Star 9 has matching namespace/env/fd/process-group sharing controls.
 - Route note delivery through rc note hooks and Star 9 `#signal/data` where present; active provider-backed task groups receive deterministic `signal:<note>` status through their graph/job control record.
+- Add browser worker graph execution where browser capabilities permit: graph-compatible `worker module` stages run through Star 9 browser Worker tasks with bounded stdin/stdout handoff, task exit observation, background jobs, and `wait`.
+- Expose provider graph lifecycle through `.rc/graphs/<id>/ctl` as a file protocol. Completed graphs can be cleaned up by writing `cleanup` or `close`; active jobs can be marked through `cancel <note>` where hard provider interruption is unavailable.
+- Carry provider-stage redirects into fd descriptors where representable: file read/write/append redirection, fd close, selected pipe fds, and executable process substitution use graph/task fd surfaces rather than captured shell side channels.
 - Browser service providers must be honest about browser capabilities: `import!url#system`, `ws!`, `wss!`, and configured `webtransport!` services route through `#srv`/`mount`-style shell flow, while raw `tcp!` remains unavailable in browsers.
 - Keep docs/audits current for provider-backed execution, browser service providers, and the remaining process-graph boundaries.
 

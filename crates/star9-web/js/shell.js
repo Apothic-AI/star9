@@ -1,6 +1,7 @@
 import { Star9Element } from "./base.js";
 
 const textDecoder = new TextDecoder();
+const DEFAULT_BROWSER_EXECUTION_WORKER_URL = new URL("./star9-execution-worker.js?rc-graph=2", import.meta.url).href;
 
 export function createStar9Shell(system, options = {}) {
     return new Star9ShellController(system, options);
@@ -14,6 +15,7 @@ export class Star9ShellController {
         this.system = system;
         this.rc = options.rc === undefined ? !Boolean(options.simple) : Boolean(options.rc);
         this.services = new Map();
+        this.browserGraphs = new BrowserRcGraphProvider(this, options.browserGraphs || options);
         this.shell = options.shell || this.#createFacadeShell(system);
         if (!this.shell || typeof this.shell.eval !== "function") {
             throw new Error("star9 shell facade is not available");
@@ -49,6 +51,10 @@ export class Star9ShellController {
     }
 
     async eval(line) {
+        const graphResult = await this.browserGraphs.tryEval(line);
+        if (graphResult) {
+            return graphResult;
+        }
         const browserResult = await this.#tryBrowserCommand(line);
         if (browserResult) {
             return browserResult;
@@ -210,6 +216,173 @@ export class Star9ShellController {
         anchor.click();
         URL.revokeObjectURL(url);
         return success(`downloaded ${words[1]}\n`);
+    }
+}
+
+class BrowserRcGraphProvider {
+    constructor(controller, options = {}) {
+        this.controller = controller;
+        this.system = controller.system;
+        this.workerSource = String(options.workerSource || DEFAULT_BROWSER_EXECUTION_WORKER_URL);
+        this.nextGraphId = 1;
+        this.nextJobId = 1;
+        this.jobs = new Map();
+    }
+
+    async tryEval(line) {
+        const text = String(line || "").trim();
+        if (!this.controller.rc || !text) {
+            return null;
+        }
+        const wait = parseBrowserWait(text);
+        if (wait) {
+            return this.#wait(wait.jobId);
+        }
+        const parsed = parseBrowserWorkerGraph(text);
+        if (!parsed) {
+            return null;
+        }
+        if (parsed.background) {
+            const id = this.nextJobId++;
+            const graph = this.#startGraph(parsed.stages, { background: true, jobId: id });
+            this.jobs.set(id, graph);
+            return success(`[${id}]\n`);
+        }
+        const result = await this.#startGraph(parsed.stages, { background: false }).promise;
+        return graphResultToShell(result);
+    }
+
+    #startGraph(stages, options = {}) {
+        const graphId = `browser-rcgraph${this.nextGraphId++}`;
+        const root = `.rc/graphs/${graphId}`;
+        const controllers = [];
+        const record = {
+            id: options.jobId ?? null,
+            graphId,
+            root,
+            controllers,
+            promise: null,
+            cancel: (note = "term") => {
+                for (const controller of controllers) {
+                    controller.cancel?.(note);
+                }
+                void this.#writeGraph(root, {
+                    state: "signaled\n",
+                    status: `signal:${note}\n`,
+                    notes: `${note}\n`,
+                });
+            },
+            cleanup: async () => {
+                await this.#writeGraph(root, { state: "cleaned\n" });
+                if (typeof this.system.unmount === "function") {
+                    try {
+                        this.system.unmount(root);
+                    } catch {
+                        // Best effort: browser graph files are diagnostic, not the authority.
+                    }
+                }
+            },
+        };
+        record.promise = this.#executeGraph(root, stages, controllers, options);
+        return record;
+    }
+
+    async #executeGraph(root, stages, controllers, options) {
+        await this.#ensureGraphFiles(root, options);
+        let input = "";
+        let stdout = "";
+        let stderr = "";
+        const statuses = [];
+        const taskIds = [];
+        await this.#writeGraph(root, { state: "running\n" });
+        for (let index = 0; index < stages.length; index += 1) {
+            const stage = stages[index];
+            const worker = await this.system.startBrowserWorker(this.workerSource, {
+                workerId: `${root.replace(/[^a-zA-Z0-9_.-]+/g, "-")}-stage${index}-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`,
+                module: stage.module,
+                args: stage.args,
+                cwd: this.controller.cwd(),
+                bootstrapMessage: {
+                    stdin_text: input,
+                },
+            });
+            controllers.push(worker);
+            taskIds.push(worker.taskId);
+            const result = await worker.done;
+            statuses.push(result.exitCode === 0 ? "0" : String(result.exitCode || 1));
+            stderr += result.stderr || "";
+            input = result.stdout || "";
+            if (index === stages.length - 1) {
+                stdout += input;
+            }
+            worker.close();
+        }
+        const statusText = statuses.join("|") || "0";
+        await this.#writeGraph(root, {
+            tasks: taskIds.join("\n") + (taskIds.length ? "\n" : ""),
+            status: `${statusText}\n`,
+            state: statuses.every((status) => status === "0") ? "exited\n" : "failed\n",
+        });
+        return {
+            id: options.jobId ?? null,
+            statusText,
+            stdout,
+            stderr,
+        };
+    }
+
+    async #wait(jobId) {
+        const requested = jobId == null ? Array.from(this.jobs.keys()) : [jobId];
+        if (requested.length === 0) {
+            return null;
+        }
+        let stdout = "";
+        let stderr = "";
+        let status = 0;
+        for (const id of requested) {
+            const job = this.jobs.get(id);
+            if (!job) {
+                return failure(`wait: ${id}: no such browser job\n`);
+            }
+            const result = await job.promise;
+            stdout += result.stdout || "";
+            stderr += result.stderr || "";
+            stdout += `[${id}] ${result.statusText || "0"}\n`;
+            if (!isRcStatusSuccess(result.statusText)) {
+                status = 1;
+            }
+            this.jobs.delete(id);
+        }
+        return { status, stdout, stderr };
+    }
+
+    async #ensureGraphFiles(root, options) {
+        for (const path of [".rc", ".rc/graphs", root]) {
+            try {
+                await this.system.mkdir?.(path);
+            } catch {
+                // Existing or unavailable graph directories should not block execution.
+            }
+        }
+        await this.#writeGraph(root, {
+            kind: `${options.background ? "Background" : "Pipeline"}\n`,
+            job: `${options.jobId ?? "-"}\n`,
+            tasks: "",
+            notes: "",
+            state: "planned\n",
+            status: "planned\n",
+            ctl: "",
+        });
+    }
+
+    async #writeGraph(root, files) {
+        for (const [name, value] of Object.entries(files)) {
+            try {
+                await this.system.writeText?.(`${root}/${name}`, String(value));
+            } catch {
+                // Diagnostic graph files are best-effort for browser facade hosts.
+            }
+        }
     }
 }
 
@@ -385,6 +558,20 @@ function failure(stderr, status = 1) {
     return { status, stdout: "", stderr };
 }
 
+function graphResultToShell(result) {
+    return {
+        status: isRcStatusSuccess(result.statusText) ? 0 : 1,
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
+    };
+}
+
+function isRcStatusSuccess(statusText) {
+    return String(statusText || "0")
+        .split("|")
+        .every((part) => part === "" || part === "0");
+}
+
 function stringifyOutput(value) {
     if (value instanceof Uint8Array) {
         return textDecoder.decode(value);
@@ -394,6 +581,96 @@ function stringifyOutput(value) {
 
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
+}
+
+function parseBrowserWait(text) {
+    const words = splitShellWords(text);
+    if (words[0] !== "wait" || words.length > 2) {
+        return null;
+    }
+    if (words.length === 1) {
+        return { jobId: null };
+    }
+    const jobId = Number(words[1]);
+    if (!Number.isInteger(jobId) || jobId <= 0) {
+        return null;
+    }
+    return { jobId };
+}
+
+function parseBrowserWorkerGraph(text) {
+    const trimmed = String(text || "").trim();
+    const background = trimmed.endsWith("&");
+    const source = background ? trimmed.slice(0, -1).trim() : trimmed;
+    if (!source || /[;<>]/.test(source)) {
+        return null;
+    }
+    const segments = splitUnquoted(source, "|");
+    if (segments.length === 0) {
+        return null;
+    }
+    const stages = [];
+    for (const segment of segments) {
+        const words = splitShellWords(segment.trim());
+        if (words.length === 0) {
+            return null;
+        }
+        if (words[0] === "worker" && words.length >= 2) {
+            stages.push({ module: words[1], args: words.slice(2) });
+        } else if (isBrowserWorkerModule(words[0])) {
+            stages.push({ module: words[0], args: words.slice(1) });
+        } else {
+            return null;
+        }
+    }
+    return { background, stages };
+}
+
+function isBrowserWorkerModule(value) {
+    return /\.(?:m?js|wasm)(?:[?#].*)?$/i.test(String(value || ""));
+}
+
+function splitUnquoted(text, separator) {
+    const out = [];
+    let current = "";
+    let quote = null;
+    let escaped = false;
+    for (const ch of String(text || "")) {
+        if (escaped) {
+            current += ch;
+            escaped = false;
+            continue;
+        }
+        if (quote === "'") {
+            if (ch === "'") quote = null;
+            current += ch;
+            continue;
+        }
+        if (quote === "\"") {
+            if (ch === "\"") quote = null;
+            current += ch;
+            escaped = ch === "\\";
+            continue;
+        }
+        if (ch === "'" || ch === "\"") {
+            quote = ch;
+            current += ch;
+            continue;
+        }
+        if (ch === "\\") {
+            current += ch;
+            escaped = true;
+            continue;
+        }
+        if (ch === separator) {
+            out.push(current);
+            current = "";
+            continue;
+        }
+        current += ch;
+    }
+    out.push(current);
+    return out;
 }
 
 function parseBrowserSrv(words) {

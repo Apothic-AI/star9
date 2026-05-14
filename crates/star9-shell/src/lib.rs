@@ -197,6 +197,7 @@ impl RuntimeShellHost {
                     path: Some(path),
                     read: false,
                     write: true,
+                    append: false,
                 }),
                 stderr: StreamDescriptor::Null,
             }

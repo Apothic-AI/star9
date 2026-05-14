@@ -4,7 +4,7 @@
   "layers": {
     "portable_evaluator": "crates/star9-rc keeps deterministic captured execution for fake hosts, pure built-ins, browser-limited hosts, and hosts without a streaming execution provider.",
     "star9_adapter": "crates/star9-shell/src/rc.rs implements process-graph hooks over Star 9 task, fd, pipe, namespace, and execution-registry surfaces.",
-    "provider_execution": "Native-host Star 9 rc can execute external WASI stages, opt-in native stages, and registered JS/WASM stages through provider-backed task/fd graphs. Browser worker graph execution remains a runtime-port provider boundary."
+    "provider_execution": "Native-host Star 9 rc can execute external WASI stages, opt-in native stages, and registered JS/WASM stages through provider-backed task/fd graphs. Browser rc can run worker-backed graph-compatible stages through the JS shell provider with bounded stdin/stdout buffering over Star 9 worker tasks."
   },
   "features": [
     {
@@ -81,11 +81,11 @@
         "rc_shell_runs_external_background_job_and_waits_through_provider",
         "rc_shell_provider_jobs_expose_lifecycle_files"
       ],
-      "notes": "Pure built-ins keep deterministic job records. External WASI/native/registered-JS graph jobs can run in provider threads and wait through rc job ids. Provider-backed graphs expose persistent kind/job/tasks/notes/state/status files under .rc/graphs. Explicit cleanup controls remain future depth."
+      "notes": "Pure built-ins keep deterministic job records. External WASI/native/registered-JS graph jobs can run in provider threads and wait through rc job ids. Provider-backed graphs expose persistent kind/job/tasks/notes/state/status/ctl files under .rc/graphs. Completed graphs can be cleaned up by writing cleanup or close to ctl; running graphs require cancellation first."
     },
     {
       "feature": "redirection fd graph",
-      "status": "partial",
+      "status": "implemented-with-provider-limits",
       "implementation": [
         "prepare_redirect",
         "apply_output_sinks",
@@ -94,9 +94,12 @@
       "evidence": [
         "fd_dup_process_substitution_here_docs_and_exit_work",
         "rc_shell_runs_external_wasi_pipeline_through_provider_fds",
-        "rc_shell_provider_process_substitution_streams_through_pipe"
+        "rc_shell_provider_process_substitution_streams_through_pipe",
+        "rc_shell_provider_graph_redirects_stdout_to_file",
+        "rc_shell_provider_graph_append_redirect_uses_append_mode",
+        "rc_shell_provider_graph_honors_fd_close_redirect"
       ],
-      "notes": "Captured stdout/stderr redirection, fd dup/close, process-substitution sink handling, and provider stdio descriptor installation are implemented. Provider-backed process substitution can stream executable stages through graph pipe endpoints. Full arbitrary fd graph streaming for every rc edge form remains future precision work."
+      "notes": "Captured stdout/stderr redirection, fd dup/close, process-substitution sink handling, and provider stdio descriptor installation are implemented. Provider-backed executable stages can carry file read/write/append redirects, fd close, selected pipe fds, and process substitution pipe endpoints into task fd descriptors. Arbitrary nested fd graphs and exact Plan 9 process graph concurrency for every edge form remain provider-depth work."
     },
     {
       "feature": "rfork semantics",
@@ -120,22 +123,40 @@
       ],
       "evidence": [
         "environment_export_import_and_note_hooks_work",
-        "rc_shell_notes_mark_active_provider_jobs"
+        "rc_shell_notes_mark_active_provider_jobs",
+        "rc_shell_graph_ctl_cancel_marks_active_provider_job"
       ],
-      "notes": "sigexit and rc note functions work. The Star 9 adapter broadcasts notes through #signal/data when present. Active provider-backed jobs are marked with deterministic signal:<note> status, graph state/status files, and task exits. Provider-specific hard cancellation is still limited to providers that expose a cancellation primitive."
+      "notes": "sigexit and rc note functions work. The Star 9 adapter broadcasts notes through #signal/data where present. Active provider-backed jobs are marked with deterministic signal:<note> status, graph state/status files, notes, wait results, and task exits. Browser worker graph controllers can terminate owned workers. WASI/native/registered in-process handlers still expose precise hard-cancel boundaries unless the provider supplies an interrupt primitive."
     },
     {
       "feature": "browser process graphs",
-      "status": "portable-fallback",
+      "status": "implemented-with-browser-limits",
       "implementation": [
         "star9-rc deterministic evaluator",
-        "browser rc facade"
+        "Star9ShellController BrowserRcGraphProvider",
+        "SystemElement.startBrowserWorker",
+        "BrowserWorkerTaskController.done"
       ],
       "evidence": [
         "tests/browser-smoke.html",
         "tests/browser-shell.test.mjs"
       ],
-      "notes": "Browser rc keeps deterministic evaluator behavior unless a worker-backed task/fd graph provider is explicitly added. Raw native process semantics are not a browser capability."
+      "notes": "Browser rc keeps the deterministic evaluator for pure rc and unsupported graph shapes. Graph-compatible worker stages such as worker module.mjs and direct .js/.mjs/.wasm module commands can run through browser Worker tasks with bounded stdin/stdout handoff, wait, task exit observation, and best-effort graph files under .rc/graphs. This is not raw browser TCP or OS process execution."
+    },
+    {
+      "feature": "graph cleanup controls",
+      "status": "implemented-with-provider-limits",
+      "implementation": [
+        ".rc/graphs/<id>/ctl",
+        "Star9RcHost::handle_graph_ctl",
+        "BrowserRcGraphProvider diagnostic graph files"
+      ],
+      "evidence": [
+        "rc_shell_graph_ctl_cleanup_removes_completed_graph",
+        "rc_shell_graph_ctl_cancel_marks_active_provider_job",
+        "tests/browser-shell.test.mjs"
+      ],
+      "notes": "Native Star 9 rc graph ctl accepts status, hold, release, cancel <note>, cleanup, and close. Cleanup unbinds graph mounts after completion and is idempotent from the caller perspective. Browser graph files are diagnostic best-effort surfaces because the browser provider is async and facade-host dependent."
     },
     {
       "feature": "browser service providers",

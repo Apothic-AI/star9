@@ -112,6 +112,8 @@ pub struct FdDescriptor {
     pub path: Option<String>,
     pub read: bool,
     pub write: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub append: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -359,6 +361,10 @@ pub enum RuntimeResponse {
     Count(u32),
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +396,7 @@ mod tests {
                         path: Some("#pipe/1/data".into()),
                         read: true,
                         write: false,
+                        append: false,
                     }),
                     stdout: StreamDescriptor::Port(PortDescriptor {
                         port_id: "stdout".into(),
@@ -403,6 +410,7 @@ mod tests {
                     path: Some("/work/input.txt".into()),
                     read: true,
                     write: true,
+                    append: false,
                 }],
             },
         });

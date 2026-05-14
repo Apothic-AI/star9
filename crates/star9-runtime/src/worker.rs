@@ -863,6 +863,7 @@ mod tests {
                             path: Some("work/input.txt".into()),
                             read: true,
                             write: false,
+                            append: false,
                         }),
                         stdout: StreamDescriptor::Port(PortDescriptor {
                             port_id: "stdout-port".into(),
@@ -876,6 +877,7 @@ mod tests {
                         path: Some("work/config.toml".into()),
                         read: true,
                         write: false,
+                        append: false,
                     }],
                 },
             }))

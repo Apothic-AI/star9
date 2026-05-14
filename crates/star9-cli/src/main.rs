@@ -849,6 +849,7 @@ fn render_wasi_acceptance() -> Result<String> {
                         path: Some("workspace/stdout.txt".into()),
                         read: false,
                         write: true,
+                        append: false,
                     },
                 ),
                 stderr: star9_protocol::runtime::StreamDescriptor::Null,

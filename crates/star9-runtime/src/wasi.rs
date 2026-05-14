@@ -2123,6 +2123,7 @@ mod tests {
                         path: Some("workspace/socket.txt".into()),
                         read: true,
                         write: true,
+                        append: false,
                     }],
                 },
             )
@@ -2275,6 +2276,7 @@ mod tests {
                         path: Some(format!("#net/{listener}/listen")),
                         read: true,
                         write: false,
+                        append: false,
                     }],
                 },
             )
@@ -2460,6 +2462,7 @@ mod tests {
                             path: Some("workspace/stdout.txt".into()),
                             read: false,
                             write: true,
+                            append: false,
                         }),
                         stderr: StreamDescriptor::Null,
                     },
@@ -2678,6 +2681,7 @@ mod tests {
                             path: Some("workspace/stdout.txt".into()),
                             read: false,
                             write: true,
+                            append: false,
                         }),
                         stderr: StreamDescriptor::Null,
                     },

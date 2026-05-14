@@ -2,6 +2,12 @@
 
 ## 2026-05-14
 
+- Started the rc process graph completion sprint on `rc-process-graph-completion`.
+- Added append-aware runtime fd descriptors and updated execution fd installation so file descriptors use create/truncate/append semantics while pipe descriptors keep live pipe endpoints.
+- Extended provider-backed rc executable stages to carry representable redirects into task fd descriptors: file read/write/append, fd close, selected pipe fds, and executable process substitution now stay on the graph path when possible.
+- Added `.rc/graphs/<id>/ctl` as a Star 9 rc graph lifecycle file. Writing `cleanup` or `close` removes completed graph mounts; writing `cancel <note>` marks active provider jobs through the same deterministic `signal:<note>` state/status used by rc note delivery.
+- Added a browser rc worker graph provider in `crates/star9-web/js/shell.js`. Graph-compatible `worker module.mjs` and direct JS/WASM module stages can run through `SystemElement.startBrowserWorker` with bounded stdin/stdout handoff, browser task exit observation, background jobs, and `wait`.
+- Added browser worker task completion/cancel tracking, worker stdin bytes for direct browser WASI reads, a production browser execution worker entrypoint, browser rc graph fixtures, Node coverage, and browser smoke coverage for a worker-backed rc pipeline.
 - Continued the rc provider graph completion sprint on `rc-provider-graph-completion`.
 - Added `ExecutionRegistry::has_handler` so rc graph providers can distinguish unavailable JS/WASM worker execution from explicitly registered module/kind handlers.
 - Extended Star 9 rc provider graphs to run registered JS/WASM stages through the same task/fd/pipe execution path as WASI and opt-in native stages, including mixed WASI-to-worker pipelines.
