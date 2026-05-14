@@ -2,20 +2,79 @@
 
 ## Current Focus
 
-Finish the real-host-depth sprint while keeping the Rust tree primary, deterministic, and free of Go runtime/build dependencies.
+Finish the Plan 9 host-depth completion sprint while keeping the Rust tree primary, deterministic, and free of Go runtime/build dependencies.
 
 Current sprint contract:
 
+- Host capabilities must appear as mounted namespaces or device files controlled by small file protocols; they must not bypass task namespaces, fd tables, or 9P-style composition.
+- Rust/native 9P cancellation uses tag-keyed async operation tracking where native work can run concurrently. `Tflush` cancels by old tag, returns `Rflush`, and suppresses late replies.
+- WASI socket behavior routes listener-backed accept and stream send/recv/shutdown through deterministic `#net` resources and task fds by default.
+- Browser workers access task files through typed runtime path/fd requests, not privileged JS object handles.
+- Live HTTP and S3/R2 checks are implemented as environment-gated opt-in tests. Default verification remains offline.
+- Browser networking uses WebSocket/WebTransport-style adapters surfaced through a `#net`-shaped file model; raw TCP remains unavailable in browsers.
+- SyncFs scheduling state is exposed through structured snapshots and stable status text.
+- Real VM providers sit behind a `VmProvider` contract; deterministic `#vm` remains the default offline provider.
+- Native 9P import/serve includes stdio plus opt-in TCP stream acceptance through Rust-owned frame framing.
 - Preserve the existing browser storage adapters: OPFS, File System Access, Cache API, JS value, DOM, download, and worker-backed storage.
 - Prefer raw OPFS for simple persistent browser workspaces.
-- Add StarFS as a separate optional mount backend, backed by OPFS by default, without replacing raw OPFS or existing storage mounts.
+- Keep StarFS as separate optional mount backends: the lightweight OPFS-backed compatible adapter and the additional `starfs-sdk` adapter hook for an external StarFS SDK/worker/wasm integration.
 - Route browser async storage into Wanix task-facing paths through a 9P proxy/mount boundary instead of pretending browser async APIs satisfy the synchronous Rust `FileSystem` trait.
 - Expand browser 9P import/export parity for mutation, errors, large payloads, cancellation, malformed frames, concurrent imports, and teardown.
 - Keep deterministic terminal/VM/network devices as default conformance. Native TCP, native PTY, real VM providers, and live HTTP/S3/R2 checks remain explicit opt-ins.
 - Keep Go-compatible JS/WASM execution represented by Rust/browser worker lifecycle fixtures without reintroducing Go build dependencies.
 - Keep `docs/audits/completion-gap-matrix.json`, `docs/audits/real-host-depth-matrix.json`, conformance docs, live-test docs, and progress notes current as the sprint lands.
 
-### Real-Host-Depth Sprint Plan
+### Plan 9 Host-Depth Completion Sprint Plan
+
+1. Rust/native 9P true async cancellation
+   - Maintain an async-capable operation registry keyed by 9P tag.
+   - Cancel pending native work by `Tflush.oldtag`, return `Rflush`, and suppress late replies.
+   - Preserve fid/session state and keep Rust-owned length-prefixed stream framing as the native boundary.
+
+2. Real network resources and WASI listener-backed sockets
+   - Keep deterministic `#net` as the default provider.
+   - Route WASI `sock_accept`, `sock_recv`, `sock_send`, and `sock_shutdown` through `#net` listener/data files and task fds.
+   - Keep native/browser real transports opt-in and file-protocol-shaped.
+
+3. Browser worker runtime namespace/fd request protocol
+   - Provide typed runtime requests for path and fd operations.
+   - Route browser worker access through owning task namespaces and fd tables.
+
+4. Live backend depth
+   - Keep fake/loopback transports as default.
+   - Provide opt-in HTTP and S3/R2 live tests with documented env vars and cleanup expectations.
+
+5. Browser network transport adapters
+   - Provide browser WebSocket/WebTransport-style boundaries as `#net`-shaped resources.
+   - Keep browser raw TCP explicitly unavailable.
+
+6. SyncFs backend scheduling visibility
+   - Keep deterministic scheduler tests.
+   - Expose scheduler pending/due/error state through stable status text and structured snapshots.
+
+7. StarFS optional adapters and semantic depth
+   - Keep raw OPFS and existing storage mounts.
+   - Keep lightweight StarFS-compatible storage.
+   - Add the separate `starfs-sdk` adapter hook for the external SDK.
+   - Expose xattrs, snapshots, KV, and audit/tool-call data through filesystem/control surfaces.
+
+8. Real VM provider integration
+   - Keep deterministic VM provider as default.
+   - Route optional real providers through `VmProvider` behind `#vm/<id>/ctl`, `state`, `console`, `config`, `alias`, and `guest`.
+
+9. Native 9P import/serve ergonomics
+   - Keep stdio serving.
+   - Add native TCP stream import acceptance through `TcpStreamTransport`.
+
+10. Browser File System Access/download automation
+   - Keep fake-host tests default.
+   - Add permission helper coverage and document real browser permission gates.
+
+11. Documentation, examples, and verification
+   - Keep planning, progress, conformance, live-test, architecture, and audit docs current.
+   - Default verification remains offline; host/live checks are explicit opt-ins.
+
+### Prior Real-Host-Depth Sprint Plan
 
 1. Evidence refresh and storage direction
    - Refresh the gap/audit matrix and classify default offline, browser capability-gated, native opt-in, live-service opt-in, and explicit unsupported boundaries.

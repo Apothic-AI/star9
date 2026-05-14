@@ -11,7 +11,7 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - `MetaCacheFs` cached success/error behavior, TTL expiry, refresh-ahead, and mutation invalidation.
 - `SyncFs` local-first dirty tracking plus explicit push/pull/sync behavior over tar patch payloads.
 - `SyncFs` pull conflict behavior for default keep-local semantics, explicit prefer-remote overwrites, retained conflict reporting, and dirty descendant protection.
-- `SyncFs` debounced scheduling hooks for deterministic pending state, due checks, immediate flush, last-error reporting, and retry-after-failure behavior.
+- `SyncFs` debounced scheduling hooks for deterministic pending state, due checks, immediate flush, stable status text, last-error reporting, and retry-after-failure behavior.
 - `SyncFs` native background scheduling for debounce preservation across repeated requests, clean shutdown with pending work, failure state publication, and retry only after a new request.
 - `SyncFs` reusable tar patch application semantics for file/directory/symlink upserts, parent creation, mode preservation, and PAX delete/recursive delete markers over mutable filesystem backends.
 - `TarFs` archive reads, directory listings, symlink lstat/readlink/follow behavior, archive round-tripping, and read-only mutation failures.
@@ -44,29 +44,31 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Typed protocol dispatch for JS-handle file operations.
 - CBOR request/response round-tripping for the typed protocol boundary.
 - CBOR round-tripping for typed runtime worker spawn/start, execution, port handoff, task messages, stdio/fd descriptors, and exit status.
-- Runtime protocol host handling for worker spawn/start, stdio/fd setup, port open/handoff, task messages, and exit-state updates.
+- Runtime protocol host handling for worker spawn/start, stdio/fd setup, port open/handoff, task messages, worker path/fd namespace requests, and exit-state updates.
 - Runtime protocol immutable snapshot APIs for workers, ports, handoff targets, and task messages.
 - Browser worker/message-port adapter coverage for typed runtime request/response dispatch, task message delivery, and lossless 9P frame transfer through a host-neutral port.
-- Browser Worker/MessagePort JS glue for tagged binary runtime envelopes, endpoint wrappers, port transfer helpers, system facade resolution, import-port requests, and CBOR runtime request/task-message bridging into a WanixSystem facade.
+- Browser Worker/MessagePort JS glue for tagged binary runtime envelopes, endpoint wrappers, port transfer helpers, system facade resolution, import-port requests, worker-side namespace/fd request helpers, and CBOR runtime request/task-message bridging into a WanixSystem facade.
 - Browser 9P `MessagePort` helpers for complete binary frame request/response handling, tag-matched async client requests, async namespace read/write/list mounts, transferable served ports, origin-gated `wanix-import` responder handoff, concurrent imports from one exporter, cross-document import iframe lifetime/retry behavior, unknown-tag/error reporting, malformed-frame handling, and non-binary frame error reporting with deterministic fake-port tests plus real Playwright smoke import over `MessagePort`.
 - Browser Worker host facade coverage for fake Worker-like startup, transferred runtime ports, binary request/response/task-message routing, stop/restart, and cleanup.
 - Browser JS/WASM Worker host bootstrap coverage for normalized execution messages, runtime descriptor transfer, task-message observation, existing-host wrapping, and cleanup.
 - Browser JS/WASM execution-worker coverage for runtime/bootstrap message ordering, injected runner context, default dynamic JS runner import, direct WASI-style `.wasm` instantiation, Go-compatible JS/WASM runner fixture execution, task-message emission, exit/error reporting, and cleanup.
 - Browser async mount resolution and debounced sync scheduling over async storage/sync targets with deterministic fake timers.
-- Browser storage JS adapter coverage for OPFS, File System Access, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs, plus browser-side async mount routing for real host adapters through `wanix-system`.
+- Browser storage JS adapter coverage for OPFS, File System Access, File System Access permission helper flow, Cache API, DOM, download, JS value, and worker-backed handles using deterministic fake host APIs, plus browser-side async mount routing for real host adapters through `wanix-system`.
 - Browser storage-to-9P export coverage for async storage adapters, including create/read/write/list/mkdir/remove/stat behavior through `WanixP9NamespaceMount`, large file writes, large directory listings with complete dirent chunks, storage `Tflush` cancellation, malformed frame rejection, and late reply suppression.
-- Browser StarFS-compatible optional mount coverage over an OPFS-style backing adapter, including ordinary filesystem entries plus `.starfs/kv`, `.starfs/toolcalls`, and `.starfs/snapshots` surfaces mounted independently beside raw OPFS.
+- Browser StarFS-compatible optional mount coverage over an OPFS-style backing adapter, including ordinary filesystem entries, xattrs, explicit hard-link unsupported behavior on non-link-capable backing stores, `.starfs/kv`, `.starfs/toolcalls`, and restorable `.starfs/snapshots` surfaces mounted independently beside raw OPFS.
+- Browser StarFS SDK optional backend coverage through `backend: "starfs-sdk"` with a fake SDK adapter proving the external SDK path is additional and does not replace raw OPFS or the lightweight StarFS-compatible adapter.
+- Browser network adapter coverage for WebSocket-style transports surfaced through `new`, `<id>/ctl`, `<id>/data`, `<id>/status`, `<id>/local`, and `<id>/remote` file-like operations with explicit browser raw-listen rejection.
 - Host-neutral browser binding source registry coverage for file byte sources, tar archive mounts, and 9P import transports.
 - Native execution registry coverage for missing-handler behavior plus deterministic WASI and JS-WASM handlers that exercise task namespace files, stdio/fd descriptors, args/env/cwd, and exit status.
-- Wasmi-backed WASI preview1 execution coverage for task namespace module loading from inline WAT and checked-in compiled WASM fixtures, args/env/cwd propagation, preopened cwd, fd read/write/pread/pwrite/seek/tell/allocate/renumber/close/stat/advice/flags/rights/timestamps/sync/datasync/truncate/readdir behavior, path open/stat/timestamps/create-directory/unlink/remove-directory/rename/link/symlink/readlink behavior, stdio fd writes, deterministic random/clock resolution/time imports, poll/yield/signal imports, socket send/recv/shutdown over installed task fds, unsupported socket accept on non-listener fds, preview1 errno mapping, and proc-exit mapping.
+- Wasmi-backed WASI preview1 execution coverage for task namespace module loading from inline WAT and checked-in compiled WASM fixtures, args/env/cwd propagation, preopened cwd, fd read/write/pread/pwrite/seek/tell/allocate/renumber/close/stat/advice/flags/rights/timestamps/sync/datasync/truncate/readdir behavior, path open/stat/timestamps/create-directory/unlink/remove-directory/rename/link/symlink/readlink behavior, stdio fd writes, deterministic random/clock resolution/time imports, poll/yield/signal imports, socket listener accept through `#net/<id>/listen`, socket send/recv/shutdown over installed task fds, unsupported socket accept on non-listener fds, preview1 errno mapping, and proc-exit mapping.
 - Fixture coverage for all public Wanix file API operation names.
 - Protocol EOF mapping to `null`-style optional bytes.
 - Rust-native 9P2000.L frame encode/decode coverage for core import/export messages.
 - 9P server attach, walk, and getattr behavior against a `MemFs` export.
 - 9P client filesystem behavior over loopback transport for read, write, create, hard link, readdir, rename, remove, mkdir, and rmdir operations.
 - 9P partial-walk edge behavior, duplicate `newfid` rejection, and client not-found mapping for partial remote walks.
-- 9P flush acknowledgement behavior, async browser server cancellation for Promise-backed work, late reply suppression, and fid-state preservation for synchronous server handling.
-- 9P native stream framing helpers for consecutive length-prefixed frames, invalid frame size rejection, and multi-request server dispatch over `Read`/`Write` boundaries.
+- 9P flush acknowledgement behavior, Rust/native async server cancellation by tag, async browser server cancellation for Promise-backed work, late reply suppression, duplicate-tag cancellation, and fid-state preservation for synchronous server handling.
+- 9P native stream framing helpers and `TcpStreamTransport` for consecutive length-prefixed frames, invalid frame size rejection, TCP stream import, and multi-request server dispatch over `Read`/`Write` boundaries.
 - 9P hard-link and xattr walk/create message codec coverage plus server/client xattr read, list, and write commit behavior over MemFs xattrs.
 - 9P client invalid path rejection before normalization for empty, absolute, and parent-traversal inputs.
 - Runtime 9P namespace export and loopback import behavior.
@@ -78,6 +80,9 @@ The Rust tests are organized around the behavioral gates from `PLAN.md`. Fixture
 - Device allocator resource creation.
 - Terminal device program/data queues, retained screen file, program LF-to-CRLF normalization, winch signal path, ctl clear/reset/noop behavior, state, size files, and browser `wanix-terminal` element integration.
 - Terminal raw program queue behavior for browser/workbench callers that need byte-preserving input.
+- VM provider contract behavior behind `#vm/<id>/ctl`, `state`, `console`, `config`, `alias`, and `guest`, with deterministic default provider and test provider coverage.
+- CLI opt-in native 9P stream acceptance through `cargo run -p wanix-cli -- accept native-p9`.
+- Live HTTP and S3/R2 environment-gated tests under `cargo test -p wanix-fs --features native-http --test live_backends`, which skip unless explicit live-service environment variables are present.
 - VM device `new/<kind>` allocation, ctl start/stop/reset/alias/config behavior, alias lookup, state fields, console log, id, kind files, and attached guest filesystem exposure through `#vm/<id>/guest`.
 - Network deterministic Plan 9-style connection resources for dial, bind, announce, listen accept, hangup/reset, status/local/remote, data flow, and invalid transitions.
 - WASI and Go-compatible JS execution adapter task starts.
@@ -123,11 +128,11 @@ These surfaces are represented in Rust but should continue to be expanded with d
 
 - The completion sprint in `PLAN.md` is the authoritative checklist for closing these remaining oracle areas. Each item below should either gain direct Rust/Node/Playwright/CLI/live conformance or be reclassified as an explicit host capability boundary with tests and docs.
 - HTTP filesystem remote metadata semantics beyond the currently covered cache validators, Wanix metadata fields, and conditional GET/HEAD behavior.
-- `SyncFs` backend-specific transport scheduling semantics beyond reusable tar patch application and the browser async-target debounce scheduler.
-- HTTP filesystem broader live-service behavior against real servers remains live-service opt-in and is documented in `docs/LIVE_TESTS.md`.
-- Cloudflare/S3/R2 live-service coverage such as bucket-specific behavior and opt-in live tests over `S3ObjectStore` plus `AwsSigV4Signer` remains credential-gated and documented in `docs/LIVE_TESTS.md`.
+- `SyncFs` backend-specific transport scheduling semantics beyond reusable tar patch application, stable status text, and the browser async-target debounce scheduler.
+- HTTP filesystem broader live-service behavior against real servers is live-service opt-in and is covered by the environment-gated live test harness documented in `docs/LIVE_TESTS.md`.
+- Cloudflare/S3/R2 live-service coverage over `S3ObjectStore` plus `AwsSigV4Signer` is credential-gated, documented in `docs/LIVE_TESTS.md`, and covered by the env-gated live test harness when credentials are present.
 - Browser task/WASI visibility for real OPFS and other async browser storage uses the browser async mount table and storage 9P proxy. Direct insertion into the synchronous Rust `FileSystem` trait remains an explicit sync/async host boundary.
-- Browser Worker execution orchestration covers real JS, direct WASI-style `.wasm`, Go-compatible runner fixtures, port handoff, stdout, exit, and worker export mounts. Deeper async WASI namespace calls from browser workers remain a runtime-request protocol expansion area.
-- Real VM execution providers beyond the deterministic `#vm` state machine remain native/browser host integrations. Guest storage attachment is covered through `#vm/<id>/guest`.
-- Real browser raw TCP is not a browser capability. Native TCP has opt-in loopback acceptance; browser transport adapters remain WebSocket/WebTransport-style future work.
-- Real WASI listener-backed `sock_accept` remains unsupported on generic non-listener fds; deterministic fd-backed `sock_recv`, `sock_send`, and `sock_shutdown` are covered.
+- Browser Worker execution orchestration covers real JS, direct WASI-style `.wasm`, Go-compatible runner fixtures, port handoff, stdout, exit, worker export mounts, and typed runtime path/fd requests. Representative workloads should continue to expand over that protocol.
+- Real VM execution providers beyond the deterministic provider contract remain native/browser host integrations. Guest storage attachment is covered through `#vm/<id>/guest`.
+- Real browser raw TCP is not a browser capability. Native TCP has opt-in loopback acceptance; browser transport adapters use WebSocket/WebTransport-style file-model resources.
+- WASI listener-backed `sock_accept` is implemented for `#net/<id>/listen` fds and remains unsupported on generic non-listener fds.

@@ -13,6 +13,7 @@ use wanix_protocol::p9::{LoopbackTransport, NinePClientFs, NinePServer, NinePTra
 use wanix_task::{Task, TaskFs};
 use wanix_vfs::{BindMode, Namespace};
 
+pub use devices::{DeterministicVmProvider, VmProvider, VmProviderResource, VmProviderUpdate};
 #[cfg(not(target_arch = "wasm32"))]
 pub use execution::NativePtyExecutionHandler;
 pub use execution::{ExecutionRegistry, FnExecutionHandler, NativeExecutionHandler};
@@ -119,6 +120,10 @@ impl Runtime {
 
     pub fn set_vm_guest(&self, vm_id: &str, fs: FsRef) -> Result<()> {
         self.devices.set_vm_guest(vm_id, fs)
+    }
+
+    pub fn set_vm_provider(&self, provider: Arc<dyn VmProvider>) {
+        self.devices.set_vm_provider(provider);
     }
 }
 

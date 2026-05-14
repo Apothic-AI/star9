@@ -20,6 +20,7 @@ export * from "./storage-web.js";
 export * from "./storage-js-value.js";
 export * from "./storage-starfs.js";
 export * from "./storage-p9.js";
+export * from "./network-adapter.js";
 export * from "./terminal.js";
 
 function defineElement(name, ctor) {

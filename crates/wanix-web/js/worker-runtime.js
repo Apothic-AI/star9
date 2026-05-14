@@ -355,6 +355,147 @@ function attachImportFrameLifetime(port, iframe) {
     return messagePort;
 }
 
+export function createWanixRuntimeNamespaceClient(endpoint, options = {}) {
+    if (!endpoint || typeof endpoint.sendRequest !== "function" || typeof endpoint.onResponse !== "function") {
+        throw new TypeError("expected a WorkerRuntimeEndpoint-like object");
+    }
+    const encode = options.encodeRequest || options.encode;
+    const decode = options.decodeResponse || options.decode || ((payload) => payload);
+    if (typeof encode !== "function") {
+        throw new TypeError("expected encodeRequest(request) for runtime namespace requests");
+    }
+    const taskId = String(options.taskId ?? options.task_id ?? "");
+    const timeoutMs = Number(options.timeoutMs ?? options.timeout ?? 5000);
+    const pending = [];
+
+    const offResponse = endpoint.onResponse((message) => {
+        const next = pending.shift();
+        if (!next) {
+            return;
+        }
+        clearTimeout(next.timer);
+        try {
+            next.resolve(decode(message.payload));
+        } catch (error) {
+            next.reject(error);
+        }
+    });
+    const offError =
+        typeof endpoint.onError === "function"
+            ? endpoint.onError((error) => {
+                const next = pending.shift();
+                if (!next) {
+                    return;
+                }
+                clearTimeout(next.timer);
+                next.reject(error);
+            })
+            : () => {};
+
+    function request(method, args) {
+        const payload = encode({
+            method,
+            args: normalizeRuntimeArgs(args, taskId),
+        });
+        return new Promise((resolve, reject) => {
+            const timer =
+                timeoutMs >= 0
+                    ? setTimeout(() => {
+                        const index = pending.findIndex((entry) => entry.resolve === resolve);
+                        if (index >= 0) {
+                            pending.splice(index, 1);
+                        }
+                        reject(new Error(`timed out waiting for Wanix runtime ${method} response`));
+                    }, timeoutMs)
+                    : null;
+            pending.push({ resolve, reject, timer });
+            try {
+                endpoint.sendRequest(payload);
+            } catch (error) {
+                if (timer !== null) {
+                    clearTimeout(timer);
+                }
+                pending.pop();
+                reject(error);
+            }
+        });
+    }
+
+    return {
+        request,
+        pathRead(path) {
+            return request("PathRead", { path });
+        },
+        pathWrite(path, data) {
+            return request("PathWrite", { path, data: cloneBytes(data, "runtime path write data") });
+        },
+        pathStat(path) {
+            return request("PathStat", { path });
+        },
+        pathList(path) {
+            return request("PathList", { path });
+        },
+        pathMkdir(path) {
+            return request("PathMkdir", { path });
+        },
+        pathRemove(path) {
+            return request("PathRemove", { path });
+        },
+        pathRename(oldPath, newPath) {
+            return request("PathRename", { old_path: String(oldPath), new_path: String(newPath) });
+        },
+        pathTruncate(path, size) {
+            return request("PathTruncate", { path, size: Number(size) });
+        },
+        fdOpen(path, flags = {}) {
+            return request("FdOpen", {
+                path,
+                read: Boolean(flags.read),
+                write: Boolean(flags.write),
+                create: Boolean(flags.create),
+                truncate: Boolean(flags.truncate),
+                append: Boolean(flags.append),
+            });
+        },
+        fdRead(fd, len) {
+            return request("FdRead", { fd: Number(fd), len: Number(len) });
+        },
+        fdWrite(fd, data) {
+            return request("FdWrite", { fd: Number(fd), data: cloneBytes(data, "runtime fd write data") });
+        },
+        fdSeek(fd, offset, whence = "start") {
+            return request("FdSeek", { fd: Number(fd), offset: Number(offset), whence: String(whence) });
+        },
+        fdClose(fd) {
+            return request("FdClose", { fd: Number(fd) });
+        },
+        close() {
+            offResponse();
+            offError();
+            while (pending.length > 0) {
+                const next = pending.shift();
+                clearTimeout(next.timer);
+                next.reject(new Error("Wanix runtime namespace client closed"));
+            }
+        },
+    };
+}
+
+function normalizeRuntimeArgs(args, taskId) {
+    const value = { ...(args || {}) };
+    if (value.task_id == null && value.taskId == null) {
+        value.task_id = taskId;
+    }
+    if (value.taskId != null && value.task_id == null) {
+        value.task_id = String(value.taskId);
+        delete value.taskId;
+    }
+    if (typeof value.path !== "undefined") {
+        value.path = String(value.path);
+    }
+    return value;
+}
+
 export class BinaryMessageEndpoint {
     constructor(target, options = {}) {
         this.target = requireMessageTarget(target);

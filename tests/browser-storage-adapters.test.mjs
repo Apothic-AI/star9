@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
     createFileSystemAccessStorageAdapter,
     createOpfsStorageAdapter,
+    requestFileSystemAccessHandle,
 } from "../crates/wanix-web/js/storage-file-system.js";
 import {
     createCacheStorageAdapter,
@@ -41,6 +42,24 @@ test("OPFS and File System Access adapters use safe handle-backed paths", async 
     );
     await fsa.writeText("state.txt", "fsa-ok");
     assert.equal(await fsa.readText("state.txt"), "fsa-ok");
+
+    const requested = [];
+    const grantedHandle = await requestFileSystemAccessHandle({
+        mode: "directory",
+        writable: true,
+        globals: {
+            showDirectoryPicker: async () => ({
+                kind: "directory",
+                name: "picked",
+                async requestPermission(permission) {
+                    requested.push(permission);
+                    return "granted";
+                },
+            }),
+        },
+    });
+    assert.equal(grantedHandle.name, "picked");
+    assert.deepEqual(requested, [{ mode: "readwrite" }]);
 });
 
 test("Cache, DOM, and download adapters operate with fake browser hosts", async () => {
@@ -145,19 +164,124 @@ test("StarFS storage is an additional mount backend beside raw OPFS", async () =
 
     await opfs.writeText("state.txt", "raw-opfs");
     await starfs.writeText("report.txt", "starfs-file");
+    await starfs.setXattr("report.txt", "user.mime", encoder.encode("text/plain"));
     await starfs.setKv("prefs", { theme: "dark" });
     const snapshot = await starfs.createSnapshot("initial");
+    await starfs.writeText("report.txt", "changed");
+    await starfs.restoreSnapshot("initial");
 
     assert.equal(await opfs.readText("state.txt"), "raw-opfs");
     assert.equal(await starfs.readText("report.txt"), "starfs-file");
+    assert.deepEqual(await starfs.listXattrs("report.txt"), ["user.mime"]);
+    assert.equal(new TextDecoder().decode(await starfs.getXattr("report.txt", "user.mime")), "text/plain");
     assert.deepEqual(await starfs.getKv("prefs"), { theme: "dark" });
     assert.deepEqual(snapshot.files, [{ path: "report.txt", size: 11 }]);
+    assert.deepEqual(await starfs.listSnapshots(), ["initial"]);
     assert.deepEqual(
         (await starfs.readDir(".")).map((entry) => entry.name),
         [".starfs", "report.txt"],
     );
+    await assert.rejects(() => starfs.link("report.txt", "copy.txt"), /hard links|ENOTSUP/i);
     await assert.rejects(() => opfs.readText("report.txt"), /Path does not exist|not found/i);
 });
+
+test("StarFS SDK storage is a separate optional backend", async () => {
+    const sdk = new FakeStarFsSdkAdapter();
+    const starfs = await createBrowserStorageAdapter(
+        { backend: "starfs-sdk", id: "sdk-workspace" },
+        {
+            starfsSdk: {
+                factory: async (descriptor) => {
+                    assert.equal(descriptor.backend, "starfs-sdk");
+                    assert.equal(descriptor.id, "sdk-workspace");
+                    return sdk;
+                },
+            },
+        },
+    );
+
+    await starfs.writeText("notes.txt", "from-sdk");
+    await starfs.setXattr("notes.txt", "user.kind", encoder.encode("note"));
+    assert.equal(await starfs.readText("notes.txt"), "from-sdk");
+    assert.deepEqual(await starfs.listXattrs("notes.txt"), ["user.kind"]);
+    assert.equal(new TextDecoder().decode(await starfs.getXattr("notes.txt", "user.kind")), "note");
+    assert.deepEqual((await starfs.readDir(".")).map((entry) => entry.name), ["notes.txt"]);
+    assert.equal(starfs.descriptor.version, "wanix-starfs-sdk-adapter-v1");
+});
+
+class FakeStarFsSdkAdapter {
+    constructor() {
+        this.files = new Map();
+        this.xattrs = new Map();
+    }
+
+    async stat(path = ".") {
+        if (path === ".") {
+            return { name: ".", kind: "dir", type: "dir", size: 0 };
+        }
+        const bytes = this.files.get(path);
+        if (!bytes) {
+            throw Object.assign(new Error(`not found: ${path}`), { code: "ENOENT" });
+        }
+        return { name: path.split("/").pop(), kind: "file", type: "file", size: bytes.byteLength };
+    }
+
+    async readFile(path) {
+        const bytes = this.files.get(path);
+        if (!bytes) {
+            throw Object.assign(new Error(`not found: ${path}`), { code: "ENOENT" });
+        }
+        return new Uint8Array(bytes);
+    }
+
+    async writeFile(path, bytes) {
+        this.files.set(path, new Uint8Array(bytes));
+    }
+
+    async readDir(path = ".") {
+        if (path !== ".") {
+            throw Object.assign(new Error(`not found: ${path}`), { code: "ENOENT" });
+        }
+        return [...this.files.keys()].sort().map((name) => ({
+            name,
+            kind: "file",
+            type: "file",
+            size: this.files.get(name).byteLength,
+        }));
+    }
+
+    async mkdir() {}
+
+    async remove(path) {
+        this.files.delete(path);
+    }
+
+    async setXattr(path, name, value) {
+        await this.stat(path);
+        this.xattrs.set(`${path}\0${name}`, new Uint8Array(value));
+    }
+
+    async getXattr(path, name) {
+        const value = this.xattrs.get(`${path}\0${name}`);
+        if (!value) {
+            throw Object.assign(new Error(`xattr not found: ${name}`), { code: "ENOENT" });
+        }
+        return new Uint8Array(value);
+    }
+
+    async listXattrs(path) {
+        await this.stat(path);
+        const prefix = `${path}\0`;
+        return [...this.xattrs.keys()]
+            .filter((key) => key.startsWith(prefix))
+            .map((key) => key.slice(prefix.length))
+            .sort();
+    }
+
+    async removeXattr(path, name) {
+        this.xattrs.delete(`${path}\0${name}`);
+    }
+}
 
 class FakeFileHandle {
     constructor(name, bytes = new Uint8Array()) {

@@ -18,15 +18,16 @@
       {
         "surface": "StarFS",
         "classification": "optional additional mount",
-        "status": "implemented as a StarFS-compatible adapter over an explicit backing adapter",
-        "mounts": ["mountStarFs", "mountTaskStarFs"],
-        "default_backing": "OPFS"
+        "status": "implemented as a StarFS-compatible adapter over an explicit backing adapter, plus a separate optional starfs-sdk backend hook",
+        "mounts": ["mountStarFs", "mountTaskStarFs", "backend:starfs-sdk"],
+        "default_backing": "OPFS",
+        "semantic_depth": ["xattrs", "KV", "toolcalls", "restorable snapshots", "explicit hard-link unsupported errors when backing lacks link support"]
       }
     ],
     "starfs_reference": {
       "path": "/home/bitnom/Code/apothic-monorepo/libs/rust/starfs",
       "observed_sdks": ["Rust SDK over PrimaDB/Turso", "TypeScript SDK with browser tests over database-wasm", "CLI/FUSE/NFS mount crates"],
-      "wanix_integration_choice": "Do not vendor the external SDK into default wanix-rs builds. Use a separate browser adapter now and keep a future SDK-backed worker/wasm bridge as an opt-in backend."
+      "wanix_integration_choice": "Do not vendor the external SDK into default wanix-rs builds. The checked-in starfs-sdk adapter hook wraps a supplied external SDK/worker/wasm adapter as an additional backend when users opt in."
     }
   },
   "browser_storage_task_visibility": {
@@ -53,17 +54,19 @@
     "classification": "live-service opt-in implementation",
     "default": "offline fake transports and native loopback tests",
     "opt_in_docs": "docs/LIVE_TESTS.md",
-    "requires": ["WANIX_LIVE_HTTP_BASE_URL", "WANIX_LIVE_S3 or WANIX_LIVE_R2 credentials"]
+    "tests": "crates/wanix-fs/tests/live_backends.rs",
+    "requires": ["WANIX_LIVE_HTTP=1 with WANIX_LIVE_HTTP_BASE_URL", "WANIX_LIVE_S3=1 with S3/R2 credentials"]
   },
   "network": {
     "default": "deterministic #net Plan 9-style resource model",
-    "native_opt_in": "cargo run -p wanix-cli -- accept native-tcp",
-    "browser_boundary": "WebSocket/WebTransport-style transport remains browser capability-gated; raw TCP is not a browser API."
+    "wasi": "listener-backed sock_accept plus sock_recv/sock_send/sock_shutdown through #net data fds",
+    "native_opt_in": ["cargo run -p wanix-cli -- accept native-tcp", "cargo run -p wanix-cli -- accept native-p9"],
+    "browser_boundary": "WebSocket/WebTransport-style transport is exposed through crates/wanix-web/js/network-adapter.js; raw TCP is not a browser API."
   },
   "vm": {
-    "default": "deterministic VM provider surface",
+    "default": "deterministic VM provider surface behind VmProvider",
     "guest_storage": "raw OPFS, StarFS, or any 9P export can be attached through existing #vm/<id>/guest browser/native handoff paths",
-    "real_provider_boundary": "Firecracker/v86/native hypervisor provider remains opt-in host integration and is not part of default offline verification."
+    "real_provider_boundary": "Firecracker/v86/native hypervisor providers are opt-in implementations of VmProvider and are not part of default offline verification."
   },
   "go_compatible_execution": {
     "classification": "default offline replacement fixture plus browser worker path",

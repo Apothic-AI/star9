@@ -8,6 +8,7 @@ import {
 } from "../crates/wanix-web/js/worker-host.js";
 import {
     DEFAULT_RUNTIME_PORT_MESSAGE_TYPE,
+    createWanixRuntimeNamespaceClient,
     decodeWorkerRuntimeEnvelope,
     encodeWorkerRuntimeEnvelope,
 } from "../crates/wanix-web/js/worker-runtime.js";
@@ -227,6 +228,42 @@ test("callWanixLogger is a no-op by default and contains logger failures", async
     );
 });
 
+test("createWanixRuntimeNamespaceClient sends typed namespace and fd requests over runtime endpoint", async () => {
+    const endpoint = new FakeRuntimeEndpoint();
+    const client = createWanixRuntimeNamespaceClient(endpoint, {
+        taskId: "task-9",
+        encodeRequest: encodeJsonBytes,
+        decodeResponse: decodeJsonBytes,
+        timeoutMs: 1000,
+    });
+
+    const pathRead = client.pathRead("work/input.txt");
+    assert.equal(endpoint.requests.length, 1);
+    assert.deepEqual(decodeJsonBytes(endpoint.requests[0]), {
+        method: "PathRead",
+        args: {
+            task_id: "task-9",
+            path: "work/input.txt",
+        },
+    });
+    endpoint.respond({ type: "Bytes", value: [115, 101, 101, 100] });
+    assert.deepEqual(await pathRead, { type: "Bytes", value: [115, 101, 101, 100] });
+
+    const fdWrite = client.fdWrite(4, new Uint8Array([1, 2, 3]));
+    assert.deepEqual(decodeJsonBytes(endpoint.requests[1]), {
+        method: "FdWrite",
+        args: {
+            task_id: "task-9",
+            fd: 4,
+            data: [1, 2, 3],
+        },
+    });
+    endpoint.respond({ type: "Count", value: 3 });
+    assert.deepEqual(await fdWrite, { type: "Count", value: 3 });
+
+    client.close();
+});
+
 function createSystemFacade() {
     return {
         readText() {
@@ -235,6 +272,49 @@ function createSystemFacade() {
         writeText() {},
         setupNamespace() {},
     };
+}
+
+function encodeJsonBytes(value) {
+    return new TextEncoder().encode(JSON.stringify(value, (_key, item) => {
+        if (item instanceof Uint8Array) {
+            return [...item];
+        }
+        return item;
+    }));
+}
+
+function decodeJsonBytes(bytes) {
+    return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+class FakeRuntimeEndpoint {
+    constructor() {
+        this.requests = [];
+        this._responseListeners = new Set();
+        this._errorListeners = new Set();
+    }
+
+    sendRequest(payload) {
+        this.requests.push(payload);
+        return payload.byteLength;
+    }
+
+    onResponse(listener) {
+        this._responseListeners.add(listener);
+        return () => this._responseListeners.delete(listener);
+    }
+
+    onError(listener) {
+        this._errorListeners.add(listener);
+        return () => this._errorListeners.delete(listener);
+    }
+
+    respond(value) {
+        const payload = encodeJsonBytes(value);
+        for (const listener of this._responseListeners) {
+            listener({ payload });
+        }
+    }
 }
 
 function installFakeMessageChannel() {

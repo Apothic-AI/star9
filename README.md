@@ -19,19 +19,21 @@ This workspace implements the main Wanix runtime surfaces in Rust:
 - Typed public file API for the Wanix JS handle operation set.
 - CBOR encode/decode helpers for the typed public API boundary.
 - Runtime root construction with built-in `#wanix`, `#task`, `#pipe`, `#signal`, `#ramfs`, `#term`, `#vm`, `#worker`, `#web`, `#js`, `#cache`, `#download`, and `#net` surfaces.
-- Deterministic terminal, VM, and Plan 9-style network device state surfaces, including a retained terminal screen file, raw terminal input queue, and attached VM guest filesystem surface.
-- Rust-native 9P import/export with hard-link and xattr read/list/write support plus browser MessagePort frame-serving/client helpers, an async browser namespace mount client, and a browser storage-to-9P export bridge for async storage adapters.
+- Deterministic terminal, VM, and Plan 9-style network device state surfaces, including a retained terminal screen file, raw terminal input queue, a `VmProvider` lifecycle contract behind `#vm`, and attached VM guest filesystem surface.
+- Rust-native 9P import/export with hard-link and xattr read/list/write support, native stream/TCP transport helpers, async native `Tflush` cancellation, browser MessagePort frame-serving/client helpers, an async browser namespace mount client, and a browser storage-to-9P export bridge for async storage adapters.
 - Browser/WASM facade, custom elements, and CLI smoke paths.
-- Browser Worker/MessagePort JS glue for runtime message envelopes, transferred ports, and CBOR request/task-message bridging into the Rust runtime host.
+- Browser Worker/MessagePort JS glue for runtime message envelopes, transferred ports, typed namespace/fd request helpers, and CBOR request/task-message bridging into the Rust runtime host.
 - Browser Worker host facade and execution-worker helper for real module-worker startup, runtime port transfer, message routing, JS/WASM execution bootstrap, dynamic JS runner import, direct WASI-style `.wasm` instantiation, Go-compatible runner fixture execution, runner context, port handoff, exit/error reporting, and cleanup.
 - Browser worker export handoff for `{ export: MessagePort }` 9P exports, mounted into the task export namespace and optional VM guest namespace.
 - Browser storage host adapters for OPFS/File System Access, Cache API, DOM, download, JS value, and worker-backed handles with deterministic fake-host tests, JS-side async namespace mount routing for real browser hosts, task-facing 9P proxy mounts, and browser timer-backed debounced sync scheduling for async targets.
-- StarFS as a separate optional browser storage mount backend, OPFS-backed by default, exposing ordinary files plus `.starfs/kv`, `.starfs/toolcalls`, and `.starfs/snapshots` without replacing raw OPFS.
-- Wasmi-backed WASI preview1 execution over Wanix task namespaces, fd tables, fd directory/positional I/O/allocation/renumber/advice/flags/timestamps/sync/truncate syscalls, clock resolution/time, poll/yield/signal imports, hard-link and other path mutation syscalls, deterministic socket send/recv/shutdown over task fds, and explicit unsupported socket accept on non-listener fds.
+- StarFS as separate optional browser storage mount backends: a lightweight OPFS-backed compatible adapter with xattrs, KV, tool-call audit logs, and restorable snapshots, plus an additional `starfs-sdk` adapter hook for an external SDK/worker/wasm backend. Neither replaces raw OPFS.
+- Browser network transport adapters shaped like `#net` resources over WebSocket/WebTransport-style capabilities; browser raw TCP remains explicitly unavailable.
+- Wasmi-backed WASI preview1 execution over Wanix task namespaces, fd tables, fd directory/positional I/O/allocation/renumber/advice/flags/timestamps/sync/truncate syscalls, clock resolution/time, poll/yield/signal imports, hard-link and other path mutation syscalls, deterministic socket listener accept plus send/recv/shutdown over `#net` task fds, and explicit unsupported socket accept on non-listener fds.
 - Rust-owned WASI fixtures include checked-in compiled `.wasm` modules as well as focused WAT unit fixtures.
 - Native CLI acceptance commands for 9P loopback, deterministic devices, compiled WASI preview1 fixtures, runtime worker protocol flows, and fd-backed worker stdout routing, plus a Rust-native `serve-p9` stdin/stdout stream hook for local filesystem export.
 - Opt-in native PTY execution acceptance on native hosts with `cargo run -p wanix-cli -- accept native`.
 - Opt-in native TCP loopback acceptance on native hosts with `cargo run -p wanix-cli -- accept native-tcp`.
+- Opt-in native 9P TCP stream acceptance on native hosts with `cargo run -p wanix-cli -- accept native-p9`.
 
 ## Workspace
 

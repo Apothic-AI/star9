@@ -1,12 +1,16 @@
 use std::collections::BTreeMap;
 use std::io::SeekFrom;
 use std::sync::{Arc, Mutex};
+use std::time::UNIX_EPOCH;
 
-use wanix_core::{Error, ErrorKind, FileMode, FsContext, Result};
-use wanix_fs::{BoxFile, FileSystem, Node};
+use wanix_core::{Error, ErrorKind, FileMode, FsContext, Metadata, OpenFlags, Result};
+use wanix_fs::{read_file, write_file, BoxFile, FileSystem, Node};
 use wanix_protocol::runtime::{
     EnvironmentEntry, ExecutionSpec, ExitStatus, FdDescriptor, FdKind, PortDescriptor, PortHandoff,
-    PortOpenRequest, RuntimeRequest, RuntimeResponse, StdioSet, StreamDescriptor, TaskMessage,
+    PortOpenRequest, RuntimeDirEntry, RuntimeFdOpenRequest, RuntimeFdReadRequest, RuntimeFdRequest,
+    RuntimeFdSeekRequest, RuntimeFdWriteRequest, RuntimeMetadata, RuntimePathRenameRequest,
+    RuntimePathRequest, RuntimePathTruncateRequest, RuntimePathWriteRequest, RuntimeRequest,
+    RuntimeResponse, RuntimeSeekWhence, StdioSet, StreamDescriptor, TaskMessage,
     TaskMessagePayload, WorkerHandle, WorkerSpawnRequest, WorkerStartRequest,
 };
 use wanix_task::{Task, TaskFs};
@@ -156,6 +160,43 @@ impl RuntimeProtocolHost {
                 self.post_message(message.clone())?;
                 Ok(RuntimeResponse::TaskMessage(message))
             }
+            RuntimeRequest::PathRead(request) => {
+                self.path_read(request).map(RuntimeResponse::Bytes)
+            }
+            RuntimeRequest::PathWrite(request) => {
+                self.path_write(request)?;
+                Ok(RuntimeResponse::Unit)
+            }
+            RuntimeRequest::PathStat(request) => {
+                self.path_stat(request).map(RuntimeResponse::Metadata)
+            }
+            RuntimeRequest::PathList(request) => {
+                self.path_list(request).map(RuntimeResponse::DirEntries)
+            }
+            RuntimeRequest::PathMkdir(request) => {
+                self.path_mkdir(request)?;
+                Ok(RuntimeResponse::Unit)
+            }
+            RuntimeRequest::PathRemove(request) => {
+                self.path_remove(request)?;
+                Ok(RuntimeResponse::Unit)
+            }
+            RuntimeRequest::PathRename(request) => {
+                self.path_rename(request)?;
+                Ok(RuntimeResponse::Unit)
+            }
+            RuntimeRequest::PathTruncate(request) => {
+                self.path_truncate(request)?;
+                Ok(RuntimeResponse::Unit)
+            }
+            RuntimeRequest::FdOpen(request) => self.fd_open(request).map(RuntimeResponse::Fd),
+            RuntimeRequest::FdRead(request) => self.fd_read(request).map(RuntimeResponse::Bytes),
+            RuntimeRequest::FdWrite(request) => self.fd_write(request).map(RuntimeResponse::Count),
+            RuntimeRequest::FdSeek(request) => self.fd_seek(request).map(RuntimeResponse::Offset),
+            RuntimeRequest::FdClose(request) => {
+                self.fd_close(request)?;
+                Ok(RuntimeResponse::Unit)
+            }
         }
     }
 
@@ -239,6 +280,121 @@ impl RuntimeProtocolHost {
             TaskMessagePayload::Ready => {}
         }
         Ok(())
+    }
+
+    fn lookup_task(&self, task_id: &str) -> Result<Task> {
+        if task_id.is_empty() || task_id == self.root.id() {
+            Ok(self.root.clone())
+        } else {
+            self.task_fs.lookup(task_id)
+        }
+    }
+
+    fn path_read(&self, request: RuntimePathRequest) -> Result<Vec<u8>> {
+        let task = self.lookup_task(&request.task_id)?;
+        read_file(task.namespace().as_ref(), &request.path)
+    }
+
+    fn path_write(&self, request: RuntimePathWriteRequest) -> Result<()> {
+        let task = self.lookup_task(&request.task_id)?;
+        write_file(
+            task.namespace().as_ref(),
+            &request.path,
+            &request.data,
+            FileMode::from_perm(0o644),
+        )
+    }
+
+    fn path_stat(&self, request: RuntimePathRequest) -> Result<RuntimeMetadata> {
+        let task = self.lookup_task(&request.task_id)?;
+        task.namespace()
+            .stat(&FsContext::new(), &request.path)
+            .map(metadata_response)
+    }
+
+    fn path_list(&self, request: RuntimePathRequest) -> Result<Vec<RuntimeDirEntry>> {
+        let task = self.lookup_task(&request.task_id)?;
+        let mut entries: Vec<_> = task
+            .namespace()
+            .read_dir(&FsContext::new(), &request.path)?
+            .into_iter()
+            .map(|entry| RuntimeDirEntry {
+                name: entry.name,
+                metadata: metadata_response(entry.metadata),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
+    }
+
+    fn path_mkdir(&self, request: RuntimePathRequest) -> Result<()> {
+        let task = self.lookup_task(&request.task_id)?;
+        task.namespace()
+            .mkdir(&request.path, FileMode::DIR | FileMode::from_perm(0o755))
+    }
+
+    fn path_remove(&self, request: RuntimePathRequest) -> Result<()> {
+        let task = self.lookup_task(&request.task_id)?;
+        task.namespace().remove(&request.path)
+    }
+
+    fn path_rename(&self, request: RuntimePathRenameRequest) -> Result<()> {
+        let task = self.lookup_task(&request.task_id)?;
+        task.namespace()
+            .rename(&request.old_path, &request.new_path)
+    }
+
+    fn path_truncate(&self, request: RuntimePathTruncateRequest) -> Result<()> {
+        let task = self.lookup_task(&request.task_id)?;
+        task.namespace().truncate(&request.path, request.size)
+    }
+
+    fn fd_open(&self, request: RuntimeFdOpenRequest) -> Result<u32> {
+        let task = self.lookup_task(&request.task_id)?;
+        let flags = runtime_open_flags(&request);
+        let file = task
+            .namespace()
+            .open_file(&request.path, flags, FileMode::from_perm(0o666))?;
+        Ok(task.open_fd(file, request.path))
+    }
+
+    fn fd_read(&self, request: RuntimeFdReadRequest) -> Result<Vec<u8>> {
+        let task = self.lookup_task(&request.task_id)?;
+        let mut data = vec![0_u8; request.len as usize];
+        let n = task.with_fd_mut(request.fd, |file| file.read(&mut data))?;
+        data.truncate(n);
+        Ok(data)
+    }
+
+    fn fd_write(&self, request: RuntimeFdWriteRequest) -> Result<u32> {
+        let task = self.lookup_task(&request.task_id)?;
+        let count = task.with_fd_mut(request.fd, |file| {
+            let count = file.write(&request.data)?;
+            match file.sync() {
+                Ok(()) => {}
+                Err(err) if err.kind() == ErrorKind::NotSupported => {}
+                Err(err) => return Err(err),
+            }
+            Ok(count)
+        })?;
+        Ok(count.try_into().unwrap_or(u32::MAX))
+    }
+
+    fn fd_seek(&self, request: RuntimeFdSeekRequest) -> Result<u64> {
+        let task = self.lookup_task(&request.task_id)?;
+        let pos = match request.whence {
+            RuntimeSeekWhence::Start => {
+                SeekFrom::Start(request.offset.try_into().map_err(|_| ErrorKind::Invalid)?)
+            }
+            RuntimeSeekWhence::Current => SeekFrom::Current(request.offset),
+            RuntimeSeekWhence::End => SeekFrom::End(request.offset),
+        };
+        task.with_fd_mut(request.fd, |file| file.seek(pos))
+    }
+
+    fn fd_close(&self, request: RuntimeFdRequest) -> Result<()> {
+        let task = self.lookup_task(&request.task_id)?;
+        task.close_fd(request.fd)
     }
 
     fn lookup_task_for_worker(&self, worker: &WorkerHandle) -> Result<Task> {
@@ -479,6 +635,43 @@ fn open_virtual_fd(kind: FdKind, name: String) -> Result<(BoxFile, String)> {
     Ok((node.open(&FsContext::new(), ".")?, name))
 }
 
+fn runtime_open_flags(request: &RuntimeFdOpenRequest) -> OpenFlags {
+    let wants_write = request.write || request.create || request.truncate || request.append;
+    let mut flags = if request.read && wants_write {
+        OpenFlags::RDWR
+    } else if wants_write {
+        OpenFlags::WRONLY
+    } else {
+        OpenFlags::RDONLY
+    };
+    if request.create {
+        flags |= OpenFlags::CREATE;
+    }
+    if request.truncate {
+        flags |= OpenFlags::TRUNC;
+    }
+    if request.append {
+        flags |= OpenFlags::APPEND;
+    }
+    flags
+}
+
+fn metadata_response(meta: Metadata) -> RuntimeMetadata {
+    let modified_unix_nanos = meta
+        .modified
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(0);
+    RuntimeMetadata {
+        name: meta.name,
+        mode: meta.mode.bits(),
+        size: meta.size,
+        modified_unix_nanos,
+        uid: meta.uid,
+        gid: meta.gid,
+    }
+}
+
 fn render_exit_status(status: &ExitStatus) -> String {
     match status {
         ExitStatus::ExitCode(code) => code.to_string(),
@@ -707,6 +900,161 @@ mod tests {
         let mut extra = [0_u8; 16];
         let n = task.with_fd_mut(7, |file| file.read(&mut extra)).unwrap();
         assert_eq!(&extra[..n], b"enabled=true");
+    }
+
+    #[test]
+    fn runtime_requests_route_worker_path_and_fd_io_through_task_namespace() {
+        let runtime = Runtime::new().unwrap();
+        let mem = fs_ref(MemFs::from_entries([("input.txt", b"seed".to_vec())]));
+        runtime
+            .root()
+            .namespace()
+            .bind(mem, ".", "work", BindMode::Replace)
+            .unwrap();
+
+        let RuntimeResponse::Worker(handle) = runtime
+            .handle_runtime_request(RuntimeRequest::SpawnWorker(WorkerSpawnRequest {
+                worker: worker_request("worker-io", "ignored"),
+                parent_task_id: None,
+            }))
+            .unwrap()
+        else {
+            panic!("expected worker response");
+        };
+
+        assert_eq!(
+            runtime
+                .handle_runtime_request(RuntimeRequest::PathRead(RuntimePathRequest {
+                    task_id: handle.task_id.clone(),
+                    path: "work/input.txt".into(),
+                }))
+                .unwrap(),
+            RuntimeResponse::Bytes(b"seed".to_vec())
+        );
+        assert_eq!(
+            runtime
+                .handle_runtime_request(RuntimeRequest::PathWrite(RuntimePathWriteRequest {
+                    task_id: handle.task_id.clone(),
+                    path: "work/output.txt".into(),
+                    data: b"abcdef".to_vec(),
+                }))
+                .unwrap(),
+            RuntimeResponse::Unit
+        );
+        let RuntimeResponse::Metadata(meta) = runtime
+            .handle_runtime_request(RuntimeRequest::PathStat(RuntimePathRequest {
+                task_id: handle.task_id.clone(),
+                path: "work/output.txt".into(),
+            }))
+            .unwrap()
+        else {
+            panic!("expected metadata response");
+        };
+        assert_eq!(meta.size, 6);
+
+        runtime
+            .handle_runtime_request(RuntimeRequest::PathMkdir(RuntimePathRequest {
+                task_id: handle.task_id.clone(),
+                path: "work/subdir".into(),
+            }))
+            .unwrap();
+        let RuntimeResponse::DirEntries(entries) = runtime
+            .handle_runtime_request(RuntimeRequest::PathList(RuntimePathRequest {
+                task_id: handle.task_id.clone(),
+                path: "work".into(),
+            }))
+            .unwrap()
+        else {
+            panic!("expected dir entries response");
+        };
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            vec!["input.txt", "output.txt", "subdir"]
+        );
+
+        runtime
+            .handle_runtime_request(RuntimeRequest::PathRename(RuntimePathRenameRequest {
+                task_id: handle.task_id.clone(),
+                old_path: "work/output.txt".into(),
+                new_path: "work/data.txt".into(),
+            }))
+            .unwrap();
+        runtime
+            .handle_runtime_request(RuntimeRequest::PathTruncate(RuntimePathTruncateRequest {
+                task_id: handle.task_id.clone(),
+                path: "work/data.txt".into(),
+                size: 3,
+            }))
+            .unwrap();
+
+        let RuntimeResponse::Fd(fd) = runtime
+            .handle_runtime_request(RuntimeRequest::FdOpen(RuntimeFdOpenRequest {
+                task_id: handle.task_id.clone(),
+                path: "work/data.txt".into(),
+                read: true,
+                write: true,
+                create: false,
+                truncate: false,
+                append: false,
+            }))
+            .unwrap()
+        else {
+            panic!("expected fd response");
+        };
+        assert_eq!(
+            runtime
+                .handle_runtime_request(RuntimeRequest::FdSeek(RuntimeFdSeekRequest {
+                    task_id: handle.task_id.clone(),
+                    fd,
+                    offset: 0,
+                    whence: RuntimeSeekWhence::End,
+                }))
+                .unwrap(),
+            RuntimeResponse::Offset(3)
+        );
+        assert_eq!(
+            runtime
+                .handle_runtime_request(RuntimeRequest::FdWrite(RuntimeFdWriteRequest {
+                    task_id: handle.task_id.clone(),
+                    fd,
+                    data: b"XYZ".to_vec(),
+                }))
+                .unwrap(),
+            RuntimeResponse::Count(3)
+        );
+        runtime
+            .handle_runtime_request(RuntimeRequest::FdSeek(RuntimeFdSeekRequest {
+                task_id: handle.task_id.clone(),
+                fd,
+                offset: 0,
+                whence: RuntimeSeekWhence::Start,
+            }))
+            .unwrap();
+        assert_eq!(
+            runtime
+                .handle_runtime_request(RuntimeRequest::FdRead(RuntimeFdReadRequest {
+                    task_id: handle.task_id.clone(),
+                    fd,
+                    len: 16,
+                }))
+                .unwrap(),
+            RuntimeResponse::Bytes(b"abcXYZ".to_vec())
+        );
+        runtime
+            .handle_runtime_request(RuntimeRequest::FdClose(RuntimeFdRequest {
+                task_id: handle.task_id.clone(),
+                fd,
+            }))
+            .unwrap();
+        runtime
+            .handle_runtime_request(RuntimeRequest::PathRemove(RuntimePathRequest {
+                task_id: handle.task_id,
+                path: "work/data.txt".into(),
+            }))
+            .unwrap();
     }
 
     #[test]

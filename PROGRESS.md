@@ -2,6 +2,22 @@
 
 ## 2026-05-13
 
+- Continued the Plan 9 host-depth completion sprint on `sprint-plan9-host-depth-completion`.
+- Added `AsyncNinePServer`, a Rust/native async 9P server path with tag-keyed pending operations, `Tflush` cancellation, duplicate-tag cancellation, pending-tag introspection, and late-reply suppression.
+- Added Rust tests proving async 9P pending reads can be flushed without mutating fid state, late replies are suppressed, duplicate tags cancel prior pending work, and native TCP stream import/export works through the common 9P frame boundary.
+- Added `StreamTransport<T>` and `TcpStreamTransport` for native 9P import over host streams, plus `cargo run -p wanix-cli -- accept native-p9` as an opt-in loopback TCP 9P acceptance path.
+- Wired WASI `sock_accept` to listener-backed `#net/<id>/listen` fds. Accepted sockets are installed as task fds opened on `#net/<accepted>/data`; `sock_recv`, `sock_send`, and `sock_shutdown` continue through the task fd/device-file model.
+- Added a WASI WAT fixture test that announces a deterministic `#net` listener, dials it, accepts through `sock_accept`, exchanges bytes with `sock_recv`/`sock_send`, and shuts down through `#net` control files.
+- Extended `wanix_protocol::runtime` with typed path and fd requests: path read/write/stat/list/mkdir/remove/rename/truncate plus fd open/read/write/seek/close.
+- Implemented the new runtime namespace/fd request handling in `RuntimeProtocolHost`, routing all operations through the owning task namespace and fd table.
+- Added `createWanixRuntimeNamespaceClient(...)` for browser workers to send typed namespace/fd requests over a runtime endpoint, with deterministic Node coverage using a fake binary endpoint.
+- Added a browser `network-adapter.js` WebSocket-style network provider that exposes resources through `new`, `<id>/ctl`, `<id>/data`, `<id>/status`, `<id>/local`, and `<id>/remote` file-like operations. Raw browser listen/announce remains an explicit capability error.
+- Added opt-in live backend tests in `crates/wanix-fs/tests/live_backends.rs` for real HTTP and S3/R2 endpoints. They skip unless explicit `WANIX_LIVE_HTTP=1` or `WANIX_LIVE_S3=1` environment gates and required connection variables are present.
+- Added `SyncScheduleSnapshot::status_text()` and `DebouncedSyncScheduler::status_text()` so sync scheduling state is inspectable as stable text in addition to the structured snapshot API.
+- Added a separate `backend: "starfs-sdk"` browser storage adapter hook for an optional external StarFS SDK/worker/wasm integration. It does not replace raw OPFS, existing browser storage adapters, or the lightweight StarFS-compatible adapter.
+- Expanded the lightweight StarFS-compatible adapter with xattr get/set/list/remove helpers, explicit hard-link `ENOTSUP` behavior when the backing adapter lacks links, snapshot listing, and snapshot restore using stored file contents.
+- Added a `VmProvider` contract behind `#vm`, with `VmProviderResource`/`VmProviderUpdate` and the existing deterministic provider as default. Runtime users can install an opt-in provider while lifecycle state, console output, config, alias, and guest storage remain behind `#vm/<id>` files.
+- Added File System Access permission-request automation helper coverage and retained deterministic download sink coverage for browser permission/download flows.
 - Started the real-host-depth storage sprint on `sprint-real-host-depth-storage-starfs`, preserving existing browser storage mounts while adding raw OPFS task-facing mounts and StarFS as a separate optional backend.
 - Added `crates/wanix-web/js/storage-p9.js`, an async storage-adapter 9P server/export boundary over `MessagePort`, with read/write/create/readdir/mkdir/remove/stat, large payload coverage, complete dirent chunking, malformed-frame rejection, and `Tflush` cancellation/late-reply suppression.
 - Added `crates/wanix-web/js/storage-starfs.js`, a StarFS-compatible browser adapter over an explicit backing adapter. It exposes the ordinary filesystem tree plus `.starfs/kv`, `.starfs/toolcalls`, and `.starfs/snapshots` control surfaces without replacing OPFS or other storage backends.

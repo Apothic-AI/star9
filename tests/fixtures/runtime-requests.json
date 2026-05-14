@@ -3,5 +3,18 @@
   "StartWorker",
   "OpenPort",
   "HandoffPort",
-  "PostMessage"
+  "PostMessage",
+  "PathRead",
+  "PathWrite",
+  "PathStat",
+  "PathList",
+  "PathMkdir",
+  "PathRemove",
+  "PathRename",
+  "PathTruncate",
+  "FdOpen",
+  "FdRead",
+  "FdWrite",
+  "FdSeek",
+  "FdClose"
 ]

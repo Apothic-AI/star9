@@ -7,6 +7,7 @@ const FS_DIR = "fs";
 const KV_DIR = `${INTERNAL_DIR}/kv`;
 const TOOLCALL_DIR = `${INTERNAL_DIR}/toolcalls`;
 const SNAPSHOT_DIR = `${INTERNAL_DIR}/snapshots`;
+const XATTR_DIR = `${INTERNAL_DIR}/xattrs`;
 
 export async function createStarFsStorageAdapter(descriptor = {}, options = {}) {
     if (descriptor?.backend && descriptor.backend !== "starfs") {
@@ -27,6 +28,23 @@ export async function createStarFsStorageAdapter(descriptor = {}, options = {}) 
     return adapter;
 }
 
+export async function createStarFsSdkStorageAdapter(descriptor = {}, options = {}) {
+    if (descriptor?.backend && descriptor.backend !== "starfs-sdk") {
+        throw new TypeError(`Expected a StarFS SDK descriptor, got ${JSON.stringify(descriptor.backend)}`);
+    }
+    const factory =
+        options.factory ||
+        options.sdkFactory ||
+        options.createClient ||
+        globalThis.WanixStarFsSdk?.createAdapter ||
+        globalThis.StarFS?.createAdapter;
+    if (typeof factory !== "function") {
+        throw new TypeError("StarFS SDK storage requires a factory/createAdapter function");
+    }
+    const sdk = await factory({ ...descriptor, backend: "starfs-sdk" }, options);
+    return new StarFsSdkStorageAdapter(sdk, descriptor);
+}
+
 export class StarFsStorageAdapter {
     constructor(backing, descriptor = {}) {
         this.backing = backing;
@@ -43,6 +61,7 @@ export class StarFsStorageAdapter {
         await ensureDir(this.backing, KV_DIR);
         await ensureDir(this.backing, TOOLCALL_DIR);
         await ensureDir(this.backing, SNAPSHOT_DIR);
+        await ensureDir(this.backing, XATTR_DIR);
         await this.backing.writeFile(`${INTERNAL_DIR}/meta.json`, jsonBytes(this.descriptor));
     }
 
@@ -104,6 +123,40 @@ export class StarFsStorageAdapter {
         await this.backing.remove(this._mapPath(normalized));
     }
 
+    async link(oldPath, newPath) {
+        if (typeof this.backing.link !== "function") {
+            throw storageError("ENOTSUP", "StarFS lightweight adapter backing store does not support hard links");
+        }
+        await ensureDir(this.backing, parentPath(this._mapPath(normalizePath(newPath))));
+        await this.backing.link(this._mapPath(normalizePath(oldPath)), this._mapPath(normalizePath(newPath)));
+    }
+
+    async setXattr(path, name, value) {
+        await this.stat(path);
+        const attrPath = this._xattrPath(path, name);
+        await ensureDir(this.backing, parentPath(attrPath));
+        await this.backing.writeFile(attrPath, toUint8Array(value));
+    }
+
+    async getXattr(path, name) {
+        await this.stat(path);
+        return this.backing.readFile(this._xattrPath(path, name));
+    }
+
+    async listXattrs(path) {
+        await this.stat(path);
+        const entries = await safeReadDir(this.backing, this._xattrPath(path));
+        return entries
+            .filter((entry) => kindOf(entry) !== "dir")
+            .map((entry) => entry.name.replace(/\.bin$/, ""))
+            .sort();
+    }
+
+    async removeXattr(path, name) {
+        await this.stat(path);
+        await this.backing.remove(this._xattrPath(path, name));
+    }
+
     async setKv(key, value) {
         const normalized = normalizeKey(key);
         await this.writeText(`${STARFS_DIR}/kv/${normalized}.json`, JSON.stringify(value));
@@ -133,13 +186,36 @@ export class StarFsStorageAdapter {
 
     async createSnapshot(name = "snapshot") {
         const id = normalizeKey(name);
+        const entries = await collectSnapshotEntries(this.backing, FS_DIR, ".");
         const manifest = {
             id,
             created_at: new Date().toISOString(),
-            files: await collectFiles(this.backing, FS_DIR, "."),
+            files: entries.map(({ content_base64: _content, ...entry }) => entry),
+            entries,
         };
         await this.writeText(`${STARFS_DIR}/snapshots/${id}.json`, JSON.stringify(manifest));
         return manifest;
+    }
+
+    async listSnapshots() {
+        const entries = await safeReadDir(this.backing, SNAPSHOT_DIR);
+        return entries
+            .filter((entry) => kindOf(entry) !== "dir" && entry.name.endsWith(".json"))
+            .map((entry) => entry.name.slice(0, -".json".length))
+            .sort();
+    }
+
+    async restoreSnapshot(snapshot) {
+        const manifest =
+            typeof snapshot === "string"
+                ? JSON.parse(await this.readText(`${STARFS_DIR}/snapshots/${normalizeKey(snapshot)}.json`))
+                : snapshot;
+        if (!manifest || !Array.isArray(manifest.entries)) {
+            throw storageError("EINVAL", "StarFS snapshot manifest must include entries");
+        }
+        for (const entry of manifest.entries) {
+            await this.writeFile(entry.path, base64ToBytes(entry.content_base64 || ""));
+        }
     }
 
     close() {
@@ -161,6 +237,127 @@ export class StarFsStorageAdapter {
         }
         return `${FS_DIR}/${normalized}`;
     }
+
+    _xattrPath(path, name = null) {
+        const dir = `${XATTR_DIR}/${pathKey(path)}`;
+        if (name == null) {
+            return dir;
+        }
+        return `${dir}/${normalizeKey(name)}.bin`;
+    }
+}
+
+export class StarFsSdkStorageAdapter {
+    constructor(sdk, descriptor = {}) {
+        if (!sdk || typeof sdk !== "object") {
+            throw new TypeError("StarFS SDK factory returned no adapter");
+        }
+        for (const method of ["stat", "readFile", "writeFile", "readDir", "mkdir", "remove"]) {
+            if (typeof sdk[method] !== "function") {
+                throw new TypeError(`StarFS SDK adapter must implement ${method}()`);
+            }
+        }
+        this.sdk = sdk;
+        this.descriptor = {
+            id: String(descriptor.id || descriptor.root || "sdk"),
+            storage: descriptor.storage || null,
+            version: "wanix-starfs-sdk-adapter-v1",
+        };
+    }
+
+    stat(path = ".") {
+        return this.sdk.stat(normalizePath(path));
+    }
+
+    readFile(path) {
+        return this.sdk.readFile(normalizePath(path));
+    }
+
+    writeFile(path, bytes) {
+        return this.sdk.writeFile(normalizePath(path), toUint8Array(bytes));
+    }
+
+    async readText(path) {
+        return textDecoder.decode(await this.readFile(path));
+    }
+
+    async writeText(path, text) {
+        await this.writeFile(path, textEncoder.encode(String(text)));
+    }
+
+    readDir(path = ".") {
+        return this.sdk.readDir(normalizePath(path));
+    }
+
+    mkdir(path) {
+        return this.sdk.mkdir(normalizePath(path));
+    }
+
+    remove(path) {
+        return this.sdk.remove(normalizePath(path));
+    }
+
+    link(oldPath, newPath) {
+        if (typeof this.sdk.link !== "function") {
+            throw storageError("ENOTSUP", "StarFS SDK adapter does not expose link()");
+        }
+        return this.sdk.link(normalizePath(oldPath), normalizePath(newPath));
+    }
+
+    setXattr(path, name, value) {
+        if (typeof this.sdk.setXattr !== "function") {
+            throw storageError("ENOTSUP", "StarFS SDK adapter does not expose setXattr()");
+        }
+        return this.sdk.setXattr(normalizePath(path), String(name), toUint8Array(value));
+    }
+
+    getXattr(path, name) {
+        if (typeof this.sdk.getXattr !== "function") {
+            throw storageError("ENOTSUP", "StarFS SDK adapter does not expose getXattr()");
+        }
+        return this.sdk.getXattr(normalizePath(path), String(name));
+    }
+
+    listXattrs(path) {
+        if (typeof this.sdk.listXattrs !== "function") {
+            throw storageError("ENOTSUP", "StarFS SDK adapter does not expose listXattrs()");
+        }
+        return this.sdk.listXattrs(normalizePath(path));
+    }
+
+    removeXattr(path, name) {
+        if (typeof this.sdk.removeXattr !== "function") {
+            throw storageError("ENOTSUP", "StarFS SDK adapter does not expose removeXattr()");
+        }
+        return this.sdk.removeXattr(normalizePath(path), String(name));
+    }
+
+    createSnapshot(name) {
+        if (typeof this.sdk.createSnapshot !== "function") {
+            throw storageError("ENOTSUP", "StarFS SDK adapter does not expose createSnapshot()");
+        }
+        return this.sdk.createSnapshot(String(name || "snapshot"));
+    }
+
+    listSnapshots() {
+        if (typeof this.sdk.listSnapshots !== "function") {
+            throw storageError("ENOTSUP", "StarFS SDK adapter does not expose listSnapshots()");
+        }
+        return this.sdk.listSnapshots();
+    }
+
+    restoreSnapshot(snapshot) {
+        if (typeof this.sdk.restoreSnapshot !== "function") {
+            throw storageError("ENOTSUP", "StarFS SDK adapter does not expose restoreSnapshot()");
+        }
+        return this.sdk.restoreSnapshot(snapshot);
+    }
+
+    close() {
+        if (typeof this.sdk.close === "function") {
+            this.sdk.close();
+        }
+    }
 }
 
 async function collectFiles(backing, root, displayRoot) {
@@ -179,6 +376,19 @@ async function collectFiles(backing, root, displayRoot) {
         }
     }
     return entries.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function collectSnapshotEntries(backing, root, displayRoot) {
+    const files = await collectFiles(backing, root, displayRoot);
+    const entries = [];
+    for (const file of files) {
+        const bytes = await backing.readFile(`${FS_DIR}/${file.path}`);
+        entries.push({
+            ...file,
+            content_base64: bytesToBase64(bytes),
+        });
+    }
+    return entries;
 }
 
 async function ensureDir(adapter, path) {
@@ -258,6 +468,12 @@ function normalizeKey(value) {
     return normalized;
 }
 
+function pathKey(path) {
+    return encodeURIComponent(normalizePath(path)).replace(/[!'()*]/g, (ch) =>
+        `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+}
+
 function normalizePath(path) {
     if (path == null || path === "" || path === ".") {
         return ".";
@@ -277,6 +493,25 @@ function normalizePath(path) {
         parts.push(part);
     }
     return parts.length === 0 ? "." : parts.join("/");
+}
+
+function bytesToBase64(bytes) {
+    const value = toUint8Array(bytes);
+    let binary = "";
+    for (let i = 0; i < value.byteLength; i += 0x8000) {
+        const chunk = value.subarray(i, i + 0x8000);
+        binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+}
+
+function base64ToBytes(value) {
+    const binary = atob(String(value));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
 }
 
 function isMissing(error) {
