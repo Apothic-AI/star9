@@ -103,7 +103,17 @@ impl RcHost for Star9RcHost {
     ) -> star9_rc::RcResult<RcCommandResult> {
         let mut shell = ShellSession::new(self.host.clone());
         shell.set_cwd(self.cwd.clone());
-        let result = shell.eval_argv(invocation.name, &invocation.args);
+        let result = if invocation.name.ends_with(".wasm") || invocation.name.ends_with(".wat") {
+            let mut args = vec![invocation.name.clone()];
+            args.extend(invocation.args.clone());
+            shell.eval_argv("wasi", &args)
+        } else if invocation.name.ends_with(".js") || invocation.name.ends_with(".mjs") {
+            let mut args = vec![invocation.name.clone()];
+            args.extend(invocation.args.clone());
+            shell.eval_argv("worker", &args)
+        } else {
+            shell.eval_argv(invocation.name, &invocation.args)
+        };
         Ok(RcCommandResult {
             status: RcStatus::from_code(result.status),
             stdout: result.stdout,
@@ -125,6 +135,14 @@ impl RcShell {
 
     pub fn eval_line(&mut self, source: &str) -> RcOutput {
         self.session.eval_source(source)
+    }
+
+    pub fn set_argv0(&mut self, argv0: impl Into<String>) {
+        self.session.set_argv0(argv0);
+    }
+
+    pub fn set_args(&mut self, args: Vec<String>) {
+        self.session.set_args(args);
     }
 
     pub fn prompt(&self) -> String {

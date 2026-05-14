@@ -11,6 +11,7 @@ Current rc sprint contract:
 - `star9 shell --rc` and `star9 rc` run rc language features through the reusable core and Star 9 host adapter.
 - Browser rc sessions use the same wasm facade and `<star9-shell rc>` path as the native adapter.
 - Compatibility is tracked in `docs/audits/rc-compatibility-matrix.json`; unsupported or partial behaviors are explicit rather than hidden behind brittle parsing.
+- The remaining parity pass added 9front-style `if not` parsing across command separators, parenthesized groups, fd dup/close redirection, `/dev/null`, fd-selected pipelines, process substitution, parsed here documents, `exit` propagation, `sigexit`/note hooks, environment export/import, `$path` rc script dispatch, CLI script args, and Star 9 adapter dispatch for WASI/JS-looking namespace commands.
 
 ### Star 9 Rc Feature Completion Sprint Plan
 
@@ -24,6 +25,7 @@ Current rc sprint contract:
 
 3. Rc syntax and evaluator
    - Support simple commands, assignments, list variables, rc quotes, `$` expansion, `$#`, `$"`, positional args, command substitution, caret concatenation, globbing, `~`, functions, blocks, `if`, `for`, `while`, `switch`, `&&`, `||`, `!`, background commands, pipelines, redirects, source/eval/shift/whatis/status built-ins, and script mode.
+   - Support fd dup/close, process substitution, here docs, `sigexit`, environment import/export, path script dispatch, and 9front-style `if not` layout.
 
 4. Star 9 host adapter
    - Implement rc host traits over Star 9 runtime shell operations.

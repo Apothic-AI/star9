@@ -36,10 +36,12 @@ cargo run -p star9-cli -- shell -c 'mkdir demo; write demo/hello hello; cat demo
 cargo run -p star9-cli -- shell -c 'ls #task'
 cargo run -p star9-cli -- rc -c 'x=(one two); fn twice { echo $1 $1 }; for(i in $x) twice $i'
 cargo run -p star9-cli -- shell --rc -c 'echo hello | cat'
+cargo run -p star9-cli -- rc /tmp/example.rc arg1 arg2
 ```
 
 The browser rc demo is available at `http://127.0.0.1:4177/examples/rc.html` after `wasm-pack build`.
 Optional differential rc checks run during `cargo test -p star9-rc` when `STAR9_RC_ORACLE=/path/to/rc` points at a plan9port or 9front `rc` binary.
+Current 9front-style scripts can use rc language features such as `if not`, fd dup redirection, process substitution, and here documents. Scripts that call Plan 9 host commands such as `srv`, `mount`, `bind`, `dossrv`, or `vacfs` still require corresponding Star 9 device/provider surfaces.
 
 ## HTTP
 

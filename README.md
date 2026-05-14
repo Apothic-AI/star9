@@ -71,9 +71,10 @@ Run rc mode:
 ```sh
 cargo run -p star9-cli -- rc -c 'x=(one two); fn twice { echo $1 $1 }; for(i in $x) twice $i'
 cargo run -p star9-cli -- shell --rc -c 'echo hello | cat'
+cargo run -p star9-cli -- rc ./script.rc arg1 arg2
 ```
 
-The reusable `star9-rc` crate owns the rc language core and can be embedded without depending on Star 9 runtime or browser crates. Star 9 integrates it through a host adapter that routes files, commands, and devices through namespaces, task fds, and runtime surfaces.
+The reusable `star9-rc` crate owns the rc language core and can be embedded without depending on Star 9 runtime or browser crates. It covers rc lists, expansion, functions/control flow, globbing, fd redirection/duplication, process substitution, here documents, environment import/export, notes, `$path` rc script dispatch, and optional oracle checks. Star 9 integrates it through a host adapter that routes files, commands, and devices through namespaces, task fds, and runtime surfaces.
 
 ## Verification
 

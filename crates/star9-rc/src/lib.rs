@@ -57,6 +57,7 @@ pub struct RcOutput {
     pub status: RcStatus,
     pub stdout: String,
     pub stderr: String,
+    pub exited: bool,
 }
 
 impl RcOutput {
@@ -65,6 +66,7 @@ impl RcOutput {
             status: RcStatus::success(),
             stdout: stdout.into(),
             stderr: String::new(),
+            exited: false,
         }
     }
 
@@ -73,6 +75,7 @@ impl RcOutput {
             status: RcStatus(status.into()),
             stdout: String::new(),
             stderr: stderr.into(),
+            exited: false,
         }
     }
 
@@ -80,6 +83,7 @@ impl RcOutput {
         self.status = next.status;
         self.stdout.push_str(&next.stdout);
         self.stderr.push_str(&next.stderr);
+        self.exited = next.exited;
     }
 }
 
@@ -264,10 +268,23 @@ pub enum RedirectMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RedirectTarget {
+    Word(Word),
+    Process(Box<Node>),
+    HereDoc(HereDoc),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HereDoc {
+    pub body: String,
+    pub expand: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Redirect {
     pub fd: u32,
     pub mode: RedirectMode,
-    pub target: Option<Word>,
+    pub target: Option<RedirectTarget>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -300,7 +317,153 @@ struct RedirectOp {
 }
 
 pub fn parse(source: &str) -> RcResult<Script> {
-    Parser::new(lex(source)?).parse_script()
+    let prepared = prepare_here_docs(source)?;
+    Parser::new(lex(&prepared.source)?, prepared.here_docs).parse_script()
+}
+
+#[derive(Clone, Debug)]
+struct PreparedSource {
+    source: String,
+    here_docs: BTreeMap<String, HereDoc>,
+}
+
+#[derive(Clone, Debug)]
+struct HereMarker {
+    start: usize,
+    end: usize,
+    delimiter: String,
+    quoted: bool,
+    marker: String,
+}
+
+fn prepare_here_docs(source: &str) -> RcResult<PreparedSource> {
+    let lines = source.split_inclusive('\n').collect::<Vec<_>>();
+    let mut out = String::new();
+    let mut here_docs = BTreeMap::new();
+    let mut i = 0;
+    let mut next_id = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let markers = find_here_markers(line, next_id)?;
+        if markers.is_empty() {
+            out.push_str(line);
+            i += 1;
+            continue;
+        }
+
+        next_id += markers.len();
+        i += 1;
+        for marker in &markers {
+            let mut body = String::new();
+            let mut found = false;
+            while i < lines.len() {
+                let candidate = lines[i];
+                let trimmed = candidate.trim_end_matches('\n').trim_end_matches('\r');
+                i += 1;
+                if trimmed == marker.delimiter {
+                    found = true;
+                    break;
+                }
+                body.push_str(candidate);
+            }
+            if !found {
+                return Err(RcError::new(format!(
+                    "unterminated here document {}",
+                    marker.delimiter
+                )));
+            }
+            here_docs.insert(
+                marker.marker.clone(),
+                HereDoc {
+                    body,
+                    expand: !marker.quoted,
+                },
+            );
+        }
+
+        let mut replaced = line.to_string();
+        for marker in markers.iter().rev() {
+            replaced.replace_range(marker.start..marker.end, &marker.marker);
+        }
+        out.push_str(&replaced);
+    }
+    Ok(PreparedSource {
+        source: out,
+        here_docs,
+    })
+}
+
+fn find_here_markers(line: &str, next_id: usize) -> RcResult<Vec<HereMarker>> {
+    let chars = line.char_indices().collect::<Vec<_>>();
+    let mut markers = Vec::new();
+    let mut quoted = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let (byte, ch) = chars[i];
+        if ch == '\'' {
+            quoted = !quoted;
+            i += 1;
+            continue;
+        }
+        if !quoted && ch == '<' && chars.get(i + 1).map(|(_, c)| *c) == Some('<') {
+            let mut j = i + 2;
+            while j < chars.len() && chars[j].1.is_whitespace() && chars[j].1 != '\n' {
+                j += 1;
+            }
+            if j >= chars.len() {
+                break;
+            }
+            let start = chars[j].0;
+            let mut delimiter = String::new();
+            let mut delim_quoted = false;
+            let end;
+            if chars[j].1 == '\'' {
+                delim_quoted = true;
+                j += 1;
+                while j < chars.len() {
+                    if chars[j].1 == '\'' {
+                        j += 1;
+                        break;
+                    }
+                    delimiter.push(chars[j].1);
+                    j += 1;
+                }
+                end = chars
+                    .get(j)
+                    .map(|(idx, _)| *idx)
+                    .unwrap_or_else(|| line.len());
+            } else {
+                while j < chars.len()
+                    && !chars[j].1.is_whitespace()
+                    && !matches!(chars[j].1, ';' | '&' | '|')
+                {
+                    delimiter.push(chars[j].1);
+                    j += 1;
+                }
+                end = chars
+                    .get(j)
+                    .map(|(idx, _)| *idx)
+                    .unwrap_or_else(|| line.len());
+            }
+            if delimiter.is_empty() {
+                return Err(RcError::at(
+                    "empty here document delimiter",
+                    Span { start: byte, end },
+                ));
+            }
+            markers.push(HereMarker {
+                start,
+                end,
+                delimiter,
+                quoted: delim_quoted,
+                marker: format!("__star9_heredoc_{}__", next_id + markers.len()),
+            });
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    Ok(markers)
 }
 
 fn lex(source: &str) -> RcResult<Vec<Token>> {
@@ -404,7 +567,7 @@ fn read_word(chars: &[char], mut i: usize) -> RcResult<(String, usize)> {
     let mut out = String::new();
     while i < chars.len() {
         let ch = chars[i];
-        if ch == '(' && out.starts_with('$') {
+        if ch == '(' && out.contains('$') {
             out.push(ch);
             i += 1;
             while i < chars.len() {
@@ -577,11 +740,16 @@ fn find_closing_bracket(chars: &[char], start: usize) -> RcResult<usize> {
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    here_docs: BTreeMap<String, HereDoc>,
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+    fn new(tokens: Vec<Token>, here_docs: BTreeMap<String, HereDoc>) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            here_docs,
+        }
     }
 
     fn parse_script(&mut self) -> RcResult<Script> {
@@ -602,10 +770,11 @@ impl Parser {
             }
             let before = self.pos;
             let span = token.span;
+            let kind = token.kind.clone();
             nodes.push(self.parse_and_or()?);
             if self.pos == before {
                 return Err(RcError::at(
-                    "parser made no progress",
+                    format!("parser made no progress at token {kind:?}"),
                     Span {
                         start: span.start,
                         end: span.end,
@@ -670,6 +839,7 @@ impl Parser {
     fn parse_command(&mut self) -> RcResult<Node> {
         match self.peek_kind() {
             Some(TokenKind::LBrace) => self.parse_block(),
+            Some(TokenKind::LParen) => self.parse_paren_group(),
             Some(TokenKind::Word(word)) if word == "if" => self.parse_if(),
             Some(TokenKind::Word(word)) if word == "while" => self.parse_while(),
             Some(TokenKind::Word(word)) if word == "for" => self.parse_for(),
@@ -686,16 +856,28 @@ impl Parser {
         Ok(Node::Block(body))
     }
 
+    fn parse_paren_group(&mut self) -> RcResult<Node> {
+        self.expect_lparen()?;
+        let body = self.parse_sequence_until(|kind| matches!(kind, TokenKind::RParen))?;
+        self.expect_rparen()?;
+        Ok(Node::Block(body))
+    }
+
     fn parse_if(&mut self) -> RcResult<Node> {
         self.expect_word("if")?;
         self.expect_lparen()?;
         let condition =
             Node::Sequence(self.parse_sequence_until(|kind| matches!(kind, TokenKind::RParen))?);
         self.expect_rparen()?;
+        self.skip_separators();
         let then_branch = self.parse_command()?;
+        let before_else = self.pos;
+        self.skip_separators();
         let else_branch = if self.match_word("if") && self.match_word("not") {
+            self.skip_separators();
             Some(Box::new(self.parse_command()?))
         } else {
+            self.pos = before_else;
             None
         };
         Ok(Node::If {
@@ -711,6 +893,7 @@ impl Parser {
         let condition =
             Node::Sequence(self.parse_sequence_until(|kind| matches!(kind, TokenKind::RParen))?);
         self.expect_rparen()?;
+        self.skip_separators();
         Ok(Node::While {
             condition: Box::new(condition),
             body: Box::new(self.parse_command()?),
@@ -728,6 +911,7 @@ impl Parser {
             }
         }
         self.expect_rparen()?;
+        self.skip_separators();
         Ok(Node::For {
             var,
             values,
@@ -740,6 +924,7 @@ impl Parser {
         self.expect_lparen()?;
         let value = Word::new(self.expect_any_word()?);
         self.expect_rparen()?;
+        self.skip_separators();
         self.expect_lbrace()?;
         let mut cases = Vec::new();
         self.skip_separators();
@@ -810,8 +995,22 @@ impl Parser {
                     self.pos += 1;
                     let target = if matches!(op.mode, RedirectMode::Dup { .. }) {
                         None
+                    } else if matches!(
+                        op.mode,
+                        RedirectMode::Read | RedirectMode::Write | RedirectMode::Append
+                    ) && matches!(self.peek_kind(), Some(TokenKind::LBrace))
+                    {
+                        Some(RedirectTarget::Process(Box::new(self.parse_block()?)))
                     } else {
-                        Some(Word::new(self.expect_any_word()?))
+                        let raw = self.expect_any_word()?;
+                        if matches!(op.mode, RedirectMode::Here) {
+                            self.here_docs
+                                .remove(&raw)
+                                .map(RedirectTarget::HereDoc)
+                                .or_else(|| Some(RedirectTarget::Word(Word::new(raw))))
+                        } else {
+                            Some(RedirectTarget::Word(Word::new(raw)))
+                        }
                     };
                     simple.redirects.push(Redirect {
                         fd: op.fd,
@@ -955,7 +1154,9 @@ pub struct RcSession<H: RcHost> {
     vars: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, Node>,
     last_status: RcStatus,
+    argv0: String,
     argv: Vec<String>,
+    notes_in_progress: BTreeSet<String>,
 }
 
 impl<H: RcHost> RcSession<H> {
@@ -968,7 +1169,9 @@ impl<H: RcHost> RcSession<H> {
             vars,
             functions: BTreeMap::new(),
             last_status: RcStatus::success(),
+            argv0: "rc".into(),
             argv: Vec::new(),
+            notes_in_progress: BTreeSet::new(),
         }
     }
 
@@ -985,6 +1188,10 @@ impl<H: RcHost> RcSession<H> {
         self.refresh_arg_vars();
     }
 
+    pub fn set_argv0(&mut self, argv0: impl Into<String>) {
+        self.argv0 = argv0.into();
+    }
+
     pub fn set_var(&mut self, name: impl Into<String>, values: Vec<String>) {
         self.vars.insert(name.into(), values);
     }
@@ -995,6 +1202,46 @@ impl<H: RcHost> RcSession<H> {
 
     pub fn last_status(&self) -> &RcStatus {
         &self.last_status
+    }
+
+    pub fn export_environment(&self) -> BTreeMap<String, Vec<u8>> {
+        let mut env = BTreeMap::new();
+        for (name, values) in &self.vars {
+            env.insert(name.clone(), values.join("\0").into_bytes());
+        }
+        for (name, body) in &self.functions {
+            env.insert(format!("fn#{name}"), render_node(body).into_bytes());
+        }
+        env
+    }
+
+    pub fn import_environment(&mut self, env: BTreeMap<String, Vec<u8>>) {
+        for (name, data) in env {
+            if let Some(function) = name.strip_prefix("fn#") {
+                if let Ok(source) = String::from_utf8(data) {
+                    if let Ok(script) = parse(&format!("fn {function} {source}")) {
+                        if let Some(Node::Function {
+                            body: Some(body), ..
+                        }) = script.commands.into_iter().next()
+                        {
+                            self.functions.insert(function.to_string(), *body);
+                        }
+                    }
+                }
+                continue;
+            }
+            let values = data
+                .split(|byte| *byte == 0)
+                .map(|part| String::from_utf8_lossy(part).into_owned())
+                .collect::<Vec<_>>();
+            self.vars.insert(name, values);
+        }
+    }
+
+    pub fn deliver_note(&mut self, note: &str) -> RcOutput {
+        let name = format!("sig{note}");
+        self.run_note_function(&name)
+            .unwrap_or_else(|| RcOutput::failure(note, format!("rc: unhandled note {note}\n")))
     }
 
     pub fn prompt(&self) -> String {
@@ -1024,7 +1271,11 @@ impl<H: RcHost> RcSession<H> {
         let mut current_input = input;
         for node in nodes {
             let next = self.eval_node(node, std::mem::take(&mut current_input));
+            let exited = next.exited;
             out.append(next);
+            if exited {
+                break;
+            }
         }
         out
     }
@@ -1054,10 +1305,18 @@ impl<H: RcHost> RcSession<H> {
                     right
                 }
             }
-            Node::Pipe(left, right, _spec) => {
-                let left = self.eval_node(left, input);
-                let mut right = self.eval_node(right, left.stdout.clone());
+            Node::Pipe(left, right, spec) => {
+                let mut left = self.eval_node(left, input);
+                let from_fd = spec.as_ref().map(|spec| spec.from_fd).unwrap_or(1);
+                let to_fd = spec.as_ref().map(|spec| spec.to_fd).unwrap_or(0);
+                let piped = match from_fd {
+                    2 => std::mem::take(&mut left.stderr),
+                    _ => std::mem::take(&mut left.stdout),
+                };
+                let right_input = if to_fd == 0 { piped } else { String::new() };
+                let mut right = self.eval_node(right, right_input);
                 right.status = RcStatus::pipeline(&left.status, &right.status);
+                right.stdout = left.stdout + &right.stdout;
                 right.stderr = left.stderr + &right.stderr;
                 right
             }
@@ -1087,6 +1346,7 @@ impl<H: RcHost> RcSession<H> {
                         status: RcStatus::success(),
                         stdout: String::new(),
                         stderr: cond.stderr,
+                        exited: false,
                     }
                 }
             }
@@ -1182,12 +1442,10 @@ impl<H: RcHost> RcSession<H> {
         }
 
         let mut input = input;
-        let mut output_redirects = Vec::new();
+        let mut sinks = BTreeMap::from([(1, FdSink::Stdout), (2, FdSink::Stderr)]);
         for redirect in &simple.redirects {
-            match self.prepare_redirect(redirect, &mut input) {
-                Ok(Some(prepared)) => output_redirects.push(prepared),
-                Ok(None) => {}
-                Err(err) => return RcOutput::failure("redirect", format!("rc: {err}\n")),
+            if let Err(err) = self.prepare_redirect(redirect, &mut input, &mut sinks) {
+                return RcOutput::failure("redirect", format!("rc: {err}\n"));
             }
         }
 
@@ -1206,33 +1464,28 @@ impl<H: RcHost> RcSession<H> {
             out
         } else if let Some(out) = self.run_builtin(&words, &input) {
             out
+        } else if let Some(out) = self.run_path_command(&words, input.clone()) {
+            out
         } else {
             match self.host.run_command(RcCommandInvocation {
                 name: words[0].clone(),
                 args: words[1..].to_vec(),
-                stdin: input,
+                stdin: input.clone(),
                 env: self.vars.clone(),
             }) {
                 Ok(result) => RcOutput {
                     status: result.status,
                     stdout: result.stdout,
                     stderr: result.stderr,
+                    exited: false,
                 },
                 Err(err) => RcOutput::failure("notfound", format!("{}: {err}\n", words[0])),
             }
         };
 
-        for redirect in &output_redirects {
-            if let Err(err) = self.apply_output_redirect(redirect, &out) {
-                out.status = RcStatus::failure();
-                out.stderr.push_str(&format!("rc: {err}\n"));
-            }
-        }
-        if output_redirects.iter().any(|redirect| redirect.fd == 1) {
-            out.stdout.clear();
-        }
-        if output_redirects.iter().any(|redirect| redirect.fd == 2) {
-            out.stderr.clear();
+        if let Err(err) = self.apply_output_sinks(&mut out, sinks) {
+            out.status = RcStatus::failure();
+            out.stderr.push_str(&format!("rc: {err}\n"));
         }
         self.last_status = out.status.clone();
         self.vars
@@ -1240,6 +1493,64 @@ impl<H: RcHost> RcSession<H> {
         for (name, old) in restore {
             restore_var(&mut self.vars, &name, old);
         }
+        out
+    }
+
+    fn run_path_command(&mut self, words: &[String], input: String) -> Option<RcOutput> {
+        let command = words.first()?;
+        if command.contains('/') {
+            return self.run_rc_script(command, &words[1..], input).ok();
+        }
+        for dir in self.lookup_var("path") {
+            let candidate = join_path(&dir, command);
+            if let Ok(out) = self.run_rc_script(&candidate, &words[1..], input.clone()) {
+                return Some(out);
+            }
+        }
+        None
+    }
+
+    fn run_rc_script(&mut self, path: &str, args: &[String], input: String) -> RcResult<RcOutput> {
+        let bytes = self.host.read_file(path)?;
+        if is_host_executable(path, &bytes) {
+            let result = self.host.run_command(RcCommandInvocation {
+                name: path.to_string(),
+                args: args.to_vec(),
+                stdin: input,
+                env: self.vars.clone(),
+            })?;
+            return Ok(RcOutput {
+                status: result.status,
+                stdout: result.stdout,
+                stderr: result.stderr,
+                exited: false,
+            });
+        }
+        let source = String::from_utf8_lossy(&bytes).into_owned();
+        let old_argv0 = self.argv0.clone();
+        let old_argv = self.argv.clone();
+        self.argv0 = path.to_string();
+        self.set_args(args.to_vec());
+        let script = parse(&source)?;
+        let out = self.eval_script(&script, input);
+        self.argv0 = old_argv0;
+        self.set_args(old_argv);
+        Ok(out)
+    }
+
+    fn run_note_function(&mut self, name: &str) -> Option<RcOutput> {
+        if !self.notes_in_progress.insert(name.to_string()) {
+            return None;
+        }
+        let function = self.functions.get(name).cloned();
+        let out = function.map(|function| {
+            let old_argv = self.argv.clone();
+            self.set_args(Vec::new());
+            let out = self.eval_node(&function, String::new());
+            self.set_args(old_argv);
+            out
+        });
+        self.notes_in_progress.remove(name);
         out
     }
 
@@ -1262,6 +1573,7 @@ impl<H: RcHost> RcSession<H> {
                 status: RcStatus::failure(),
                 stdout: String::new(),
                 stderr: String::new(),
+                exited: false,
             },
             "~" => {
                 if args.len() < 2 {
@@ -1276,10 +1588,36 @@ impl<H: RcHost> RcSession<H> {
                         status: RcStatus::failure(),
                         stdout: String::new(),
                         stderr: String::new(),
+                        exited: false,
                     }
                 }
             }
             "eval" => self.eval_source(&args.join(" ")),
+            "exec" => {
+                if args.is_empty() {
+                    RcOutput::failure("usage", "usage: exec command [args ...]\n")
+                } else if let Some(mut out) = self.run_path_command(args, input.to_string()) {
+                    out.exited = true;
+                    out
+                } else {
+                    let mut out = match self.host.run_command(RcCommandInvocation {
+                        name: args[0].clone(),
+                        args: args[1..].to_vec(),
+                        stdin: input.to_string(),
+                        env: self.vars.clone(),
+                    }) {
+                        Ok(result) => RcOutput {
+                            status: result.status,
+                            stdout: result.stdout,
+                            stderr: result.stderr,
+                            exited: false,
+                        },
+                        Err(err) => RcOutput::failure("notfound", format!("{}: {err}\n", args[0])),
+                    };
+                    out.exited = true;
+                    out
+                }
+            }
             "." => match args.first() {
                 Some(path) => match self.host.read_file(path) {
                     Ok(bytes) => self.eval_source(&String::from_utf8_lossy(&bytes)),
@@ -1301,8 +1639,8 @@ impl<H: RcHost> RcSession<H> {
                 for arg in args {
                     if let Some(values) = self.vars.get(arg) {
                         stdout.push_str(&format!("{arg}=({})\n", values.join(" ")));
-                    } else if self.functions.contains_key(arg) {
-                        stdout.push_str(&format!("fn {arg} {{...}}\n"));
+                    } else if let Some(function) = self.functions.get(arg) {
+                        stdout.push_str(&format!("fn {arg} {}\n", render_node(function)));
                     } else if BUILTINS.contains(&arg.as_str()) {
                         stdout.push_str(&format!("builtin {arg}\n"));
                     } else {
@@ -1311,14 +1649,18 @@ impl<H: RcHost> RcSession<H> {
                 }
                 RcOutput::success(stdout)
             }
-            "exit" => RcOutput {
-                status: args
+            "test" => self.run_test(args),
+            "basename" => self.run_basename(args),
+            "exit" => {
+                let status = args
                     .first()
                     .map(|value| RcStatus(value.clone()))
-                    .unwrap_or_else(|| self.last_status.clone()),
-                stdout: String::new(),
-                stderr: String::new(),
-            },
+                    .unwrap_or_else(|| self.last_status.clone());
+                let mut out = self.run_note_function("sigexit").unwrap_or_default();
+                out.status = status;
+                out.exited = true;
+                out
+            }
             "wait" | "rfork" | "flag" | "builtin" => RcOutput::default(),
             "cat" if args.is_empty() => RcOutput::success(input.to_string()),
             _ => return None,
@@ -1326,71 +1668,190 @@ impl<H: RcHost> RcSession<H> {
         Some(out)
     }
 
+    fn run_test(&mut self, args: &[String]) -> RcOutput {
+        let success = match args {
+            [flag, path] if flag == "-e" || flag == "-f" => self
+                .host
+                .stat(path)
+                .map(|stat| flag == "-e" || !stat.is_dir)
+                .unwrap_or(false),
+            [flag, path] if flag == "-d" => self
+                .host
+                .stat(path)
+                .map(|stat| stat.is_dir)
+                .unwrap_or(false),
+            [left, op, right] if op == "=" => left == right,
+            [left, op, right] if op == "!=" => left != right,
+            [value] => !value.is_empty(),
+            _ => false,
+        };
+        if success {
+            RcOutput::default()
+        } else {
+            RcOutput {
+                status: RcStatus::failure(),
+                stdout: String::new(),
+                stderr: String::new(),
+                exited: false,
+            }
+        }
+    }
+
+    fn run_basename(&self, args: &[String]) -> RcOutput {
+        let Some(path) = args.first() else {
+            return RcOutput::failure("usage", "usage: basename path [suffix]\n");
+        };
+        let mut leaf = path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(path)
+            .to_string();
+        if let Some(suffix) = args.get(1) {
+            if leaf.ends_with(suffix) {
+                leaf.truncate(leaf.len() - suffix.len());
+            }
+        }
+        RcOutput::success(leaf + "\n")
+    }
+
     fn prepare_redirect(
         &mut self,
         redirect: &Redirect,
         input: &mut String,
-    ) -> RcResult<Option<PreparedRedirect>> {
+        sinks: &mut BTreeMap<u32, FdSink>,
+    ) -> RcResult<()> {
         match &redirect.mode {
             RedirectMode::Read => {
-                let path = self.redirect_path(redirect)?;
-                *input = String::from_utf8_lossy(&self.host.read_file(&path)?).into_owned();
-                Ok(None)
+                match redirect.target.as_ref() {
+                    Some(RedirectTarget::Process(node)) => {
+                        *input = self.eval_node(node, String::new()).stdout;
+                    }
+                    _ => {
+                        let path = self.redirect_path(redirect)?;
+                        *input = if is_null_path(&path) {
+                            String::new()
+                        } else {
+                            String::from_utf8_lossy(&self.host.read_file(&path)?).into_owned()
+                        };
+                    }
+                }
+                Ok(())
             }
             RedirectMode::Here => {
-                let text = redirect
-                    .target
-                    .as_ref()
-                    .map(|word| word.raw().to_string())
-                    .unwrap_or_default();
-                *input = text;
-                Ok(None)
+                *input = self.redirect_here_text(redirect)?;
+                Ok(())
             }
-            RedirectMode::Write | RedirectMode::Append => Ok(Some(PreparedRedirect {
-                fd: redirect.fd,
-                append: matches!(redirect.mode, RedirectMode::Append),
-                path: self.redirect_path(redirect)?,
-            })),
-            RedirectMode::Dup { from } => {
-                if redirect.fd == 2 && *from == Some(1) {
-                    Ok(Some(PreparedRedirect {
-                        fd: 2,
-                        append: true,
-                        path: "/dev/stdout".into(),
-                    }))
-                } else {
-                    Ok(None)
+            RedirectMode::Write | RedirectMode::Append => match redirect.target.as_ref() {
+                Some(RedirectTarget::Process(node)) => {
+                    sinks.insert(redirect.fd, FdSink::Process(node.clone()));
+                    Ok(())
                 }
+                _ => {
+                    let path = self.redirect_path(redirect)?;
+                    if is_null_path(&path) {
+                        sinks.insert(redirect.fd, FdSink::Closed);
+                    } else {
+                        sinks.insert(
+                            redirect.fd,
+                            FdSink::File {
+                                append: matches!(redirect.mode, RedirectMode::Append),
+                                path,
+                            },
+                        );
+                    }
+                    Ok(())
+                }
+            },
+            RedirectMode::Dup { from } => {
+                if let Some(from) = from {
+                    let sink = sinks.get(from).cloned().unwrap_or(match from {
+                        1 => FdSink::Stdout,
+                        2 => FdSink::Stderr,
+                        _ => FdSink::Closed,
+                    });
+                    sinks.insert(redirect.fd, sink);
+                } else {
+                    sinks.insert(redirect.fd, FdSink::Closed);
+                }
+                Ok(())
             }
         }
     }
 
     fn redirect_path(&mut self, redirect: &Redirect) -> RcResult<String> {
-        redirect
-            .target
-            .as_ref()
-            .and_then(|word| self.expand_word(word).into_iter().next())
-            .ok_or_else(|| RcError::new("redirect target expanded to empty list"))
+        match redirect.target.as_ref() {
+            Some(RedirectTarget::Word(word)) => self
+                .expand_word(word)
+                .into_iter()
+                .next()
+                .ok_or_else(|| RcError::new("redirect target expanded to empty list")),
+            Some(RedirectTarget::HereDoc(_)) => Err(RcError::new("here document is not a path")),
+            Some(RedirectTarget::Process(_)) => {
+                Err(RcError::new("process substitution is not a path"))
+            }
+            None => Err(RcError::new("redirect target expanded to empty list")),
+        }
     }
 
-    fn apply_output_redirect(
+    fn redirect_here_text(&mut self, redirect: &Redirect) -> RcResult<String> {
+        match redirect.target.as_ref() {
+            Some(RedirectTarget::HereDoc(doc)) if doc.expand => {
+                Ok(self.expand_raw_word(&doc.body)?.join(" "))
+            }
+            Some(RedirectTarget::HereDoc(doc)) => Ok(doc.body.clone()),
+            Some(RedirectTarget::Word(word)) => Ok(word.raw().to_string()),
+            Some(RedirectTarget::Process(_)) => Err(RcError::new(
+                "process substitution cannot be a here document",
+            )),
+            None => Ok(String::new()),
+        }
+    }
+
+    fn apply_output_sinks(
         &mut self,
-        redirect: &PreparedRedirect,
-        output: &RcOutput,
+        output: &mut RcOutput,
+        sinks: BTreeMap<u32, FdSink>,
     ) -> RcResult<()> {
-        if redirect.path == "/dev/stdout" {
+        let stdout = std::mem::take(&mut output.stdout);
+        let stderr = std::mem::take(&mut output.stderr);
+        self.apply_fd_sink(1, stdout, &sinks, output)?;
+        self.apply_fd_sink(2, stderr, &sinks, output)
+    }
+
+    fn apply_fd_sink(
+        &mut self,
+        fd: u32,
+        data: String,
+        sinks: &BTreeMap<u32, FdSink>,
+        output: &mut RcOutput,
+    ) -> RcResult<()> {
+        if data.is_empty() {
             return Ok(());
         }
-        let data = if redirect.fd == 2 {
-            output.stderr.as_bytes()
-        } else {
-            output.stdout.as_bytes()
-        };
-        if redirect.append {
-            self.host.append_file(&redirect.path, data)
-        } else {
-            self.host.write_file(&redirect.path, data)
+        match sinks.get(&fd).cloned().unwrap_or(match fd {
+            2 => FdSink::Stderr,
+            _ => FdSink::Stdout,
+        }) {
+            FdSink::Stdout => output.stdout.push_str(&data),
+            FdSink::Stderr => output.stderr.push_str(&data),
+            FdSink::Closed => {}
+            FdSink::File { path, append } => {
+                if append {
+                    self.host.append_file(&path, data.as_bytes())?;
+                } else {
+                    self.host.write_file(&path, data.as_bytes())?;
+                }
+            }
+            FdSink::Process(node) => {
+                let next = self.eval_node(&node, data);
+                output.stdout.push_str(&next.stdout);
+                output.stderr.push_str(&next.stderr);
+                output.status = next.status;
+                output.exited |= next.exited;
+            }
         }
+        Ok(())
     }
 
     fn expand_words(&mut self, words: &[Word]) -> Vec<String> {
@@ -1513,13 +1974,13 @@ impl<H: RcHost> RcSession<H> {
     fn lookup_var(&self, name: &str) -> Vec<String> {
         match name {
             "*" => self.argv.clone(),
-            "0" => self.argv.first().cloned().into_iter().collect(),
+            "0" => vec![self.argv0.clone()],
             value if value.chars().all(|ch| ch.is_ascii_digit()) => value
                 .parse::<usize>()
                 .ok()
                 .and_then(|index| {
                     if index == 0 {
-                        self.argv.first().cloned()
+                        Some(self.argv0.clone())
                     } else {
                         self.argv.get(index - 1).cloned()
                     }
@@ -1601,15 +2062,17 @@ impl<H: RcHost> RcSession<H> {
 }
 
 #[derive(Clone, Debug)]
-struct PreparedRedirect {
-    fd: u32,
-    append: bool,
-    path: String,
+enum FdSink {
+    Stdout,
+    Stderr,
+    File { path: String, append: bool },
+    Process(Box<Node>),
+    Closed,
 }
 
 const BUILTINS: &[&str] = &[
-    ".", "builtin", "cd", "echo", "eval", "exit", "false", "flag", "pwd", "rfork", "shift",
-    "status", "true", "wait", "whatis", "~",
+    ".", "basename", "builtin", "cd", "echo", "eval", "exec", "exit", "false", "flag", "pwd",
+    "rfork", "shift", "status", "test", "true", "wait", "whatis", "~",
 ];
 
 fn restore_var(vars: &mut BTreeMap<String, Vec<String>>, name: &str, old: Option<Vec<String>>) {
@@ -1697,6 +2160,137 @@ fn split_ifs(value: &str, ifs: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn render_node(node: &Node) -> String {
+    match node {
+        Node::Empty => String::new(),
+        Node::Simple(simple) => {
+            let mut parts = simple
+                .assignments
+                .iter()
+                .map(|assignment| {
+                    if assignment.values.is_empty() {
+                        format!("{}=()", assignment.name)
+                    } else {
+                        format!(
+                            "{}=({})",
+                            assignment.name,
+                            assignment
+                                .values
+                                .iter()
+                                .map(render_word)
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        )
+                    }
+                })
+                .collect::<Vec<_>>();
+            parts.extend(simple.words.iter().map(render_word));
+            parts.extend(simple.redirects.iter().map(render_redirect));
+            parts.join(" ")
+        }
+        Node::Block(nodes) | Node::Sequence(nodes) => format!(
+            "{{ {} }}",
+            nodes.iter().map(render_node).collect::<Vec<_>>().join("; ")
+        ),
+        Node::And(left, right) => format!("{} && {}", render_node(left), render_node(right)),
+        Node::Or(left, right) => format!("{} || {}", render_node(left), render_node(right)),
+        Node::Pipe(left, right, spec) => {
+            let pipe = spec
+                .as_ref()
+                .map(|spec| {
+                    if spec.to_fd == 0 {
+                        format!("|[{}]", spec.from_fd)
+                    } else {
+                        format!("|[{}={}]", spec.from_fd, spec.to_fd)
+                    }
+                })
+                .unwrap_or_else(|| "|".into());
+            format!("{} {} {}", render_node(left), pipe, render_node(right))
+        }
+        Node::Not(inner) => format!("! {}", render_node(inner)),
+        Node::Background(inner) => format!("{} &", render_node(inner)),
+        Node::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            let mut out = format!(
+                "if({}) {}",
+                render_node(condition),
+                render_node(then_branch)
+            );
+            if let Some(else_branch) = else_branch {
+                out.push_str(" if not ");
+                out.push_str(&render_node(else_branch));
+            }
+            out
+        }
+        Node::For { var, values, body } => {
+            let values = values.iter().map(render_word).collect::<Vec<_>>().join(" ");
+            if values.is_empty() {
+                format!("for({var}) {}", render_node(body))
+            } else {
+                format!("for({var} in {values}) {}", render_node(body))
+            }
+        }
+        Node::While { condition, body } => {
+            format!("while({}) {}", render_node(condition), render_node(body))
+        }
+        Node::Switch { value, cases } => {
+            let cases = cases
+                .iter()
+                .map(|case| {
+                    format!(
+                        "case {}\n{}",
+                        case.patterns
+                            .iter()
+                            .map(render_word)
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        case.body
+                            .iter()
+                            .map(render_node)
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("switch({}){{\n{}\n}}", render_word(value), cases)
+        }
+        Node::Function { name, body } => body
+            .as_ref()
+            .map(|body| format!("fn {name} {}", render_node(body)))
+            .unwrap_or_else(|| format!("fn {name}")),
+    }
+}
+
+fn render_word(word: &Word) -> String {
+    word.raw().to_string()
+}
+
+fn render_redirect(redirect: &Redirect) -> String {
+    let op = match redirect.mode {
+        RedirectMode::Read => "<".to_string(),
+        RedirectMode::Write => ">".to_string(),
+        RedirectMode::Append => ">>".to_string(),
+        RedirectMode::Here => "<<".to_string(),
+        RedirectMode::Dup { from: Some(from) } => format!(">[{}={}]", redirect.fd, from),
+        RedirectMode::Dup { from: None } => format!(">[{}=]", redirect.fd),
+    };
+    let target = match redirect.target.as_ref() {
+        Some(RedirectTarget::Word(word)) => render_word(word),
+        Some(RedirectTarget::Process(node)) => render_node(node),
+        Some(RedirectTarget::HereDoc(_)) => "<here-doc>".into(),
+        None => String::new(),
+    };
+    if target.is_empty() {
+        op
+    } else {
+        format!("{op}{target}")
+    }
+}
+
 fn has_glob_chars(value: &str) -> bool {
     value.chars().any(|ch| matches!(ch, '*' | '?' | '['))
 }
@@ -1771,6 +2365,18 @@ fn join_path(base: &str, leaf: &str) -> String {
     } else {
         format!("{}/{}", base.trim_end_matches('/'), leaf)
     }
+}
+
+fn is_null_path(path: &str) -> bool {
+    matches!(path, "/dev/null" | "dev/null" | "#null" | "#null/null")
+}
+
+fn is_host_executable(path: &str, bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\0asm")
+        || path.ends_with(".wasm")
+        || path.ends_with(".wat")
+        || path.ends_with(".js")
+        || path.ends_with(".mjs")
 }
 
 #[cfg(test)]
@@ -1975,6 +2581,83 @@ mod tests {
         let out = rc.eval_source("echo hello | upper >out; . script.rc; cat <out");
         assert_eq!(out.status, RcStatus::success());
         assert_eq!(out.stdout, "sourced\nHELLO\n");
+    }
+
+    #[test]
+    fn fd_dup_process_substitution_here_docs_and_exit_work() {
+        let mut rc = RcSession::new(FakeHost::default());
+        rc.set_var("name", vec!["world".into()]);
+        let out = rc.eval_source(
+            "echo err >[1=2]\n\
+             echo hidden >/dev/null\n\
+             cat <{echo proc}\n\
+             cat <<EOF\nhello $name\nEOF\n\
+             echo before\n\
+             exit done\n\
+             echo after\n",
+        );
+        assert_eq!(out.status, RcStatus("done".into()));
+        assert_eq!(out.stdout, "proc\nhello world\nbefore\n");
+        assert_eq!(out.stderr, "err\n");
+        assert!(out.exited);
+    }
+
+    #[test]
+    fn path_search_runs_rc_scripts_with_argv0_and_args() {
+        let host = FakeHost::default().with_file("bin/hello", "echo script-$1-$0");
+        let mut rc = RcSession::new(host);
+        let out = rc.eval_source("hello world");
+        assert_eq!(out.status, RcStatus::success());
+        assert_eq!(out.stdout, "script-world-bin/hello\n");
+    }
+
+    #[test]
+    fn parses_9front_style_if_not_and_process_substitution_script() {
+        let mut rc = RcSession::new(FakeHost::default());
+        rc.set_argv0("9fs");
+        let out = rc.eval_source(
+            "rfork e\n\
+             switch($1){\n\
+             case ''\n\
+                 echo usage: $0 >[1=2]\n\
+                 exit usage\n\
+             case vac:*\n\
+                 cat <{echo $1}\n\
+             }\n",
+        );
+        assert_eq!(out.status, RcStatus("usage".into()));
+        assert_eq!(out.stderr, "usage: 9fs\n");
+
+        let mut rc = RcSession::new(FakeHost::default());
+        rc.set_args(vec!["vac:abc".into()]);
+        let out = rc.eval_source(
+            "switch($1){\n\
+             case vac:*\n\
+                 cat <{echo $1}\n\
+             }\n",
+        );
+        assert_eq!(out.status, RcStatus::success());
+        assert_eq!(out.stdout, "vac:abc\n");
+    }
+
+    #[test]
+    fn environment_export_import_and_note_hooks_work() {
+        let mut rc = RcSession::new(FakeHost::default());
+        let out = rc.eval_source("x=(one two); fn sigexit { echo bye }; fn hello { echo hi-$1 }");
+        assert_eq!(out.status, RcStatus::success());
+        let env = rc.export_environment();
+        assert_eq!(env.get("x").map(Vec::as_slice), Some(&b"one\0two"[..]));
+        assert!(env.contains_key("fn#hello"));
+
+        let mut restored = RcSession::new(FakeHost::default());
+        restored.import_environment(env);
+        let out = restored.eval_source("hello there; exit done; echo after");
+        assert_eq!(out.status, RcStatus("done".into()));
+        assert_eq!(out.stdout, "hi-there\nbye\n");
+        assert!(out.exited);
+
+        let out = restored.deliver_note("exit");
+        assert_eq!(out.stdout, "bye\n");
     }
 
     #[test]

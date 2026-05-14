@@ -9,8 +9,8 @@
     {
       "feature": "lexer-parser-ast",
       "status": "implemented",
-      "evidence": ["cargo test -p star9-rc", "parser_handles_control_flow_and_functions"],
-      "notes": "Typed AST covers simple commands, assignments, blocks, functions, if/for/while/switch, pipelines, boolean operators, redirection, and command substitution words."
+      "evidence": ["cargo test -p star9-rc", "parser_handles_control_flow_and_functions", "parses_9front_style_if_not_and_process_substitution_script"],
+      "notes": "Typed AST covers simple commands, assignments, blocks, parenthesized groups, functions, if/if not across command separators, for/while/switch, pipelines, boolean operators, redirection, process substitution, here documents, and command substitution words."
     },
     {
       "feature": "list-values-and-expansion",
@@ -32,9 +32,9 @@
     },
     {
       "feature": "redirection-pipelines-here-docs",
-      "status": "partial",
-      "evidence": ["redirection_pipeline_and_source_work"],
-      "notes": "Basic <, >, >>, << text, and stdout pipelines are implemented. Full Plan 9 fd graph behavior such as process substitution <{}/>{}, all fd dup cases, and exact concurrent pipeline execution remain future-depth work."
+      "status": "implemented-with-host-limits",
+      "evidence": ["redirection_pipeline_and_source_work", "fd_dup_process_substitution_here_docs_and_exit_work"],
+      "notes": "Implements <, >, >>, fd-specific output redirects, fd dup/close for captured stdout/stderr, /dev/null handling, stdout/stderr pipe selection, <{} and >{} process substitution through evaluator pipes, and parsed here documents with quoted-delimiter expansion suppression. Pipelines are deterministic in-process evaluator pipelines rather than OS-concurrent process graphs."
     },
     {
       "feature": "command-substitution",
@@ -44,21 +44,21 @@
     },
     {
       "feature": "environment-and-notes",
-      "status": "partial",
-      "evidence": ["docs/ARCHITECTURE.md"],
-      "notes": "Variables and local command assignments are implemented in the reusable evaluator. Plan 9 environment files and note hooks are adapter-level future-depth work."
+      "status": "implemented-with-host-limits",
+      "evidence": ["environment_export_import_and_note_hooks_work"],
+      "notes": "Variables, local command assignments, zero-byte-separated environment export/import, fn#name function export/import, sigexit, and deliver_note(sig*) hooks are implemented in the reusable evaluator. A mounted #env device surface remains an adapter/device integration boundary."
     },
     {
       "feature": "builtins",
       "status": "partial",
       "evidence": ["star9-rc/src/lib.rs"],
-      "notes": "Implements core builtins including ., cd, echo, eval, exit, shift, status, wait, whatis, ~, true, false, plus host-limited rfork/flag/builtin placeholders. Exact 9front rendering and rfork semantics remain future-depth work."
+      "notes": "Implements core builtins including ., basename, cd, echo, eval, exec, exit with sigexit, shift, status, test, wait, whatis, ~, true, false, plus host-limited rfork/flag/builtin placeholders. Exact rfork namespace semantics remain host-limited."
     },
     {
       "feature": "external-command-search",
-      "status": "partial",
-      "evidence": ["crates/star9-shell/src/rc.rs", "cargo test -p star9-shell"],
-      "notes": "External command execution is a host-trait operation. Star 9 adapter delegates to the existing Star 9 shell command surface. Full executable $path search over mounted command namespaces remains future-depth work."
+      "status": "implemented-with-host-limits",
+      "evidence": ["path_search_runs_rc_scripts_with_argv0_and_args", "rc_script_mode_sets_argv0_and_script_args", "crates/star9-shell/src/rc.rs", "cargo test -p star9-shell"],
+      "notes": "External command execution is a host-trait operation. The reusable evaluator searches $path for rc scripts, sets $0/$*, and dispatches wasm/js-looking namespace files back to the host. The Star 9 adapter maps .wasm/.wat through wasi and .js/.mjs through worker while preserving deterministic opt-in host execution behavior."
     },
     {
       "feature": "cli-browser-entry-points",

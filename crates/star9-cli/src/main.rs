@@ -57,6 +57,8 @@ enum Command {
         #[arg(long)]
         rc: bool,
         script: Option<PathBuf>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     Rc {
         #[arg(short = 'c', long = "command")]
@@ -64,6 +66,8 @@ enum Command {
         #[arg(long)]
         native: bool,
         script: Option<PathBuf>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     Accept {
         #[command(subcommand)]
@@ -134,11 +138,12 @@ fn run() -> Result<i32> {
             native,
             rc,
             script,
+            args,
         } => {
             let host = RuntimeShellHost::new(runtime).with_writable_workspace()?;
             let host = if native { host.enable_native() } else { host };
             if rc {
-                run_rc_shell(host, command, script)
+                run_rc_shell(host, command, script, args)
             } else {
                 run_shell(host, command, script)
             }
@@ -147,10 +152,11 @@ fn run() -> Result<i32> {
             command,
             native,
             script,
+            args,
         } => {
             let host = RuntimeShellHost::new(runtime).with_writable_workspace()?;
             let host = if native { host.enable_native() } else { host };
-            run_rc_shell(host, command, script)
+            run_rc_shell(host, command, script, args)
         }
         Command::Accept { suite } => {
             print!("{}", render_acceptance_output(suite)?);
@@ -239,15 +245,19 @@ fn run_rc_shell(
     host: RuntimeShellHost,
     command: Option<String>,
     script: Option<PathBuf>,
+    args: Vec<String>,
 ) -> Result<i32> {
     let mut shell = RcShell::new(host);
     if let Some(command) = command {
+        shell.set_args(args);
         return Ok(print_rc_result(shell.eval_line(&command)));
     }
     if let Some(script) = script {
         let source = std::fs::read_to_string(&script).map_err(|err| {
             star9_core::Error::Message(format!("rc: failed to read {}: {err}", script.display()))
         })?;
+        shell.set_argv0(script.display().to_string());
+        shell.set_args(args);
         return Ok(print_rc_result(shell.eval_line(&source)));
     }
     if !io::stdin().is_terminal() {

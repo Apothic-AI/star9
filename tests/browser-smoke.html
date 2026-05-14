@@ -116,6 +116,8 @@
     const shellPwd = await shell.eval("cd shell-demo; pwd");
     const rcShell = createStar9Shell(systemElement, { rc: true });
     const rcResult = await rcShell.eval("x=(one two); fn twice { echo $1 $1 }; for(i in $x) twice $i");
+    const rcParityResult = await rcShell.eval("cat <{echo hi}; echo err >[1=2]");
+    const rcHereDocResult = await rcShell.eval("x=browser\ncat <<EOF\nhello $x\nEOF\n");
 
     await system.writeText("cache-store/state.txt", "storage-ok");
     const storageText = await system.readText("cache-store/state.txt");
@@ -268,6 +270,10 @@
     assert(shellPwd.stdout === "shell-demo\n", `bad shell pwd ${JSON.stringify(shellPwd.stdout)}`);
     assert(rcResult.status === 0, `bad rc status ${rcResult.status}: ${rcResult.stderr}`);
     assert(rcResult.stdout === "one one\ntwo two\n", `bad rc stdout ${JSON.stringify(rcResult.stdout)}`);
+    assert(rcParityResult.status === 0, `bad rc parity status ${rcParityResult.status}: ${rcParityResult.stderr}`);
+    assert(rcParityResult.stdout === "hi\n", `bad rc process stdout ${JSON.stringify(rcParityResult.stdout)}`);
+    assert(rcParityResult.stderr === "err\n", `bad rc fd dup stderr ${JSON.stringify(rcParityResult.stderr)}`);
+    assert(rcHereDocResult.stdout === "hello browser\n", `bad rc here-doc stdout ${JSON.stringify(rcHereDocResult.stdout)}`);
     assert(storageText === "storage-ok", `bad storage text ${storageText}`);
     assert(
       sharedMirrorText === "descriptor-ok",
@@ -376,6 +382,8 @@
         fetchedText,
         shellPwd: shellPwd.stdout.trim(),
         rcStdout: rcResult.stdout.trim(),
+        rcParityStdout: rcParityResult.stdout.trim(),
+        rcHereDocStdout: rcHereDocResult.stdout.trim(),
         storageEntries,
         sharedEntries,
         remotePortEntries,
