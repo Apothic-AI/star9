@@ -109,3 +109,7 @@ Live and host-capability checks, including `accept native`, `accept native-tcp`,
 ## Origins
 
 Star 9 is inspired by Wanix and began as a Rust port of the project.
+
+## License
+
+Star 9 is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
