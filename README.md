@@ -105,3 +105,7 @@ Open `http://127.0.0.1:4177/tests/browser-smoke.html` after the `wasm-pack build
 Rust-backed browser examples live under `examples/` for the shell, rc shell, basic VM, VM workbench, import/iframe workbench, and worker-export behavior. After the wasm package is built, open `http://127.0.0.1:4177/examples/shell.html` for the default rc-backed browser shell or `http://127.0.0.1:4177/examples/rc.html` for the explicit rc example.
 
 Live and host-capability checks, including `accept native`, `accept native-tcp`, browser OPFS/StarFS storage, and live HTTP/S3/R2 runs, are documented in `docs/LIVE_TESTS.md`; default tests remain offline.
+
+## Origins
+
+Star 9 is inspired by Wanix and began as a Rust port of the project.
