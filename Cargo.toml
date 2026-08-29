@@ -16,7 +16,8 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://example.invalid/star9"
+repository = "https://github.com/Apothic-AI/star9"
+description = "Rust-native Plan 9 runtime with browser and native execution surfaces"
 rust-version = "1.80"
 
 [workspace.dependencies]

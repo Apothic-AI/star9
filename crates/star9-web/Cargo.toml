@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description.workspace = true
 rust-version.workspace = true
 
 [lib]
@@ -15,13 +16,13 @@ serde-wasm-bindgen.workspace = true
 wasm-bindgen.workspace = true
 js-sys.workspace = true
 web-sys.workspace = true
-star9-core = { path = "../star9-core" }
-star9-fs = { path = "../star9-fs" }
-star9-protocol = { path = "../star9-protocol" }
-star9-rc = { path = "../star9-rc" }
-star9-runtime = { path = "../star9-runtime" }
-star9-shell = { path = "../star9-shell" }
-star9-vfs = { path = "../star9-vfs" }
+star9-core = { version = "0.1.0", path = "../star9-core" }
+star9-fs = { version = "0.1.0", path = "../star9-fs" }
+star9-protocol = { version = "0.1.0", path = "../star9-protocol" }
+star9-rc = { version = "0.1.0", path = "../star9-rc" }
+star9-runtime = { version = "0.1.0", path = "../star9-runtime" }
+star9-shell = { version = "0.1.0", path = "../star9-shell" }
+star9-vfs = { version = "0.1.0", path = "../star9-vfs" }
 
 [dev-dependencies]
 serde_json.workspace = true

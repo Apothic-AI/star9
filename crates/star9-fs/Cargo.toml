@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -17,7 +18,7 @@ serde.workspace = true
 serde_bytes.workspace = true
 sha2.workspace = true
 tar = "0.4"
-star9-core = { path = "../star9-core" }
+star9-core = { version = "0.1.0", path = "../star9-core" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ureq = { workspace = true, optional = true }
