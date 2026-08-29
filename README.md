@@ -1,5 +1,9 @@
 # Star 9
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Apothic-AI/star9/master/star9-logo.png" alt="Star 9 logo">
+</p>
+
 Rust-native Star 9 runtime.
 
 The legacy upstream reference checkout remains the behavior reference while this project moves forward as Star 9. This project does not wrap, execute, link, shell out to, or test against Go code; runtime behavior is delivered by this repository's Rust code, fixtures, and tests.
