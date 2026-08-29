@@ -6,7 +6,7 @@
 
 Rust-native Star 9 runtime.
 
-The legacy upstream reference checkout remains the behavior reference while this project moves forward as Star 9. This project does not wrap, execute, link, shell out to, or test against Go code; runtime behavior is delivered by this repository's Rust code, fixtures, and tests.
+The legacy upstream reference checkout remains the behavior reference while this project moves forward as Star 9.
 
 This workspace implements the main Star 9 runtime surfaces in Rust:
 
@@ -112,7 +112,7 @@ Live and host-capability checks, including `accept native`, `accept native-tcp`,
 
 ## Origins
 
-Star 9 is inspired by Wanix and began as a Rust port of the project.
+Star 9 is inspired by [Wanix](https://github.com/tractordev/wanix) and began as a Rust port of the project. This project does not wrap, execute, link, shell out to, or test against Go code; runtime behavior is delivered by this repository's Rust code, fixtures, and tests.
 
 ## License
 
