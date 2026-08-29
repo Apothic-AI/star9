@@ -1,7 +1,7 @@
 # Star 9
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Apothic-AI/star9/master/star9-logo.png" alt="Star 9 logo">
+  <img src="https://github.com/Apothic-AI/star9/blob/master/star9-logo.png?raw=true" alt="Star 9 logo" width="320">
 </p>
 
 Rust-native Star 9 runtime.
