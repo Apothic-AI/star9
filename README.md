@@ -6,6 +6,8 @@
 
 Rust-native Star 9 runtime.
 
+[Launch the browser demo](https://apothic-ai.github.io/star9/)
+
 The legacy upstream reference checkout remains the behavior reference while this project moves forward as Star 9.
 
 This workspace implements the main Star 9 runtime surfaces in Rust:
