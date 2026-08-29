@@ -1311,6 +1311,7 @@ dependencies = [
  "star9-shell",
  "star9-task",
  "star9-vfs",
+ "wat",
 ]
 
 [[package]]

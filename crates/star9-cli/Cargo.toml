@@ -22,3 +22,6 @@ star9-runtime = { version = "0.1.0", path = "../star9-runtime" }
 star9-shell = { version = "0.1.0", path = "../star9-shell" }
 star9-task = { version = "0.1.0", path = "../star9-task" }
 star9-vfs = { version = "0.1.0", path = "../star9-vfs" }
+
+[build-dependencies]
+wat = "1"

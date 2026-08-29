@@ -815,7 +815,7 @@ fn render_worker_acceptance() -> Result<String> {
 fn render_wasi_acceptance() -> Result<String> {
     let runtime = Runtime::new()?;
     let task = runtime.task_fs().alloc("auto", Some(runtime.root()))?;
-    let program = include_bytes!("../../../tests/fixtures/wasi-preview1-smoke.wasm").to_vec();
+    let program = include_bytes!(concat!(env!("OUT_DIR"), "/wasi-preview1-smoke.wasm")).to_vec();
     task.namespace().bind(
         fs_ref(MemFs::from_entries([
             ("program.wasm", program),
