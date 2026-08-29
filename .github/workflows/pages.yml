@@ -1,0 +1,54 @@
+name: Deploy web demos
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Build WASM package
+        run: |
+          wasm-pack build crates/star9-web \
+            --target web \
+            --out-dir ../../target/star9-web-pkg \
+            --dev
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site/examples _site/crates/star9-web _site/target/star9-web-pkg
+          cp index.html star9-logo.png _site/
+          cp -R examples/. _site/examples/
+          cp -R crates/star9-web/js _site/crates/star9-web/
+          cp -R target/star9-web-pkg/. _site/target/star9-web-pkg/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

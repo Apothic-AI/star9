@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080b0a">
+  <meta name="description" content="Star 9: a Rust-native Plan 9 runtime in your browser.">
+  <title>Star 9 / Browser Runtime</title>
+  <style>
+    /* Hallmark · pre-emit critique: P5 H5 E5 S5 R4 V4 */
+    :root {
+      --color-void: #080a0e;
+      --color-panel: #0d1117;
+      --color-panel-raised: #111722;
+      --color-line: #27303d;
+      --color-line-bright: #3d5068;
+      --color-ink: #dce6f2;
+      --color-muted: #8090a4;
+      --color-phosphor: #79bbff;
+      --color-phosphor-soft: #4d83c1;
+      --color-alert: #f4b860;
+      --font-display: "Arial Narrow", "Roboto Condensed", Arial, sans-serif;
+      --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --page-pad: clamp(18px, 4vw, 64px);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      min-height: 100%;
+      margin: 0;
+      overflow-x: clip;
+    }
+
+    body {
+      min-height: 100vh;
+      color: var(--color-ink);
+      background: var(--color-void);
+      font-family: var(--font-mono);
+    }
+
+    body::before {
+      position: fixed;
+      z-index: 5;
+      inset: 0;
+      pointer-events: none;
+      content: "";
+      opacity: .075;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent 0,
+        transparent 2px,
+        rgba(121, 187, 255, .16) 3px,
+        transparent 4px
+      );
+      mix-blend-mode: screen;
+    }
+
+    body::after {
+      position: fixed;
+      z-index: 6;
+      inset: 0;
+      pointer-events: none;
+      content: "";
+      opacity: .035;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.7'/%3E%3C/svg%3E");
+    }
+
+    .page {
+      display: grid;
+      min-height: 100vh;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 24px var(--page-pad) 20px;
+    }
+
+    .masthead {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 22px;
+      align-items: center;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--color-line);
+    }
+
+    .brand-mark {
+      display: block;
+      width: 132px;
+      height: 66px;
+      object-fit: contain;
+      filter: brightness(1.2) saturate(1.15) drop-shadow(0 0 14px rgba(121, 187, 255, .18));
+    }
+
+    .brand-copy {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .brand-copy h1 { margin: 0; }
+
+    .eyebrow,
+    .telemetry,
+    .footer {
+      color: var(--color-muted);
+      font-size: 10px;
+      line-height: 1.4;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .telemetry {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      white-space: nowrap;
+      text-align: right;
+    }
+
+    .telemetry strong {
+      color: var(--color-phosphor);
+      font-weight: 400;
+    }
+
+    .pulse {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: var(--color-phosphor);
+      box-shadow: 0 0 12px var(--color-phosphor-soft);
+      animation: breathe 2.8s ease-in-out infinite;
+    }
+
+    .workspace {
+      display: grid;
+      min-height: 0;
+      align-items: center;
+      padding: clamp(30px, 6vh, 78px) 0;
+    }
+
+    .terminal-wrap {
+      position: relative;
+      width: min(1060px, 100%);
+      height: min(68vh, 720px);
+      min-height: 430px;
+      margin: 0 auto;
+      border: 1px solid var(--color-line-bright);
+      background: var(--color-panel);
+      box-shadow: 0 0 0 8px rgba(13, 17, 23, .85), 0 0 0 9px var(--color-line), 0 26px 80px rgba(0, 0, 0, .38);
+    }
+
+    .terminal-wrap::before,
+    .terminal-wrap::after {
+      position: absolute;
+      z-index: 2;
+      width: 10px;
+      height: 10px;
+      content: "";
+      pointer-events: none;
+      border-color: var(--color-phosphor);
+    }
+
+    .terminal-wrap::before {
+      top: -1px;
+      left: -1px;
+      border-top: 1px solid;
+      border-left: 1px solid;
+    }
+
+    .terminal-wrap::after {
+      right: -1px;
+      bottom: -1px;
+      border-right: 1px solid;
+      border-bottom: 1px solid;
+    }
+
+    .terminal-label {
+      position: absolute;
+      z-index: 1;
+      top: -28px;
+      left: 0;
+      color: var(--color-muted);
+      font-size: 10px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    star9-system,
+    star9-shell {
+      display: block;
+    }
+
+    star9-system {
+      height: 100%;
+    }
+
+    .terminal-wrap star9-shell {
+      height: 100%;
+      min-height: 0;
+      border: 0;
+      background: var(--color-panel);
+      color: var(--color-ink);
+    }
+
+    .terminal-wrap star9-shell .transcript {
+      padding: 26px 28px 18px;
+      color: var(--color-ink);
+      scrollbar-color: var(--color-line-bright) transparent;
+    }
+
+    .terminal-wrap star9-shell form {
+      min-height: 54px;
+      padding: 12px 28px 14px;
+      border-top: 1px solid var(--color-line);
+      background: var(--color-panel-raised);
+    }
+
+    .terminal-wrap star9-shell .prompt {
+      color: var(--color-phosphor);
+    }
+
+    .terminal-wrap star9-shell input {
+      caret-color: var(--color-phosphor);
+    }
+
+    .terminal-wrap star9-shell .system {
+      color: var(--color-phosphor-soft);
+    }
+
+    .terminal-wrap star9-shell .stderr {
+      color: var(--color-alert);
+    }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--color-line);
+    }
+
+    .footer a {
+      color: var(--color-muted);
+      text-decoration: none;
+    }
+
+    .footer a:hover,
+    .footer a:focus-visible {
+      color: var(--color-phosphor);
+    }
+
+    @keyframes breathe {
+      0%, 100% { opacity: .55; }
+      50% { opacity: 1; }
+    }
+
+    @media (max-width: 620px) {
+      .page { padding-top: 16px; }
+      .masthead { grid-template-columns: auto minmax(0, 1fr); gap: 14px; }
+      .telemetry { grid-column: 1 / -1; justify-content: space-between; padding-top: 4px; text-align: left; }
+      .workspace { padding: 52px 0 44px; }
+      .terminal-wrap { height: min(70vh, 640px); min-height: 390px; }
+      .terminal-wrap star9-shell .transcript { padding: 20px 16px 14px; }
+      .terminal-wrap star9-shell form { padding: 10px 16px 12px; }
+      .footer { align-items: flex-start; flex-direction: column; gap: 7px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .pulse { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <img class="brand-mark" src="star9-logo.png" alt="Star 9">
+      <div class="brand-copy">
+        <h1 class="eyebrow">Rust-native Plan 9 runtime</h1>
+        <span class="eyebrow">Browser workspace / ready</span>
+      </div>
+      <div class="telemetry" aria-label="Runtime status">
+        <span><i class="pulse" aria-hidden="true"></i><strong>ONLINE</strong></span>
+        <span>WASM / 01</span>
+      </div>
+    </header>
+
+    <section class="workspace" aria-label="Star 9 interactive terminal">
+      <div class="terminal-wrap">
+        <span class="terminal-label">// interactive session / browser namespace</span>
+        <star9-system id="star9" pkg="target/star9-web-pkg/star9_web.js">
+          <star9-bind kind="ns" dst="." src="#ramfs"></star9-bind>
+          <star9-bind kind="file" dst="welcome.txt">Browser workspace
+
+Try: ls
+Then: cat welcome.txt</star9-bind>
+          <star9-shell></star9-shell>
+        </star9-system>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span>APOTHIC AI / STAR 9</span>
+      <a href="https://github.com/Apothic-AI/star9" rel="noreferrer">SOURCE ↗</a>
+    </footer>
+  </main>
+
+  <script type="module" src="crates/star9-web/js/star9-elements.js"></script>
+</body>
+</html>
